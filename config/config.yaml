@@ -1,0 +1,40 @@
+pipeline_version: "1.0.0"
+
+paths:
+  sources_incoming: "sources/incoming"
+  sources_archived: "sources/archived"
+  docs_md_dir: "build/docs_md"
+  tables_json_dir: "build/tables_json"
+  chunks_dir: "build/chunks_jsonl"
+  embeddings_dir: "build/embeddings"
+  index_dir: "build/index"
+  manifest_path: "build/manifest.json"
+
+parsing:
+  pdf_backend: "auto"
+  normalize_whitespace: true
+
+sectioning:
+  enable_numbered_headings: true
+  enable_allcaps_headings: true
+  min_heading_len: 4
+  max_heading_len: 120
+
+chunking:
+  target_tokens: 512
+  overlap_tokens: 64
+
+embeddings:
+  model_name: "BAAI/bge-large-en-v1.5"
+  device: "cpu"
+  batch_size: 32
+  normalize: true
+
+index:
+  backend: "faiss"
+  metric: "ip"
+  top_k: 6
+
+server:
+  host: "127.0.0.1"
+  port: 3333

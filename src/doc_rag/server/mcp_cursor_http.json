@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "doc-rag": {
+      "transport": "streamableHttp",
+      "url": "http://127.0.0.1:3333/mcp"
+    }
+  }
+}

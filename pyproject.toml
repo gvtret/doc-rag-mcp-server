@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc-rag"
+version = "1.0.0"
+description = "Universal local document RAG with Cursor MCP."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name="doc-rag contributors"}]
+
+dependencies = [
+  "PyYAML>=6.0.1",
+  "python-docx>=1.1.0",  "numpy>=1.26",
+  "tqdm>=4.66",
+  "PyPDF2>=3.0.1",
+]
+[project.optional-dependencies]
+# For remote MCP server over HTTP (FastAPI/Uvicorn)
+server = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "python-multipart",
+]
+
+# Better PDF extraction (optional)
+pdf = [
+  "pymupdf>=1.24.0",
+]
+
+# Vector index (optional)
+faiss = [
+  "faiss-cpu>=1.8.0",
+]
+
+# Embeddings (optional) - CPU-safe default. GPU is installed manually by the user.
+embeddings = [
+  "sentence-transformers>=2.7.0",
+  "torch>=2.0.0",
+]
+
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.1",
+]
+
+
+[project.scripts]
+doc-rag = "doc_rag.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"doc_rag" = ["server/mcp_http.json", "server/mcp_cursor_http.json"]
