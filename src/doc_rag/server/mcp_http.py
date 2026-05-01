@@ -21,7 +21,8 @@ import traceback
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+from typing import Annotated, Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request, Response, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
@@ -106,6 +107,65 @@ def _sanitize_filename(name: str) -> str:
   base = base.replace("/", "_").replace("\\", "_")
   base = "".join(ch if ch.isprintable() and ch not in ("\n", "\r", "\t") else "_" for ch in base)
   return base[:180]
+
+
+def _ui_max_upload_files() -> int:
+  try:
+    n = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_FILES", "48"))
+  except Exception:
+    n = 48
+  return max(1, min(200, n))
+
+
+def _incoming_unique_path(incoming: Path, filename: str) -> Path:
+  name = _sanitize_filename(filename)
+  dst = incoming / name
+  n = 0
+  while dst.exists():
+    stem = Path(name).stem
+    suf = Path(name).suffix
+    n += 1
+    dst = incoming / f"{stem}__{int(time.time())}_{n}{suf}"
+  return dst
+
+
+async def _save_upload_to_path(file: UploadFile, dst: Path) -> Optional[str]:
+  """Write upload to dst. Returns error message or None."""
+  max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
+  limit = max(1, max_mb) * 1024 * 1024
+  written = 0
+  try:
+    with open(dst, "wb") as out:
+      while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+          break
+        written += len(chunk)
+        if written > limit:
+          out.close()
+          try:
+            dst.unlink(missing_ok=True)
+          except Exception:
+            pass
+          return f"{file.filename or dst.name}: файл больше лимита ({max_mb} MiB)"
+        out.write(chunk)
+  except Exception as e:
+    try:
+      dst.unlink(missing_ok=True)
+    except Exception:
+      pass
+    return f"{file.filename or dst.name}: {e}"
+  return None
+
+
+async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> Optional[str]:
+  name = _sanitize_filename(file.filename or "")
+  ext = os.path.splitext(name.lower())[1]
+  if ext not in (".pdf", ".docx"):
+    lab = name or (file.filename or "unnamed")
+    return f"{lab}: только .pdf или .docx"
+  dst = _incoming_unique_path(incoming, name)
+  return await _save_upload_to_path(file, dst)
 
 
 def _ui_key_ok(request: Request, key: str) -> bool:
@@ -201,7 +261,14 @@ def _server_http_ui_log_max_lines() -> int:
 _INGEST_LOG_LOCK = threading.Lock()
 _INGEST_UI_LOG_LINES: Deque[str] = deque(maxlen=_ingest_ui_log_max_lines())
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_INGEST_STATE: Dict[str, Any] = {"running": False, "last_started": None, "last_finished": None, "last_ok": None, "last_error": None}
+_INGEST_STATE: Dict[str, Any] = {
+  "running": False,
+  "job": None,
+  "last_started": None,
+  "last_finished": None,
+  "last_ok": None,
+  "last_error": None,
+}
 
 
 def _reset_ingest_ui_log_lines() -> None:
@@ -337,20 +404,38 @@ def _sync_run_ingest_with_ui_logging() -> None:
     tee.finish()
 
 
-async def _run_ingest_background() -> None:
+def _sync_run_rebuild_with_ui_logging() -> None:
+  from doc_rag.raglib.pipeline import rebuild
+
+  stderr = getattr(sys, "stderr", None) or sys.__stderr__
+  tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
+  old_stderr = sys.stderr
+  sys.stderr = tee
+  try:
+    rebuild(str(_config_path()))
+  finally:
+    sys.stderr = old_stderr
+    tee.finish()
+
+
+async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -> None:
+  """Run ingest or rebuild in a worker thread; mutual exclusion via _INGEST_LOCK."""
   async with _INGEST_LOCK:
     if _INGEST_STATE.get("running"):
       return
     _reset_ingest_ui_log_lines()
     _INGEST_STATE["running"] = True
+    _INGEST_STATE["job"] = job
     _INGEST_STATE["last_started"] = time.time()
     _INGEST_STATE["last_error"] = None
     _INGEST_STATE["last_ok"] = None
 
+  _append_ingest_ui_line(f"[doc-rag][INFO] --- старт задачи: {job} ---", ansi_strip=False)
+
   ok = False
   err = None
   try:
-    await asyncio.to_thread(_sync_run_ingest_with_ui_logging)
+    await asyncio.to_thread(sync_runner)
     ok = True
   except Exception as exc:
     ok = False
@@ -361,13 +446,22 @@ async def _run_ingest_background() -> None:
 
   async with _INGEST_LOCK:
     _INGEST_STATE["running"] = False
+    _INGEST_STATE["job"] = None
     _INGEST_STATE["last_finished"] = time.time()
     _INGEST_STATE["last_ok"] = ok
     _INGEST_STATE["last_error"] = err
     if ok:
-      _append_ingest_ui_line("[doc-rag][INFO] ingest завершился успешно.", ansi_strip=False)
+      _append_ingest_ui_line(f"[doc-rag][INFO] {job} завершился успешно.", ansi_strip=False)
     elif err:
-      _append_ingest_ui_line(f"[doc-rag][ERROR] ingest завершился с ошибкой: {err}", ansi_strip=False)
+      _append_ingest_ui_line(f"[doc-rag][ERROR] {job} завершился с ошибкой: {err}", ansi_strip=False)
+
+
+async def _run_ingest_background() -> None:
+  await _run_index_job_background("ingest", _sync_run_ingest_with_ui_logging)
+
+
+async def _run_rebuild_background() -> None:
+  await _run_index_job_background("rebuild", _sync_run_rebuild_with_ui_logging)
 
 
 def _origin_allowed(origin: Optional[str]) -> bool:
@@ -599,6 +693,25 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
       status_code=401,
     )
 
+  qp = request.query_params
+  upload_banner = ""
+  try:
+    us = int(qp.get("up_saved") or "0")
+  except Exception:
+    us = 0
+  try:
+    ue = int(qp.get("up_err") or "0")
+  except Exception:
+    ue = 0
+  um = (qp.get("up_msg") or "").strip()
+  if us > 0 or ue > 0:
+    hint = ""
+    if um:
+      hint = f" Пример: «{html.escape(um)}»"
+    upload_banner = (
+      f'<div class="upload-banner">Загружено файлов: {us}. Ошибок: {ue}.{hint}</div>'
+    )
+
   state = dict(_INGEST_STATE)
   incoming = _sources_incoming_dir()
   incoming.mkdir(parents=True, exist_ok=True)
@@ -640,32 +753,41 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         }}
         .muted {{ color:#6b7280; }}
         button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid #111827; background:#111827; color:white; cursor:pointer; }}
+        button.secondary {{ background:#374151; border-color:#374151; }}
         button:disabled {{ opacity:0.5; cursor:not-allowed; }}
+        .upload-banner {{ margin:16px 0; padding:10px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:10px; color:#065f46; }}
       </style>
     </head>
     <body>
       <h2>doc-rag — управление индексом</h2>
       <p class="muted">LAN UI. MCP endpoint: <code>/mcp</code></p>
 
+      {upload_banner}
+
       <div class="row">
         <div class="card">
           <h3>Загрузка документов</h3>
           <form action="/ui/upload{key_q}" method="post" enctype="multipart/form-data">
             <input type="hidden" name="key" value="{key}"/>
-            <input type="file" name="file" accept=".pdf,.docx" required />
+            <input type="file" name="files" accept=".pdf,.docx,.PDF,.DOCX" multiple required />
             <div style="height: 12px;"></div>
-            <button type="submit">Upload → sources/incoming</button>
+            <button type="submit" {"disabled" if state.get("running") else ""}>Загрузить в sources/incoming</button>
           </form>
-          <p class="muted">Поддерживаются: PDF, DOCX.</p>
+          <p class="muted">PDF, DOCX; можно выбрать несколько файлов сразу (лимит: env <code>DOC_RAG_UI_MAX_UPLOAD_FILES</code>, по умолчанию 48).</p>
         </div>
 
         <div class="card">
-          <h3>Ingest</h3>
+          <h3>Ingest / rebuild</h3>
           <form action="/ui/ingest{key_q}" method="post">
             <input type="hidden" name="key" value="{key}"/>
             <button type="submit" {"disabled" if state.get("running") else ""}>Запустить ingest</button>
           </form>
-          <p class="muted">Статус: <code id="ingest-running-badge">{'running' if state.get('running') else 'idle'}</code></p>
+          <div style="height:12px;"></div>
+          <form action="/ui/rebuild{key_q}" method="post">
+            <input type="hidden" name="key" value="{key}"/>
+            <button type="submit" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
+          </form>
+          <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get('job') or ('busy')) if state.get('running') else 'idle'}</code></p>
           <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get('last_ok')}</code></p>
           <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get('last_error') or '-')}</code></p>
           <p><a href="/ui/status{key_q}">/ui/status</a></p>
@@ -692,7 +814,7 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
       </div>
 
       <div class="card" id="ingest-log-wrap" style="margin-top:24px;">
-        <h3>Лог ingest (stderr + ошибки пайплайна)</h3>
+        <h3>Лог ingest / rebuild (stderr + ошибки пайплайна)</h3>
         <p class="muted">
           Авто‑обновление каждые {poll_ms_js} ms через <code>/ui/status</code>.
           При длинном прогрессе промежуточные строки с <code>\r</code> схлопываются.
@@ -719,7 +841,8 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
                 elHttp.textContent = hlines.join("\\n");
               }}
               var b = document.getElementById("ingest-running-badge");
-              if (b) b.textContent = j.running ? "running" : "idle";
+              var job = j.job || "";
+              if (b) b.textContent = j.running ? (job || "busy") : "idle";
               var lk = document.getElementById("ingest-last-ok");
               if (lk) lk.textContent = (j.last_ok === null || j.last_ok === undefined) ? "-" : String(j.last_ok);
               var le = document.getElementById("ingest-last-error");
@@ -769,44 +892,51 @@ async def ui_status(request: Request, key: str = "") -> JSONResponse:
 @app.post("/ui/upload")
 async def ui_upload(
   request: Request,
-  file: UploadFile = File(...),
+  files: Annotated[List[UploadFile], File()],
   key: str = Form(""),
 ) -> Response:
   if not _ui_key_ok(request, key):
     return PlainTextResponse("Unauthorized", status_code=401)
 
-  name = _sanitize_filename(file.filename or "")
-  ext = os.path.splitext(name.lower())[1]
-  if ext not in (".pdf", ".docx"):
-    return PlainTextResponse("Only .pdf or .docx allowed", status_code=400)
-
   incoming = _sources_incoming_dir()
   incoming.mkdir(parents=True, exist_ok=True)
-  dst = incoming / name
-  # Avoid overwrite
-  if dst.exists():
-    stem = dst.stem
-    dst = incoming / f"{stem}__{int(time.time())}{dst.suffix}"
 
-  max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
-  limit = max(1, max_mb) * 1024 * 1024
-  written = 0
-  with open(dst, "wb") as out:
-    while True:
-      chunk = await file.read(1024 * 1024)
-      if not chunk:
-        break
-      written += len(chunk)
-      if written > limit:
-        out.close()
-        try:
-          dst.unlink(missing_ok=True)
-        except Exception:
-          pass
-        return PlainTextResponse("Upload too large", status_code=413)
-      out.write(chunk)
+  lim = _ui_max_upload_files()
+  if len(files) > lim:
+    return PlainTextResponse(
+      f"Слишком много файлов за один запрос: {len(files)} > лимит {lim} (DOC_RAG_UI_MAX_UPLOAD_FILES).",
+      status_code=400,
+    )
 
-  return RedirectResponse(url=f"/ui?key={key}", status_code=303)
+  errors: List[str] = []
+  saved = 0
+  for uf in files:
+    msg = await _save_upload_to_incoming(uf, incoming)
+    if msg:
+      errors.append(msg)
+    else:
+      saved += 1
+
+  qdict: Dict[str, str] = {}
+  k = (key or "").strip()
+  if k:
+    qdict["key"] = k
+  if saved > 0:
+    qdict["up_saved"] = str(saved)
+  if errors:
+    qdict["up_err"] = str(len(errors))
+    qdict["up_msg"] = errors[0][:280]
+  loc = "/ui?" + urlencode(qdict)
+  return RedirectResponse(url=loc, status_code=303)
+
+
+@app.post("/ui/rebuild")
+async def ui_rebuild(request: Request, key: str = Form("")) -> Response:
+  if not _ui_key_ok(request, key):
+    return PlainTextResponse("Unauthorized", status_code=401)
+  asyncio.create_task(_run_rebuild_background())
+  kq = f"?key={key}" if key else ""
+  return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
 
 @app.post("/ui/ingest")

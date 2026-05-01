@@ -85,6 +85,51 @@ def test_ui_status_includes_http_log_tail(monkeypatch: pytest.MonkeyPatch, tmp_p
     data = r.json()
     assert "http_log_tail" in data
     assert any("probe-http-access-log" in line for line in data["http_log_tail"])
+    assert "job" in data
+
+
+def test_ui_multi_upload_writes_incoming(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+
+    pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\n"
+    multi = [
+        ("files", ("batch_a.pdf", pdf, "application/pdf")),
+        ("files", ("batch_b.pdf", pdf, "application/pdf")),
+    ]
+
+    c = TestClient(app)
+    r = c.post("/ui/upload", files=multi, data={}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "up_saved=2" in r.headers.get("location", "")
+    incoming = tmp_path / "sources" / "incoming"
+    assert len(list(incoming.glob("*.pdf"))) == 2
+
+
+def test_ui_rebuild_returns_redirect(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+
+    import doc_rag.server.mcp_http as mh
+
+    async def _noop_rebuild() -> None:
+        return
+
+    monkeypatch.setattr(mh, "_run_rebuild_background", _noop_rebuild)
+    app = mh.app
+
+    r = TestClient(app).post("/ui/rebuild", data={}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "/ui" in r.headers.get("location", "")
 
 
 def test_ui_status_includes_log_tail(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
