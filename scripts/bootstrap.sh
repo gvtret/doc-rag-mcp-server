@@ -34,8 +34,12 @@ ${PIP} install -r requirements.txt
 ${PIP} install -e .
 
 # Optional: Dev deps (tests)
-read -r -p "[doc-rag] Install dev deps (pytest)? [y/N] " ans_dev || true
-ans_dev="${ans_dev:-N}"
+if [[ "${NONINTERACTIVE}" == "1" ]]; then
+  ans_dev="${DOC_RAG_BOOTSTRAP_DEV:-N}"
+else
+  read -r -p "[doc-rag] Install dev deps (pytest)? [y/N] " ans_dev || true
+  ans_dev="${ans_dev:-N}"
+fi
 if [[ "${ans_dev}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   echo "[doc-rag] Installing dev deps..."
   ${PIP} install -e ".[dev]"
@@ -66,16 +70,17 @@ if [[ "${ans_pdf}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
 fi
 
 # Optional: Embeddings stack
-echo ""
-echo "[doc-rag] Embeddings are optional but required for building vectors/index."
-echo "[doc-rag] Choose torch variant:"
-echo "  1) GPU (CUDA cu124 via PyTorch index)"
-echo "  2) CPU (via PyTorch index)"
-echo "  3) Skip (only parsing/MD/JSON, no embeddings/index)"
-read -r -p "[doc-rag] Select [1/2/3] (default 3): " ans_torch || true
-ans_torch="${ans_torch:-3}"
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_torch="${DOC_RAG_BOOTSTRAP_TORCH:-3}"
+else
+  echo ""
+  echo "[doc-rag] Embeddings are optional but required for building vectors/index."
+  echo "[doc-rag] Choose torch variant:"
+  echo "  1) GPU (CUDA cu124 via PyTorch index)"
+  echo "  2) CPU (via PyTorch index)"
+  echo "  3) Skip (only parsing/MD/JSON, no embeddings/index)"
+  read -r -p "[doc-rag] Select [1/2/3] (default 3): " ans_torch || true
+  ans_torch="${ans_torch:-3}"
 fi
 
 if [[ "${ans_torch}" == "1" ]]; then
@@ -101,7 +106,7 @@ else
 fi
 if [[ "${ans_srv}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   echo "[doc-rag] Installing server deps..."
-  ${PIP} install "fastapi>=0.110" "uvicorn[standard]>=0.27"
+  ${PIP} install -e ".[server]"
 fi
 
 # Optional: Run ingest

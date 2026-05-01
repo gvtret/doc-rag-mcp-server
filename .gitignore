@@ -14,6 +14,9 @@ build/
 # Logs
 *.log
 
+# Deploy bundle (пересборка: bash scripts/make_deploy_archive.sh)
+doc-rag-deploy-*.tar.gz
+
 # OS / editor
 .DS_Store
 .idea/

@@ -1,0 +1,14 @@
+# /etc/default/doc-rag — переменные для systemd (можно редактировать).
+# После изменений: sudo systemctl daemon-reload && sudo systemctl restart doc-rag-mcp
+
+DOC_RAG_HTTP_HOST=0.0.0.0
+DOC_RAG_HTTP_PORT=3333
+
+# Раскомментируйте и допишите origin клиентов (Cursor, браузер), через запятую без пробелов:
+#DOC_RAG_ALLOWED_ORIGINS=http://127.0.0.1,http://localhost,http://192.168.1.10
+
+# Опционально защита MCP/UI:
+#DOC_RAG_API_KEY=
+
+# Лог HTTP (каталог @INSTALL_ROOT@/build должен быть записываемым пользователем docrag):
+#DOC_RAG_HTTP_LOG=@INSTALL_ROOT@/build/http.log

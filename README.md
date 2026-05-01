@@ -540,6 +540,71 @@ MCP config download from UI:
 - `http://<server-ip>:3333/ui/mcp/cursor.json`
 - `http://<server-ip>:3333/ui/mcp/vscode.json`
 
+### Deploy via archive (recommended for simple copy)
+
+This repo includes a script that builds a deployable tarball from the current git `HEAD`.
+By default it **does not** include large documents from `sources/` (so the archive stays small).
+
+Build archive locally:
+
+```bash
+bash scripts/make_deploy_archive.sh
+# output: doc-rag-deploy-YYYYMMDD-<sha>.tar.gz
+```
+
+If you really want to ship the archived PDFs/DOCX too (archive may be huge):
+
+```bash
+bash scripts/make_deploy_archive.sh --with-docs
+```
+
+Copy to server and unpack:
+
+```bash
+scp doc-rag-deploy-*.tar.gz user@<server-ip>:~
+ssh user@<server-ip>
+tar xzf doc-rag-deploy-*.tar.gz
+cd doc-rag
+```
+
+Then choose **one** of:
+
+- **Docker deploy**:
+
+```bash
+cp .env.example .env
+# edit .env if needed
+docker compose up -d --build
+curl -sS http://127.0.0.1:3333/health
+```
+
+- **Native Linux (no Docker) deploy**:
+
+```bash
+sudo bash scripts/install_server_native.sh
+curl -sS http://127.0.0.1:3333/health
+```
+
+### Native Linux (venv + systemd, no Docker)
+
+On Debian/Ubuntu as **root** (installer copies the repo into `/opt/doc-rag-mcp` by default):
+
+```bash
+sudo bash scripts/install_server_native.sh
+# optional: sudo bash scripts/install_server_native.sh --gpu /opt/doc-rag-mcp   # NVIDIA driver required on host
+# optional: sudo bash scripts/install_server_native.sh --minimal            # MCP only, skip torch/embeddings
+```
+
+Creates system user **`docrag`**, installs system packages (`python3-venv`, `build-essential`, …), runs **noninteractive** `scripts/bootstrap.sh`, installs **`doc-rag-mcp.service`** (starts on boot), and writes **`/etc/default/doc-rag`** (edit port, origins, optional API key; then `sudo systemctl restart doc-rag-mcp`).
+
+Ingest:
+
+```bash
+sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/doc-rag ingest'
+```
+
+(change `/opt/doc-rag-mcp` if you installed elsewhere).
+
 ### Web UI
 
 Open:
