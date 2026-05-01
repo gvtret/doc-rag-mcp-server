@@ -11,6 +11,8 @@ Group=docrag
 EnvironmentFile=-/etc/default/doc-rag
 WorkingDirectory=@INSTALL_ROOT@
 Environment=DOC_RAG_ROOT=@INSTALL_ROOT@
+# Optional persistent HTTP access log (in addition to /ui journal buffer): add to /etc/default/doc-rag:
+# DOC_RAG_HTTP_LOG=/var/log/doc-rag-mcp/access.log
 
 ExecStart=@INSTALL_ROOT@/scripts/run_mcp_http.sh
 Restart=on-failure

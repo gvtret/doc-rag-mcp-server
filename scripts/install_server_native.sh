@@ -74,6 +74,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
   ca-certificates \
   git \
+  logrotate \
   python3 \
   python3-venv \
   python3-dev \
@@ -117,6 +118,7 @@ bash scripts/bootstrap.sh
 
 UNIT_SRC="${INSTALL_ROOT}/systemd/doc-rag-mcp.service.in"
 DEFAULT_SRC="${INSTALL_ROOT}/deploy/etc-default-doc-rag.in"
+LOGROT_SRC="${INSTALL_ROOT}/deploy/logrotate-doc-rag-mcp.in"
 if [[ ! -f "${UNIT_SRC}" ]]; then
   echo "ERROR: нет файла ${UNIT_SRC}"
   exit 1
@@ -125,6 +127,16 @@ fi
 while IFS= read -r _line || [[ -n "${_line}" ]]; do
   printf '%s\n' "${_line//@INSTALL_ROOT@/${INSTALL_ROOT}}"
 done < "${UNIT_SRC}" > /etc/systemd/system/doc-rag-mcp.service
+
+if [[ ! -f "${LOGROT_SRC}" ]]; then
+  echo "ERROR: нет файла ${LOGROT_SRC}"
+  exit 1
+fi
+
+while IFS= read -r _line || [[ -n "${_line}" ]]; do
+  printf '%s\n' "${_line//@INSTALL_ROOT@/${INSTALL_ROOT}}"
+done < "${LOGROT_SRC}" > /etc/logrotate.d/doc-rag-mcp
+chmod 0644 /etc/logrotate.d/doc-rag-mcp
 
 if [[ ! -f /etc/default/doc-rag ]]; then
   if [[ ! -f "${DEFAULT_SRC}" ]]; then
@@ -151,4 +163,5 @@ systemctl --no-pager status doc-rag-mcp.service || true
 echo ""
 echo "Проверка: curl -sS http://127.0.0.1:3333/health"
 echo "Логи:     journalctl -u doc-rag-mcp -f"
+echo "HTTP log: DOC_RAG_HTTP_LOG (по умолчанию ${INSTALL_ROOT}/build/http.log), ротация: /etc/logrotate.d/doc-rag-mcp (3 архива по 5M)"
 echo "Правки env: nano /etc/default/doc-rag && systemctl restart doc-rag-mcp"

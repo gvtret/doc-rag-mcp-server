@@ -10,13 +10,18 @@ This follows the MCP Streamable HTTP transport spec (2025-03-26+).
 """
 
 import asyncio
+import html
 import json
 import os
+import re
 import sys
+import threading
 import time
+import traceback
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 
 from fastapi import FastAPI, Request, Response, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
@@ -153,35 +158,216 @@ def _download_json(payload: Dict[str, Any], filename: str) -> Response:
 
 
 _INGEST_LOCK = asyncio.Lock()
+
+
+def _ingest_ui_log_max_lines() -> int:
+  try:
+    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_MAX_LINES", "500"))
+  except Exception:
+    n = 500
+  return max(50, min(5000, n))
+
+
+def _ingest_ui_log_line_max_chars() -> int:
+  try:
+    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_LINE_MAX", "8000"))
+  except Exception:
+    n = 8000
+  return max(200, min(100_000, n))
+
+
+def _ingest_ui_log_scratch_max_chars() -> int:
+  try:
+    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_BUF_MAX", str(128 * 1024)))
+  except Exception:
+    n = 128 * 1024
+  return max(4096, min(8 * 1024 * 1024, n))
+
+
+try:
+  _INGEST_UI_LOG_POLL_MS = max(250, min(600_000, int(os.environ.get("DOC_RAG_UI_INGEST_POLL_MS", "2000"))))
+except Exception:
+  _INGEST_UI_LOG_POLL_MS = 2000
+
+
+def _server_http_ui_log_max_lines() -> int:
+  try:
+    n = int(os.environ.get("DOC_RAG_UI_HTTP_LOG_MAX_LINES", "500"))
+  except Exception:
+    n = 500
+  return max(50, min(5000, n))
+
+
+_INGEST_LOG_LOCK = threading.Lock()
+_INGEST_UI_LOG_LINES: Deque[str] = deque(maxlen=_ingest_ui_log_max_lines())
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _INGEST_STATE: Dict[str, Any] = {"running": False, "last_started": None, "last_finished": None, "last_ok": None, "last_error": None}
+
+
+def _reset_ingest_ui_log_lines() -> None:
+  global _INGEST_UI_LOG_LINES
+  with _INGEST_LOG_LOCK:
+    _INGEST_UI_LOG_LINES = deque(maxlen=_ingest_ui_log_max_lines())
+
+
+def _append_ingest_ui_line(line: str, *, ansi_strip: bool = True) -> None:
+  lm = _ingest_ui_log_line_max_chars()
+  raw = line if not ansi_strip else _ANSI_RE.sub("", line)
+  raw = raw.rstrip("\n\r\t ")
+  # Do not strip leading whitespace: keeps tracebacks/indented diagnostics readable.
+  if not raw.strip():
+    return
+  raw_len = len(raw)
+  if raw_len > lm:
+    raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
+  with _INGEST_LOG_LOCK:
+    _INGEST_UI_LOG_LINES.append(raw)
+
+
+def _snapshot_ingest_ui_log_tail() -> List[str]:
+  with _INGEST_LOG_LOCK:
+    return list(_INGEST_UI_LOG_LINES)
+
+
+_SERVER_HTTP_LOG_LOCK = threading.Lock()
+_SERVER_HTTP_UI_LOG_LINES: Deque[str] = deque(maxlen=_server_http_ui_log_max_lines())
+
+
+def _append_server_http_ui_line(msg: str) -> None:
+  """Buffered copy of formatted HTTP access log lines for /ui (avoids reliance on journald)."""
+  lm = _ingest_ui_log_line_max_chars()
+  raw = _ANSI_RE.sub("", msg).rstrip("\n\r\t ")
+  if not raw.strip():
+    return
+  raw_len = len(raw)
+  if raw_len > lm:
+    raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
+  with _SERVER_HTTP_LOG_LOCK:
+    _SERVER_HTTP_UI_LOG_LINES.append(raw)
+
+
+def _snapshot_server_http_ui_log_tail() -> List[str]:
+  with _SERVER_HTTP_LOG_LOCK:
+    return list(_SERVER_HTTP_UI_LOG_LINES)
+
+
+class _TeeStderrToIngestLog:
+  """Tee stderr to the real stderr and split into ingest UI log lines.
+
+  Mimics carriage return semantics for progress bars (\r rewinds display).
+  """
+
+  __slots__ = ("_underlying", "_scratch", "_emit_line", "_enc", "_err")
+
+  def __init__(self, underlying: Any, emit_line: Callable[[str], None]) -> None:
+    self._underlying = underlying
+    self._scratch = ""
+    self._emit_line = emit_line
+    self._enc = getattr(underlying, "encoding", None) or "utf-8"
+    self._err = getattr(underlying, "errors", None) or "replace"
+
+  def writable(self) -> bool:
+    return True
+
+  def write(self, s: Any) -> int:
+    if s is None:
+      return 0
+    enc = getattr(self, "_enc", "utf-8") or "utf-8"
+    err = getattr(self, "_err", "replace") or "replace"
+    if isinstance(s, bytes):
+      s_dec = s.decode(enc, errors=err)
+    elif isinstance(s, str):
+      s_dec = s
+    else:
+      s_dec = str(s)
+    try:
+      self._underlying.write(s_dec)
+    except Exception:
+      pass
+    mx = _ingest_ui_log_scratch_max_chars()
+    scr = self._scratch + s_dec.replace("\r\n", "\n")
+    # Terminal-style \r: drop everything before final segment (overwrite same line).
+    while "\r" in scr:
+      scr = scr.split("\r", 1)[1]
+    while True:
+      pos = scr.find("\n")
+      if pos == -1:
+        break
+      line = scr[:pos]
+      scr = scr[pos + 1 :]
+      self._emit_line(line)
+    if len(scr) > mx:
+      self._emit_line(f"[doc-rag][ui-log] … промежуточный вывод stderr обрезан ({len(scr)} симв.) …")
+      scr = scr[len(scr) - mx // 4 :]
+    self._scratch = scr
+    return len(s_dec)
+
+  def flush(self) -> None:
+    try:
+      self._underlying.flush()
+    except Exception:
+      pass
+
+  def isatty(self) -> bool:
+    fn = getattr(self._underlying, "isatty", None)
+    if callable(fn):
+      try:
+        return bool(fn())
+      except Exception:
+        return False
+    return False
+
+  def finish(self) -> None:
+    if self._scratch.strip():
+      self._emit_line(self._scratch)
+      self._scratch = ""
+
+
+def _sync_run_ingest_with_ui_logging() -> None:
+  from doc_rag.raglib.pipeline import ingest
+
+  stderr = getattr(sys, "stderr", None) or sys.__stderr__
+  tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
+  old_stderr = sys.stderr
+  sys.stderr = tee
+  try:
+    ingest(str(_config_path()))
+  finally:
+    sys.stderr = old_stderr
+    tee.finish()
 
 
 async def _run_ingest_background() -> None:
   async with _INGEST_LOCK:
     if _INGEST_STATE.get("running"):
       return
+    _reset_ingest_ui_log_lines()
     _INGEST_STATE["running"] = True
     _INGEST_STATE["last_started"] = time.time()
     _INGEST_STATE["last_error"] = None
     _INGEST_STATE["last_ok"] = None
 
-  def _do():
-    from doc_rag.raglib.pipeline import ingest
-    ingest(str(_config_path()))
-
+  ok = False
+  err = None
   try:
-    await asyncio.to_thread(_do)
+    await asyncio.to_thread(_sync_run_ingest_with_ui_logging)
     ok = True
-    err = None
   except Exception as exc:
     ok = False
-    err = str(exc)
+    err = str(exc) or repr(exc)
+    for ln in traceback.format_exc().strip().split("\n"):
+      if ln.strip():
+        _append_ingest_ui_line(ln.rstrip("\r"), ansi_strip=False)
 
   async with _INGEST_LOCK:
     _INGEST_STATE["running"] = False
     _INGEST_STATE["last_finished"] = time.time()
     _INGEST_STATE["last_ok"] = ok
     _INGEST_STATE["last_error"] = err
+    if ok:
+      _append_ingest_ui_line("[doc-rag][INFO] ingest завершился успешно.", ansi_strip=False)
+    elif err:
+      _append_ingest_ui_line(f"[doc-rag][ERROR] ingest завершился с ошибкой: {err}", ansi_strip=False)
 
 
 def _origin_allowed(origin: Optional[str]) -> bool:
@@ -222,11 +408,12 @@ def _err(req_id: Any, code: int, message: str) -> Dict[str, Any]:
 
 
 def _log_line(line: str) -> None:
-  """Write a single log line to stderr and optional file."""
+  """Write a single log line to stderr, optional file, and UI ring buffer."""
   ts = time.strftime("%Y-%m-%d %H:%M:%S")
   msg = f"[doc-rag][http] {ts} {line}"
   print(msg, file=sys.stderr, flush=True)
-  log_path = os.environ.get("DOC_RAG_HTTP_LOG", "")
+  _append_server_http_ui_line(msg)
+  log_path = os.environ.get("DOC_RAG_HTTP_LOG", "").strip()
   if log_path:
     try:
       with open(log_path, "a", encoding="utf-8") as log_file:
@@ -384,12 +571,24 @@ async def _http_log_mw(request: Request, call_next):
   finally:
     dur_ms = int((time.time() - start) * 1000)
     code = getattr(response, "status_code", "ERR")
-    _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
+    path = request.url.path or ""
+    # Avoid drowning the UI buffer with health checks and UI JSON polling.
+    if path not in ("/health", "/ui/status"):
+      _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
   return JSONResponse({"status": "ok", "name": "doc-rag", "version": "1.0"})
+
+
+def _ui_status_payload() -> Dict[str, Any]:
+  out = dict(_INGEST_STATE)
+  out["log_tail"] = _snapshot_ingest_ui_log_tail()
+  out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
+  log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
+  out["http_log_file"] = log_path if log_path else None
+  return out
 
 
 @app.get("/ui")
@@ -409,6 +608,15 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     files = []
 
   key_q = f"?key={key}" if key else ""
+  poll_ms_js = int(_INGEST_UI_LOG_POLL_MS)
+  status_query_json = json.dumps(f"?key={key}" if key else "")
+  log_pre_esc = html.escape("\n".join(_snapshot_ingest_ui_log_tail()), quote=False)
+  http_log_pre_esc = html.escape("\n".join(_snapshot_server_http_ui_log_tail()), quote=False)
+  http_log_file_note = ""
+  hl = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
+  if hl:
+    escaped_hl = html.escape(hl, quote=True)
+    http_log_file_note = f"<p class=\"muted\">Тот же текст дублируется в файл: <code>{escaped_hl}</code> (<code>DOC_RAG_HTTP_LOG</code>).</p>"
   base = _public_base_url(request)
   mcp_url = f"{base}/mcp"
   body = f"""
@@ -421,6 +629,15 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         code {{ background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }}
         .row {{ display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; }}
         .card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; min-width: 320px; }}
+        #ingest-log-wrap {{ flex: 1 1 100%; min-width: min(920px, 100%); }}
+        .mono-log-pre {{
+          white-space: pre-wrap; word-break: break-word;
+          max-height: min(60vh, 520px); overflow: auto;
+          font-size: 12px; line-height: 1.35;
+          background: #f9fafb; padding: 12px; border-radius: 10px;
+          margin: 0; border: 1px solid #e5e7eb;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }}
         .muted {{ color:#6b7280; }}
         button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid #111827; background:#111827; color:white; cursor:pointer; }}
         button:disabled {{ opacity:0.5; cursor:not-allowed; }}
@@ -448,9 +665,9 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             <input type="hidden" name="key" value="{key}"/>
             <button type="submit" {"disabled" if state.get("running") else ""}>Запустить ingest</button>
           </form>
-          <p class="muted">Статус: <code>{'running' if state.get('running') else 'idle'}</code></p>
-          <p class="muted">Последний результат: <code>{state.get('last_ok')}</code></p>
-          <p class="muted">Ошибка: <code>{(state.get('last_error') or '-')}</code></p>
+          <p class="muted">Статус: <code id="ingest-running-badge">{'running' if state.get('running') else 'idle'}</code></p>
+          <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get('last_ok')}</code></p>
+          <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get('last_error') or '-')}</code></p>
           <p><a href="/ui/status{key_q}">/ui/status</a></p>
           <p><a href="/ui/mcp/cursor.json{key_q}">Скачать MCP config для Cursor</a></p>
           <p><a href="/ui/mcp/vscode.json{key_q}">Скачать MCP config для VSCode</a></p>
@@ -464,6 +681,59 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           </div>
         </div>
       </div>
+
+      <div class="card" id="http-log-wrap" style="margin-top:24px;">
+        <h3>Журнал HTTP-сервера (запросы)</h3>
+        <p class="muted">
+          Кольцевой буфер в памяти — без <code>journalctl</code>. Запросы к <code>/health</code> и <code>/ui/status</code> не пишутся (чтобы не забивать лог опросами).
+        </p>
+        {http_log_file_note}
+        <pre id="http-log-pre" class="mono-log-pre">{http_log_pre_esc}</pre>
+      </div>
+
+      <div class="card" id="ingest-log-wrap" style="margin-top:24px;">
+        <h3>Лог ingest (stderr + ошибки пайплайна)</h3>
+        <p class="muted">
+          Авто‑обновление каждые {poll_ms_js} ms через <code>/ui/status</code>.
+          При длинном прогрессе промежуточные строки с <code>\r</code> схлопываются.
+        </p>
+        <pre id="ingest-log-pre" class="mono-log-pre">{log_pre_esc}</pre>
+      </div>
+      <script>
+      (function () {{
+        var pollMs = {poll_ms_js};
+        var statusPath = "/ui/status" + {status_query_json};
+        var elIng = document.getElementById("ingest-log-pre");
+        var elHttp = document.getElementById("http-log-pre");
+        function poll() {{
+          fetch(statusPath, {{credentials: "same-origin"}})
+            .then(function (r) {{ return r.json(); }})
+            .then(function (j) {{
+              if (!j || j.error === "unauthorized") return;
+              if (elIng) {{
+                var lines = j.log_tail || [];
+                elIng.textContent = lines.join("\\n");
+              }}
+              if (elHttp) {{
+                var hlines = j.http_log_tail || [];
+                elHttp.textContent = hlines.join("\\n");
+              }}
+              var b = document.getElementById("ingest-running-badge");
+              if (b) b.textContent = j.running ? "running" : "idle";
+              var lk = document.getElementById("ingest-last-ok");
+              if (lk) lk.textContent = (j.last_ok === null || j.last_ok === undefined) ? "-" : String(j.last_ok);
+              var le = document.getElementById("ingest-last-error");
+              if (le) le.textContent = (j.last_error != null && String(j.last_error).length) ? String(j.last_error) : "-";
+              if (j.running && elIng) {{
+                elIng.scrollTop = elIng.scrollHeight;
+              }}
+            }})
+            .catch(function () {{}});
+        }}
+        poll();
+        setInterval(poll, pollMs);
+      }})();
+      </script>
 
     </body>
   </html>
@@ -493,7 +763,7 @@ async def ui_mcp_vscode(request: Request, key: str = "") -> Response:
 async def ui_status(request: Request, key: str = "") -> JSONResponse:
   if not _ui_key_ok(request, key):
     return JSONResponse({"error": "unauthorized"}, status_code=401)
-  return JSONResponse(dict(_INGEST_STATE))
+  return JSONResponse(_ui_status_payload())
 
 
 @app.post("/ui/upload")
