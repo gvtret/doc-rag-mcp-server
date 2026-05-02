@@ -27,6 +27,8 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Request, Response, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
+from doc_rag.server.retrieval import document_preview, indexed_catalog
+
 Json = Union[Dict[str, Any], List[Any]]
 
 _TOOL_SEM = asyncio.Semaphore(int(os.environ.get("DOC_RAG_MAX_CONCURRENCY", "4")))
@@ -667,7 +669,7 @@ async def _http_log_mw(request: Request, call_next):
     code = getattr(response, "status_code", "ERR")
     path = request.url.path or ""
     # Avoid drowning the UI buffer with health checks and UI JSON polling.
-    if path not in ("/health", "/ui/status"):
+    if path not in ("/health", "/ui/status", "/ui/document-preview"):
       _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
 
 
@@ -682,7 +684,61 @@ def _ui_status_payload() -> Dict[str, Any]:
   out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
   log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
   out["http_log_file"] = log_path if log_path else None
+  try:
+    out["indexed"] = indexed_catalog()
+  except Exception as exc:
+    out["indexed"] = {"error": str(exc), "documents": [], "document_count": 0}
   return out
+
+
+def _indexed_documents_table_rows_html(catalog: Dict[str, Any], max_rows: int = 300) -> Tuple[str, str]:
+  """Return (tbody inner HTML, optional note HTML)."""
+  docs = catalog.get("documents") if isinstance(catalog.get("documents"), list) else []
+  note = ""
+  shown = docs[:max_rows]
+  if len(docs) > max_rows:
+    note = f'<p class="muted">Показаны первые {max_rows} из {len(docs)} документов.</p>'
+  rows: List[str] = []
+  for i, d in enumerate(shown, 1):
+    if not isinstance(d, dict):
+      continue
+    did_raw = str(d.get("doc_id") or "")
+    did_attr = html.escape(did_raw, quote=True)
+    bn_disp = html.escape(str(d.get("basename") or "—"), quote=False)
+    did_cell = html.escape(did_raw or "—", quote=False)
+    sf = html.escape(str(d.get("source_file") or ""), quote=True)
+    cc = d.get("chunk_count")
+    cc_s = html.escape(str(cc) if cc is not None else "—", quote=False)
+    sh = d.get("sha256")
+    sh_s = html.escape(str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"), quote=False)
+    rows.append(
+      f'<tr><td>{i}</td><td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
+      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td class="muted">{sh_s}</td></tr>'
+    )
+  return ("\n".join(rows), note)
+
+
+def _indexed_documents_summary_html(catalog: Dict[str, Any]) -> str:
+  if catalog.get("error"):
+    return f'<p class="muted">Не удалось прочитать индекс: <code>{html.escape(str(catalog.get("error")), quote=False)}</code></p>'
+  n = int(catalog.get("document_count") or 0)
+  mg = catalog.get("manifest_generated_at_utc")
+  mg_s = html.escape(str(mg), quote=False) if mg else "—"
+  mp = catalog.get("manifest_present")
+  lex = catalog.get("lexical_search_ready")
+  sem = catalog.get("semantic_search_ready")
+  chunks = catalog.get("chunks_jsonl_present")
+  fidx = catalog.get("semantic_index_present")
+  bits = [
+    f"Записей в <code>manifest</code>: <strong>{n}</strong>.",
+    f"Файл manifest: <strong>{'есть' if mp else 'нет'}</strong>.",
+    f"<code>chunks.jsonl</code>: <strong>{'есть' if chunks else 'нет'}</strong>.",
+    f"Векторный индекс (FAISS): <strong>{'есть' if fidx else 'нет'}</strong>.",
+    f"Лексический поиск (doc_search): <strong>{'готов' if lex else 'не готов'}</strong>.",
+    f"Семантический поиск: <strong>{'готов' if sem else 'не готов'}</strong>.",
+    f"Время генерации manifest (UTC): <code>{mg_s}</code>.",
+  ]
+  return '<p class="muted">' + " ".join(bits) + "</p>"
 
 
 @app.get("/ui")
@@ -732,6 +788,12 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     http_log_file_note = f"<p class=\"muted\">Тот же текст дублируется в файл: <code>{escaped_hl}</code> (<code>DOC_RAG_HTTP_LOG</code>).</p>"
   base = _public_base_url(request)
   mcp_url = f"{base}/mcp"
+  try:
+    ic0 = indexed_catalog()
+  except Exception as exc:
+    ic0 = {"error": str(exc), "documents": [], "document_count": 0}
+  idx_summary_html = _indexed_documents_summary_html(ic0)
+  idx_tbody_html, idx_cap_html = _indexed_documents_table_rows_html(ic0)
   body = f"""
   <html>
     <head>
@@ -755,7 +817,31 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid #111827; background:#111827; color:white; cursor:pointer; }}
         button.secondary {{ background:#374151; border-color:#374151; }}
         button:disabled {{ opacity:0.5; cursor:not-allowed; }}
+        button.doc-preview-btn {{
+          background: transparent; border: none; color: #2563eb; padding: 0; cursor: pointer;
+          text-decoration: underline; font: inherit; text-align: left;
+        }}
+        button.doc-preview-btn:hover {{ color: #1d4ed8; }}
+        .modal-root {{ display: none; position: fixed; inset: 0; z-index: 50; align-items: center; justify-content: center; }}
+        .modal-root.is-open {{ display: flex; }}
+        .modal-backdrop {{ position: absolute; inset: 0; background: rgba(15, 23, 42, 0.45); }}
+        .modal-panel {{
+          position: relative; z-index: 1; background: #fff; border-radius: 12px; padding: 20px 24px;
+          max-width: min(560px, 92vw); max-height: min(72vh, 560px); overflow: auto;
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        }}
+        .modal-panel button.modal-close {{
+          position: absolute; top: 10px; right: 14px; padding: 4px 8px;
+          border: none; background: transparent; font-size: 22px; line-height: 1;
+          cursor: pointer; color: #64748b; border-radius: 8px;
+        }}
+        #doc-preview-heading {{ margin: 0 36px 8px 0; font-size: 1.1rem; }}
+        #doc-preview-text {{ margin: 12px 0 0; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }}
         .upload-banner {{ margin:16px 0; padding:10px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:10px; color:#065f46; }}
+        table.idx {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+        table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
+        table.idx th {{ background: #f9fafb; font-weight: 600; }}
+        table.idx td.doc-id {{ font-size: 11px; color: #6b7280; word-break: break-all; max-width: min(280px, 28vw); }}
       </style>
     </head>
     <body>
@@ -804,10 +890,33 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         </div>
       </div>
 
+      <div class="row">
+        <div class="card" style="flex: 1 1 100%; min-width: min(960px, 100%);">
+          <h3>Проиндексированные документы</h3>
+          <div id="indexed-summary">{idx_summary_html}</div>
+          <div id="indexed-cap-note">{idx_cap_html}</div>
+          <div style="overflow:auto; max-height: min(55vh, 520px); border: 1px solid #e5e7eb; border-radius: 10px;">
+            <table class="idx" id="indexed-table">
+              <thead>
+                <tr>
+                  <th style="width:36px;">#</th>
+                  <th>Файл</th>
+                  <th>doc_id</th>
+                  <th style="width:88px;">Чанков</th>
+                  <th style="width:120px;">SHA256</th>
+                </tr>
+              </thead>
+              <tbody id="indexed-tbody">{idx_tbody_html}</tbody>
+            </table>
+          </div>
+          <p class="muted" style="margin-top:10px;">Список берётся из <code>build/manifest.json</code> после ingest/rebuild. После завершения задачи таблица обновится автоматически.</p>
+        </div>
+      </div>
+
       <div class="card" id="http-log-wrap" style="margin-top:24px;">
         <h3>Журнал HTTP-сервера (запросы)</h3>
         <p class="muted">
-          Кольцевой буфер в памяти — без <code>journalctl</code>. Запросы к <code>/health</code> и <code>/ui/status</code> не пишутся (чтобы не забивать лог опросами).
+          Кольцевой буфер в памяти — без <code>journalctl</code>. Запросы к <code>/health</code>, <code>/ui/status</code> и <code>/ui/document-preview</code> не пишутся (чтобы не забивать лог опросами).
         </p>
         {http_log_file_note}
         <pre id="http-log-pre" class="mono-log-pre">{http_log_pre_esc}</pre>
@@ -821,12 +930,72 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         </p>
         <pre id="ingest-log-pre" class="mono-log-pre">{log_pre_esc}</pre>
       </div>
+
+      <div id="doc-preview-modal" class="modal-root" aria-hidden="true">
+        <div class="modal-backdrop" id="doc-preview-backdrop"></div>
+        <div class="modal-panel" role="dialog" aria-labelledby="doc-preview-heading">
+          <button type="button" class="modal-close" id="doc-preview-close" aria-label="Закрыть">&times;</button>
+          <h4 id="doc-preview-heading"></h4>
+          <p class="muted" id="doc-preview-meta"></p>
+          <p id="doc-preview-text"></p>
+        </div>
+      </div>
+
       <script>
       (function () {{
         var pollMs = {poll_ms_js};
         var statusPath = "/ui/status" + {status_query_json};
+        var uiKey = {json.dumps(key)};
         var elIng = document.getElementById("ingest-log-pre");
         var elHttp = document.getElementById("http-log-pre");
+        function esc(s) {{
+          if (s === null || s === undefined) return "";
+          return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+        }}
+        function renderIndexed(idx) {{
+          var sumEl = document.getElementById("indexed-summary");
+          var capEl = document.getElementById("indexed-cap-note");
+          var tbEl = document.getElementById("indexed-tbody");
+          if (!sumEl || !tbEl) return;
+          if (!idx || idx.error) {{
+            sumEl.innerHTML = idx && idx.error ? '<p class="muted">Не удалось прочитать индекс: <code>' + esc(idx.error) + '</code></p>' : '<p class="muted">Нет данных.</p>';
+            tbEl.innerHTML = "";
+            if (capEl) capEl.innerHTML = "";
+            return;
+          }}
+          var n = idx.document_count || 0;
+          var mg = idx.manifest_generated_at_utc ? '<code>' + esc(String(idx.manifest_generated_at_utc)) + '</code>' : '<code>—</code>';
+          var bits = [
+            'Записей в <code>manifest</code>: <strong>' + n + '</strong>.',
+            'Файл manifest: <strong>' + (idx.manifest_present ? 'есть' : 'нет') + '</strong>.',
+            '<code>chunks.jsonl</code>: <strong>' + (idx.chunks_jsonl_present ? 'есть' : 'нет') + '</strong>.',
+            'Векторный индекс (FAISS): <strong>' + (idx.semantic_index_present ? 'есть' : 'нет') + '</strong>.',
+            'Лексический поиск (doc_search): <strong>' + (idx.lexical_search_ready ? 'готов' : 'не готов') + '</strong>.',
+            'Семантический поиск: <strong>' + (idx.semantic_search_ready ? 'готов' : 'не готов') + '</strong>.',
+            'Время генерации manifest (UTC): ' + mg + '.'
+          ];
+          sumEl.innerHTML = '<p class="muted">' + bits.join(' ') + '</p>';
+          var docs = idx.documents || [];
+          var maxR = 300;
+          var slice = docs.slice(0, maxR);
+          if (capEl) {{
+            capEl.innerHTML = docs.length > maxR ? '<p class="muted">Показаны первые ' + maxR + ' из ' + docs.length + ' документов.</p>' : '';
+          }}
+          tbEl.innerHTML = slice.map(function (d, i) {{
+            var bn = esc(d.basename || '—');
+            var sf = esc(d.source_file || '');
+            var didRaw = d.doc_id != null ? String(d.doc_id) : '';
+            var didAttr = esc(didRaw);
+            var didCell = esc(didRaw || '—');
+            var nameCell = didRaw
+              ? '<button type="button" class="doc-preview-btn" data-doc-id="' + didAttr + '">' + bn + '</button>'
+              : bn;
+            var cc = d.chunk_count != null ? esc(String(d.chunk_count)) : '—';
+            var sh = d.sha256 ? String(d.sha256) : '';
+            var shDisp = sh.length > 16 ? esc(sh.slice(0, 16)) + '…' : esc(sh || '—');
+            return '<tr><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td class="muted">' + shDisp + '</td></tr>';
+          }}).join('');
+        }}
         function poll() {{
           fetch(statusPath, {{credentials: "same-origin"}})
             .then(function (r) {{ return r.json(); }})
@@ -847,12 +1016,71 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               if (lk) lk.textContent = (j.last_ok === null || j.last_ok === undefined) ? "-" : String(j.last_ok);
               var le = document.getElementById("ingest-last-error");
               if (le) le.textContent = (j.last_error != null && String(j.last_error).length) ? String(j.last_error) : "-";
+              renderIndexed(j.indexed);
               if (j.running && elIng) {{
                 elIng.scrollTop = elIng.scrollHeight;
               }}
             }})
             .catch(function () {{}});
         }}
+        var modal = document.getElementById("doc-preview-modal");
+        var elPrevHead = document.getElementById("doc-preview-heading");
+        var elPrevMeta = document.getElementById("doc-preview-meta");
+        var elPrevText = document.getElementById("doc-preview-text");
+        function closeDocPreview() {{
+          if (!modal) return;
+          modal.classList.remove("is-open");
+          modal.setAttribute("aria-hidden", "true");
+        }}
+        function openDocPreview(did) {{
+          if (!modal || !elPrevHead || !elPrevText) return;
+          elPrevHead.textContent = "Загрузка…";
+          if (elPrevMeta) elPrevMeta.textContent = "";
+          elPrevText.textContent = "";
+          modal.classList.add("is-open");
+          modal.setAttribute("aria-hidden", "false");
+          var u = "/ui/document-preview?doc_id=" + encodeURIComponent(did);
+          if (typeof uiKey === "string" && uiKey.length) u += "&key=" + encodeURIComponent(uiKey);
+          fetch(u, {{ credentials: "same-origin" }})
+            .then(function (r) {{ return r.json(); }})
+            .then(function (j) {{
+              if (j && j.error === "unauthorized") {{
+                elPrevHead.textContent = "Доступ запрещён";
+                elPrevText.textContent = "";
+                return;
+              }}
+              if (!j || !j.ok) {{
+                elPrevHead.textContent = "Документ";
+                elPrevText.textContent = j && j.error ? String(j.error) : "Не удалось загрузить аннотацию.";
+                return;
+              }}
+              var t = j.title && String(j.title).trim() ? String(j.title).trim() : (j.basename || did);
+              elPrevHead.textContent = t;
+              if (elPrevMeta) {{
+                var bits = [];
+                if (j.source_file) bits.push(esc(String(j.source_file)));
+                bits.push("<code>" + esc(String(j.doc_id || did)) + "</code>");
+                elPrevMeta.innerHTML = bits.join(" · ");
+              }}
+              elPrevText.textContent = j.preview || "";
+            }})
+            .catch(function () {{
+              elPrevHead.textContent = "Ошибка сети";
+              elPrevText.textContent = "";
+            }});
+        }}
+        document.addEventListener("click", function (ev) {{
+          var btn = ev.target && ev.target.closest ? ev.target.closest(".doc-preview-btn") : null;
+          if (!btn) return;
+          var did = btn.getAttribute("data-doc-id");
+          if (!did) return;
+          ev.preventDefault();
+          openDocPreview(did);
+        }});
+        var bd = document.getElementById("doc-preview-backdrop");
+        var bx = document.getElementById("doc-preview-close");
+        if (bd) bd.addEventListener("click", closeDocPreview);
+        if (bx) bx.addEventListener("click", closeDocPreview);
         poll();
         setInterval(poll, pollMs);
       }})();
@@ -887,6 +1115,13 @@ async def ui_status(request: Request, key: str = "") -> JSONResponse:
   if not _ui_key_ok(request, key):
     return JSONResponse({"error": "unauthorized"}, status_code=401)
   return JSONResponse(_ui_status_payload())
+
+
+@app.get("/ui/document-preview")
+async def ui_document_preview(request: Request, doc_id: str = "", key: str = "") -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+  return JSONResponse(document_preview(doc_id))
 
 
 @app.post("/ui/upload")
