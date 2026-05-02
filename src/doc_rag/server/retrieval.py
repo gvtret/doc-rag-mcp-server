@@ -151,6 +151,21 @@ def _enrich_results_with_source_file(cfg: Dict[str, Any], results: List[Dict[str
     return results
 
 
+def load_manifest_json() -> Optional[Dict[str, Any]]:
+    """Return the on-disk manifest dict, or None if missing/unreadable."""
+    cfg = load_config()
+    root = str(cfg.get("_root", project_root()))
+    paths = cfg.get("paths", {}) or {}
+    manifest_rel = str(paths.get("manifest_path", "build/manifest.json"))
+    manifest_path = os.path.join(root, manifest_rel)
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def indexed_catalog() -> Dict[str, Any]:
     """Summarize manifest + artifact presence for UI (indexed documents, search readiness)."""
     cfg = load_config()
@@ -171,6 +186,8 @@ def indexed_catalog() -> Dict[str, Any]:
     documents: List[Dict[str, Any]] = []
     generated_at: Optional[str] = None
     manifest_present = False
+    corpus_content_sha256: Optional[str] = None
+    pipeline_version: Optional[str] = None
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -179,6 +196,12 @@ def indexed_catalog() -> Dict[str, Any]:
             gen = data.get("generated_at_utc")
             if gen is not None:
                 generated_at = str(gen)
+            cs = data.get("corpus_content_sha256")
+            if isinstance(cs, str) and cs.strip():
+                corpus_content_sha256 = cs.strip()
+            pv = data.get("pipeline_version")
+            if isinstance(pv, str) and pv.strip():
+                pipeline_version = pv.strip()
             raw_docs = data.get("documents")
             if isinstance(raw_docs, list):
                 for d in raw_docs:
@@ -186,6 +209,18 @@ def indexed_catalog() -> Dict[str, Any]:
                         continue
                     sf = d.get("source_file")
                     sf_s = str(sf) if sf is not None else ""
+                    cov = d.get("coverage")
+                    cov_d: Dict[str, Any] = cov if isinstance(cov, dict) else {}
+                    th = d.get("title_hint")
+                    ey = d.get("edition_year")
+                    ey_out: Optional[int] = None
+                    if isinstance(ey, int):
+                        ey_out = ey
+                    elif isinstance(ey, str) and ey.strip().isdigit():
+                        try:
+                            ey_out = int(ey.strip())
+                        except ValueError:
+                            ey_out = None
                     documents.append(
                         {
                             "doc_id": d.get("doc_id"),
@@ -193,6 +228,9 @@ def indexed_catalog() -> Dict[str, Any]:
                             "basename": os.path.basename(sf_s) if sf_s else "",
                             "chunk_count": d.get("chunk_count"),
                             "sha256": d.get("sha256"),
+                            "title_hint": th if isinstance(th, str) else None,
+                            "edition_year": ey_out,
+                            "coverage": cov_d,
                         }
                     )
     except Exception:
@@ -208,6 +246,8 @@ def indexed_catalog() -> Dict[str, Any]:
         "manifest_present": manifest_present,
         "manifest_path": manifest_rel,
         "manifest_generated_at_utc": generated_at,
+        "corpus_content_sha256": corpus_content_sha256,
+        "pipeline_version": pipeline_version,
         "document_count": doc_n,
         "documents": documents,
         "chunks_jsonl_present": chunks_present,
@@ -299,6 +339,15 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
     title, preview = annotation_from_markdown(raw)
     src = doc_entry.get("source_file")
     src_s = str(src) if src is not None else ""
+    ey = doc_entry.get("edition_year")
+    ey_out: Optional[int] = None
+    if isinstance(ey, int):
+        ey_out = ey
+    elif isinstance(ey, str) and ey.strip().isdigit():
+        try:
+            ey_out = int(ey.strip())
+        except ValueError:
+            ey_out = None
     return {
         "ok": True,
         "doc_id": doc_id,
@@ -306,6 +355,7 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
         "preview": preview,
         "source_file": src_s,
         "basename": os.path.basename(src_s) if src_s else "",
+        "edition_year": ey_out,
     }
 
 

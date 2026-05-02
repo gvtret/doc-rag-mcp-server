@@ -13,6 +13,15 @@ paths:
 parsing:
   pdf_backend: "auto"
   normalize_whitespace: true
+  # Порог «почти пустой страницы» для метрик покрытия (не OCR; извлечённый текст).
+  min_chars_per_page: 20
+  # Год редакции в manifest: ручные карты и эвристики (метаданные PDF / имя файла).
+  edition_year:
+    from_pdf_metadata: true
+    filename_regex: null
+    by_basename: {}
+    by_source_rel_path: {}
+    by_sha256: {}
 
 sectioning:
   enable_numbered_headings: true

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import yaml
 
+from doc_rag.raglib.edition_year import resolve_edition_year
 from doc_rag.raglib.parsers import parse_document
 from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
 from doc_rag.raglib.indexer import ensure_faiss_index
@@ -59,6 +60,35 @@ def _log(level: str, msg: str) -> None:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def compute_corpus_fingerprint(documents: List[dict]) -> str:
+    """Deterministic fingerprint: SHA-256 over sorted per-document content hashes (manifest `corpus_content_sha256`)."""
+    hashes: List[str] = []
+    for d in documents:
+        if not isinstance(d, dict):
+            continue
+        h = d.get("sha256")
+        if isinstance(h, str) and h.strip():
+            hashes.append(h.strip())
+    hashes.sort()
+    x = hashlib.sha256()
+    for h in hashes:
+        x.update(h.encode("utf-8"))
+        x.update(b"\n")
+    return x.hexdigest()
+
+
+def _manifest_shell(cfg: Dict[str, Any], documents: List[dict]) -> Dict[str, Any]:
+    pv = cfg.get("pipeline_version")
+    if not isinstance(pv, str) or not pv.strip():
+        pv = "1.0.0"
+    return {
+        "generated_at_utc": _utc_now_iso(),
+        "pipeline_version": pv.strip(),
+        "corpus_content_sha256": compute_corpus_fingerprint(documents),
+        "documents": documents,
+    }
 
 
 def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources: List[str]) -> None:
@@ -166,12 +196,17 @@ def _ingest_sources(cfg: Dict[str, Any], root: str, sources: List[str], docs_md:
                     "text": c,
                 })
 
+            cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+            ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
             manifest_documents.append({
                 "doc_id": doc_id,
                 "source_file": rel_src,
                 "md_path": os.path.relpath(md_path, root),
                 "sha256": file_hash,
                 "chunk_count": len(chunks),
+                "title_hint": os.path.splitext(base)[0],
+                "edition_year": ed_y,
+                "coverage": cov,
             })
 
             processed_sources.append(src)
@@ -227,10 +262,7 @@ def ingest(config_path: str) -> None:
     if not incremental:
         manifest_documents, all_chunks, processed = _ingest_sources(cfg, root, sources, docs_md, target, overlap)
 
-        manifest = {
-            "generated_at_utc": _utc_now_iso(),
-            "documents": manifest_documents,
-        }
+        manifest = _manifest_shell(cfg, manifest_documents)
 
         with open(chunks_path, "w", encoding="utf-8") as f:
             for it in all_chunks:
@@ -307,12 +339,17 @@ def ingest(config_path: str) -> None:
                         }, ensure_ascii=False) + "\n")
                     appended_chunks += len(chunks)
 
+                    cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+                    ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
                     entry = {
                         "doc_id": doc_id,
                         "source_file": rel_src,
                         "md_path": os.path.relpath(md_path, root),
                         "sha256": file_hash,
                         "chunk_count": len(chunks),
+                        "title_hint": os.path.splitext(base)[0],
+                        "edition_year": ed_y,
+                        "coverage": cov,
                     }
                     new_docs.append(entry)
 
@@ -328,10 +365,7 @@ def ingest(config_path: str) -> None:
         if new_docs:
             documents.extend(new_docs)
 
-        manifest = {
-            "generated_at_utc": _utc_now_iso(),
-            "documents": documents,
-        }
+        manifest = _manifest_shell(cfg, documents)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
 
@@ -386,10 +420,7 @@ def rebuild(config_path: str) -> None:
     _log("INFO", f"rebuild: incoming ingest pass ({len(incoming_sources)} file(s))")
     man_i, chunks_i, processed_i = _ingest_sources(cfg, root, incoming_sources, docs_md, target, overlap)
 
-    manifest = {
-        "generated_at_utc": _utc_now_iso(),
-        "documents": man_a + man_i,
-    }
+    manifest = _manifest_shell(cfg, man_a + man_i)
     all_chunks = chunks_a + chunks_i
 
     chunks_path = os.path.join(chunks_dir, "chunks.jsonl")

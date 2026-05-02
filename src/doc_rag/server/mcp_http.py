@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Request, Response, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from doc_rag.server.retrieval import document_preview, indexed_catalog
+from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
 
 Json = Union[Dict[str, Any], List[Any]]
 
@@ -669,13 +669,24 @@ async def _http_log_mw(request: Request, call_next):
     code = getattr(response, "status_code", "ERR")
     path = request.url.path or ""
     # Avoid drowning the UI buffer with health checks and UI JSON polling.
-    if path not in ("/health", "/ui/status", "/ui/document-preview"):
+    if path not in ("/health", "/ui/status", "/ui/document-preview", "/api/v1/manifest"):
       _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
   return JSONResponse({"status": "ok", "name": "doc-rag", "version": "1.0"})
+
+
+@app.get("/api/v1/manifest")
+async def api_v1_manifest(request: Request) -> JSONResponse:
+  """Machine-readable manifest for CI / reproducibility (same auth as MCP when DOC_RAG_API_KEY is set)."""
+  if not _check_api_key(request):
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+  data = load_manifest_json()
+  if not data:
+    return JSONResponse({"error": "manifest_not_found"}, status_code=404)
+  return JSONResponse(data)
 
 
 def _ui_status_payload() -> Dict[str, Any]:
@@ -709,11 +720,13 @@ def _indexed_documents_table_rows_html(catalog: Dict[str, Any], max_rows: int = 
     sf = html.escape(str(d.get("source_file") or ""), quote=True)
     cc = d.get("chunk_count")
     cc_s = html.escape(str(cc) if cc is not None else "—", quote=False)
+    ey = d.get("edition_year")
+    ey_s = html.escape(str(ey) if ey is not None else "—", quote=False)
     sh = d.get("sha256")
     sh_s = html.escape(str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"), quote=False)
     rows.append(
       f'<tr><td>{i}</td><td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
-      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td class="muted">{sh_s}</td></tr>'
+      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td></tr>'
     )
   return ("\n".join(rows), note)
 
@@ -724,6 +737,10 @@ def _indexed_documents_summary_html(catalog: Dict[str, Any]) -> str:
   n = int(catalog.get("document_count") or 0)
   mg = catalog.get("manifest_generated_at_utc")
   mg_s = html.escape(str(mg), quote=False) if mg else "—"
+  corp = catalog.get("corpus_content_sha256")
+  corp_s = html.escape(str(corp)[:20] + "…", quote=False) if corp and len(str(corp)) > 20 else html.escape(str(corp), quote=False) if corp else "—"
+  pv = catalog.get("pipeline_version")
+  pv_s = html.escape(str(pv), quote=False) if pv else "—"
   mp = catalog.get("manifest_present")
   lex = catalog.get("lexical_search_ready")
   sem = catalog.get("semantic_search_ready")
@@ -737,6 +754,7 @@ def _indexed_documents_summary_html(catalog: Dict[str, Any]) -> str:
     f"Лексический поиск (doc_search): <strong>{'готов' if lex else 'не готов'}</strong>.",
     f"Семантический поиск: <strong>{'готов' if sem else 'не готов'}</strong>.",
     f"Время генерации manifest (UTC): <code>{mg_s}</code>.",
+    f"Версия пайплайна: <code>{pv_s}</code>. Fingerprint корпуса (SHA): <code>{corp_s}</code>. API: <code>/api/v1/manifest</code>.",
   ]
   return '<p class="muted">' + " ".join(bits) + "</p>"
 
@@ -903,6 +921,7 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
                   <th>Файл</th>
                   <th>doc_id</th>
                   <th style="width:88px;">Чанков</th>
+                  <th style="width:72px;">Год</th>
                   <th style="width:120px;">SHA256</th>
                 </tr>
               </thead>
@@ -965,6 +984,9 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           }}
           var n = idx.document_count || 0;
           var mg = idx.manifest_generated_at_utc ? '<code>' + esc(String(idx.manifest_generated_at_utc)) + '</code>' : '<code>—</code>';
+          var pv = idx.pipeline_version ? '<code>' + esc(String(idx.pipeline_version)) + '</code>' : '<code>—</code>';
+          var corp = idx.corpus_content_sha256 ? String(idx.corpus_content_sha256) : '';
+          var corpDisp = corp ? '<code>' + esc(corp.length > 20 ? corp.slice(0, 20) + '…' : corp) + '</code>' : '<code>—</code>';
           var bits = [
             'Записей в <code>manifest</code>: <strong>' + n + '</strong>.',
             'Файл manifest: <strong>' + (idx.manifest_present ? 'есть' : 'нет') + '</strong>.',
@@ -972,7 +994,8 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             'Векторный индекс (FAISS): <strong>' + (idx.semantic_index_present ? 'есть' : 'нет') + '</strong>.',
             'Лексический поиск (doc_search): <strong>' + (idx.lexical_search_ready ? 'готов' : 'не готов') + '</strong>.',
             'Семантический поиск: <strong>' + (idx.semantic_search_ready ? 'готов' : 'не готов') + '</strong>.',
-            'Время генерации manifest (UTC): ' + mg + '.'
+            'Время генерации manifest (UTC): ' + mg + '.',
+            'Версия пайплайна: ' + pv + '. Fingerprint корпуса (SHA): ' + corpDisp + '. API: <code>/api/v1/manifest</code>.'
           ];
           sumEl.innerHTML = '<p class="muted">' + bits.join(' ') + '</p>';
           var docs = idx.documents || [];
@@ -991,9 +1014,10 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               ? '<button type="button" class="doc-preview-btn" data-doc-id="' + didAttr + '">' + bn + '</button>'
               : bn;
             var cc = d.chunk_count != null ? esc(String(d.chunk_count)) : '—';
+            var yr = d.edition_year != null && d.edition_year !== undefined ? esc(String(d.edition_year)) : '—';
             var sh = d.sha256 ? String(d.sha256) : '';
             var shDisp = sh.length > 16 ? esc(sh.slice(0, 16)) + '…' : esc(sh || '—');
-            return '<tr><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td class="muted">' + shDisp + '</td></tr>';
+            return '<tr><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td></tr>';
           }}).join('');
         }}
         function poll() {{
@@ -1067,6 +1091,7 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
                 var bits = [];
                 if (j.source_file) bits.push(esc(String(j.source_file)));
                 bits.push("<code>" + esc(String(j.doc_id || did)) + "</code>");
+                if (j.edition_year != null && j.edition_year !== undefined) bits.push("год редакции: " + esc(String(j.edition_year)));
                 elPrevMeta.innerHTML = bits.join(" · ");
               }}
               elPrevText.textContent = j.preview || "";
