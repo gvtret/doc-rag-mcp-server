@@ -857,7 +857,7 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             <input type="hidden" name="key" value="{key}"/>
             <input type="file" name="files" accept=".pdf,.docx,.PDF,.DOCX" multiple required />
             <div style="height: 12px;"></div>
-            <button type="submit" {"disabled" if state.get("running") else ""}>Загрузить в sources/incoming</button>
+            <button type="submit" id="ui-btn-upload" {"disabled" if state.get("running") else ""}>Загрузить в sources/incoming</button>
           </form>
           <p class="muted">PDF, DOCX; можно выбрать несколько файлов сразу (лимит: env <code>DOC_RAG_UI_MAX_UPLOAD_FILES</code>, по умолчанию 48).</p>
         </div>
@@ -866,12 +866,12 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           <h3>Ingest / rebuild</h3>
           <form action="/ui/ingest{key_q}" method="post">
             <input type="hidden" name="key" value="{key}"/>
-            <button type="submit" {"disabled" if state.get("running") else ""}>Запустить ingest</button>
+            <button type="submit" id="ui-btn-ingest" {"disabled" if state.get("running") else ""}>Запустить ingest</button>
           </form>
           <div style="height:12px;"></div>
           <form action="/ui/rebuild{key_q}" method="post">
             <input type="hidden" name="key" value="{key}"/>
-            <button type="submit" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
+            <button type="submit" id="ui-btn-rebuild" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
           </form>
           <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get('job') or ('busy')) if state.get('running') else 'idle'}</code></p>
           <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get('last_ok')}</code></p>
@@ -1012,6 +1012,13 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               var b = document.getElementById("ingest-running-badge");
               var job = j.job || "";
               if (b) b.textContent = j.running ? (job || "busy") : "idle";
+              var busy = !!j.running;
+              var bu = document.getElementById("ui-btn-upload");
+              var bi = document.getElementById("ui-btn-ingest");
+              var br = document.getElementById("ui-btn-rebuild");
+              if (bu) bu.disabled = busy;
+              if (bi) bi.disabled = busy;
+              if (br) br.disabled = busy;
               var lk = document.getElementById("ingest-last-ok");
               if (lk) lk.textContent = (j.last_ok === null || j.last_ok === undefined) ? "-" : String(j.last_ok);
               var le = document.getElementById("ingest-last-error");
