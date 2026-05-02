@@ -71,6 +71,8 @@ echo "[install] torch/bootstrap choice: ${TORCH_CHOICE} (1=GPU 2=CPU 3=skip)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+
+echo "[install] apt: базовые пакеты + Tesseract OCR (системный движок и языковые данные)…"
 apt-get install -y --no-install-recommends \
   ca-certificates \
   git \
@@ -81,8 +83,20 @@ apt-get install -y --no-install-recommends \
   rsync \
   tesseract-ocr \
   tesseract-ocr-eng \
-  tesseract-ocr-rus \
-  tesseract-ocr-equ
+  tesseract-ocr-rus
+
+# equ (формулы) есть не во всех выпусках Debian/Ubuntu под тем же именем
+if apt-get install -y --no-install-recommends tesseract-ocr-equ; then
+  echo "[install] apt: tesseract-ocr-equ установлен (OCR формул)."
+else
+  echo "[install] WARN: пакет tesseract-ocr-equ недоступен — при необходимости: apt install tesseract-ocr-equ"
+fi
+
+if command -v tesseract >/dev/null 2>&1; then
+  echo "[install] tesseract: $(tesseract --version 2>&1 | head -n 1)"
+else
+  echo "[install] WARN: tesseract не найден в PATH после apt."
+fi
 
 if ! id "${SERVICE_USER}" &>/dev/null; then
   useradd --system \
@@ -107,7 +121,7 @@ chmod a+x "${INSTALL_ROOT}/scripts/run_mcp_http.sh" "${INSTALL_ROOT}/scripts/boo
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_ROOT}"
 
-echo "[install] bootstrap (venv + deps) ..."
+echo "[install] bootstrap (venv + deps); OCR Python: DOC_RAG_BOOTSTRAP_OCR=Y → pytesseract+Pillow…"
 sudo -u "${SERVICE_USER}" -H bash -c "
 set -euo pipefail
 cd '${INSTALL_ROOT}'
@@ -122,6 +136,17 @@ export DOC_RAG_BOOTSTRAP_INGEST='N'
 export DOC_RAG_BOOTSTRAP_TORCH='${TORCH_CHOICE}'
 bash scripts/bootstrap.sh
 "
+echo "[install] проверка OCR в venv:"
+sudo -u "${SERVICE_USER}" -H env INSTALL_ROOT="${INSTALL_ROOT}" bash -c '
+set -e
+cd "$INSTALL_ROOT"
+VPY="$INSTALL_ROOT/.venv/bin/python"
+if [ -x "$VPY" ] && "$VPY" -c "import pytesseract, PIL" 2>/dev/null; then
+  echo "  OK: pytesseract и Pillow импортируются."
+else
+  echo "  WARN: в venv нет pytesseract/Pillow. Нужен актуальный scripts/bootstrap.sh с DOC_RAG_BOOTSTRAP_OCR: выполните git pull и снова install_server_native.sh, либо вручную: $VPY -m pip install pytesseract Pillow"
+fi
+'
 
 UNIT_SRC="${INSTALL_ROOT}/systemd/doc-rag-mcp.service.in"
 DEFAULT_SRC="${INSTALL_ROOT}/deploy/etc-default-doc-rag.in"
