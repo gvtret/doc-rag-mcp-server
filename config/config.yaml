@@ -23,6 +23,24 @@ parsing:
     by_source_rel_path: {}
     by_sha256: {}
 
+  # OCR (Tesseract): только для PDF; нужны pymupdf + apt: tesseract-ocr-rus, -eng, -equ (или свой tessdata).
+  ocr:
+    enabled: false
+    # Ниже порога символов на странице страница считается «почти без текста» (для эвристики скана).
+    page_native_chars_threshold: 30
+    # Доля таких страниц ≥ этого значения → весь PDF считается сканом, OCR по всем страницам.
+    scan_sparse_page_fraction: 0.72
+    # Если суммарно символов нативного текста ≤ этого (0 = не использовать), тоже считаем сканом.
+    scan_max_total_native_chars: 0
+    # Вручную: OCR на каждой странице (игнорирует эвристику скана/картинок).
+    force_all_pages: false
+    # rus+eng — русский и английский; +equ — модуль формул (интегралы, дроби и т.п., см. tesseract-ocr-equ).
+    tesseract_lang: "rus+eng+equ"
+    # Доп. аргументы Tesseract, например "--oem 1 --psm 6" (единый блок текста; часто лучше для плотных формул в строке).
+    tesseract_config: "--oem 1"
+    # tesseract_cmd: null
+    render_scale: 2.2
+
 sectioning:
   enable_numbered_headings: true
   enable_allcaps_headings: true

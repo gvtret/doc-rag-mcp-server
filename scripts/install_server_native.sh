@@ -78,7 +78,11 @@ apt-get install -y --no-install-recommends \
   python3-venv \
   python3-dev \
   build-essential \
-  rsync
+  rsync \
+  tesseract-ocr \
+  tesseract-ocr-eng \
+  tesseract-ocr-rus \
+  tesseract-ocr-equ
 
 if ! id "${SERVICE_USER}" &>/dev/null; then
   useradd --system \
@@ -89,7 +93,10 @@ if ! id "${SERVICE_USER}" &>/dev/null; then
 fi
 
 echo "[install] sync project -> ${INSTALL_ROOT} ..."
+# Не пересылаем build/ из репозитория и не удаляем существующий build/ на сервере при --delete
+# (manifest, chunks.jsonl, FAISS остаются между обновлениями кода).
 rsync -a --delete \
+  --filter 'protect build/' \
   --exclude '.git' \
   --exclude '.venv' \
   --exclude 'build' \
@@ -109,6 +116,7 @@ export DOC_RAG_BOOTSTRAP_NONINTERACTIVE='1'
 export DOC_RAG_BOOTSTRAP_DEV='N'
 export DOC_RAG_BOOTSTRAP_FAISS='Y'
 export DOC_RAG_BOOTSTRAP_PDF='Y'
+export DOC_RAG_BOOTSTRAP_OCR='Y'
 export DOC_RAG_BOOTSTRAP_SERVER='Y'
 export DOC_RAG_BOOTSTRAP_INGEST='N'
 export DOC_RAG_BOOTSTRAP_TORCH='${TORCH_CHOICE}'
@@ -144,6 +152,10 @@ systemctl daemon-reload
 systemctl enable doc-rag-mcp.service
 systemctl restart doc-rag-mcp.service
 
+echo ""
+echo "Подсказка: индекс FAISS и manifest в build/ сохраняются при повторном запуске этого скрипта."
+echo "  Новые поля manifest (OCR/coverage) появятся после ingest или rebuild."
+echo "  Пересборка индекса нужна, если менялись чанки или модель эмбеддингов; только обновление кода — обычно нет."
 echo ""
 echo "OK: сервис doc-rag-mcp включён и перезапущен."
 systemctl --no-pager status doc-rag-mcp.service || true

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, Request, Response, UploadFile, File, Form
+from fastapi import BackgroundTasks, FastAPI, Request, Response, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
@@ -94,6 +94,36 @@ def _config_path() -> Path:
   # Supports DOC_RAG_ROOT override used elsewhere.
   root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
   return root / "config" / "config.yaml"
+
+
+def _ui_restart_allowed() -> bool:
+  v = (os.environ.get("DOC_RAG_UI_RESTART_ENABLED") or "").strip().lower()
+  return v in ("1", "true", "yes")
+
+
+def _ui_restart_cmd() -> str:
+  return (os.environ.get("DOC_RAG_UI_RESTART_CMD") or "").strip()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  tmp = path.with_suffix(path.suffix + ".tmp")
+  tmp.write_text(text, encoding="utf-8")
+  tmp.replace(path)
+
+
+def _validate_root_yaml(raw: str) -> Tuple[bool, str]:
+  try:
+    import yaml
+
+    data = yaml.safe_load(raw)
+  except Exception as e:
+    return False, str(e)
+  if data is None:
+    return False, "YAML пустой или null в корне"
+  if not isinstance(data, dict):
+    return False, "Корень конфигурации должен быть объектом (mapping), не списком"
+  return True, "ok"
 
 
 def _sources_incoming_dir() -> Path:
@@ -669,7 +699,15 @@ async def _http_log_mw(request: Request, call_next):
     code = getattr(response, "status_code", "ERR")
     path = request.url.path or ""
     # Avoid drowning the UI buffer with health checks and UI JSON polling.
-    if path not in ("/health", "/ui/status", "/ui/document-preview", "/api/v1/manifest"):
+    if path not in (
+      "/health",
+      "/ui/status",
+      "/ui/document-preview",
+      "/api/v1/manifest",
+      "/ui/config/raw",
+      "/ui/config/save",
+      "/ui/restart",
+    ):
       _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
 
 
@@ -687,6 +725,57 @@ async def api_v1_manifest(request: Request) -> JSONResponse:
   if not data:
     return JSONResponse({"error": "manifest_not_found"}, status_code=404)
   return JSONResponse(data)
+
+
+@app.get("/ui/config/raw")
+async def ui_config_raw(request: Request, key: str = "") -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+  p = _config_path()
+  try:
+    yaml_text = p.read_text(encoding="utf-8")
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, "path": str(p), "yaml": yaml_text})
+
+
+@app.post("/ui/config/save")
+async def ui_config_save(request: Request, key: str = Form(""), content: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  ok, msg = _validate_root_yaml(content)
+  if not ok:
+    return JSONResponse({"ok": False, "error": msg}, status_code=400)
+  try:
+    _atomic_write_text(_config_path(), content)
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, "path": str(_config_path())})
+
+
+@app.post("/ui/restart")
+async def ui_restart_service(request: Request, background_tasks: BackgroundTasks, key: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  if not _ui_restart_allowed():
+    return JSONResponse(
+      {"ok": False, "error": "Задайте DOC_RAG_UI_RESTART_ENABLED=1 и DOC_RAG_UI_RESTART_CMD в окружении сервиса."},
+      status_code=403,
+    )
+  cmd = _ui_restart_cmd()
+  if not cmd:
+    return JSONResponse(
+      {"ok": False, "error": "Пустой DOC_RAG_UI_RESTART_CMD."},
+      status_code=400,
+    )
+
+  def _run() -> None:
+    import subprocess
+
+    subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+  background_tasks.add_task(_run)
+  return JSONResponse({"ok": True, "message": "Команда перезапуска запущена в фоне."})
 
 
 def _ui_status_payload() -> Dict[str, Any]:
@@ -810,6 +899,21 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     ic0 = indexed_catalog()
   except Exception as exc:
     ic0 = {"error": str(exc), "documents": [], "document_count": 0}
+  try:
+    cfg_yaml_body = _config_path().read_text(encoding="utf-8")
+  except Exception as exc:
+    cfg_yaml_body = f"# не удалось прочитать конфиг: {exc}\n"
+  cfg_path_esc = html.escape(str(_config_path()), quote=False)
+  cfg_yaml_esc = html.escape(cfg_yaml_body, quote=False)
+  restart_btn_on = _ui_restart_allowed() and bool(_ui_restart_cmd())
+  restart_note_html = ""
+  if not restart_btn_on:
+    restart_note_html = (
+      '<p class="muted">Перезапуск из UI по умолчанию выключен. Для кнопки задайте в окружении процесса '
+      "<code>DOC_RAG_UI_RESTART_ENABLED=1</code> и <code>DOC_RAG_UI_RESTART_CMD</code> "
+      "(например <code>sudo /bin/systemctl restart doc-rag-mcp</code> — см. sudoers).</p>"
+    )
+  restart_disabled_attr = " disabled" if not restart_btn_on else ""
   idx_summary_html = _indexed_documents_summary_html(ic0)
   idx_tbody_html, idx_cap_html = _indexed_documents_table_rows_html(ic0)
   body = f"""
@@ -860,6 +964,11 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
         table.idx th {{ background: #f9fafb; font-weight: 600; }}
         table.idx td.doc-id {{ font-size: 11px; color: #6b7280; word-break: break-all; max-width: min(280px, 28vw); }}
+        textarea.mono-cfg {{
+          width: 100%; min-height: 420px; font-size: 12px; line-height: 1.4;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          padding: 10px 12px; border-radius: 10px; border: 1px solid #e5e7eb; box-sizing: border-box;
+        }}
       </style>
     </head>
     <body>
@@ -905,6 +1014,20 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           <div class="muted" style="max-height: 240px; overflow:auto;">
             {"<br/>".join(files) if files else "<span class='muted'>empty</span>"}
           </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card" style="flex: 1 1 100%; min-width: min(960px, 100%);">
+          <h3>Конфигурация</h3>
+          <p class="muted">Файл: <code>{cfg_path_esc}</code>. После правок часть параметров подхватывается при следующем запросе; для смены порта или переменных systemd может понадобиться перезапуск.</p>
+          <textarea id="cfg-yaml" class="mono-cfg" name="content" spellcheck="false">{cfg_yaml_esc}</textarea>
+          <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <button type="button" id="cfg-save-btn">Сохранить</button>
+            <button type="button" id="srv-restart-btn" class="secondary"{restart_disabled_attr}>Перезапустить сервис</button>
+          </div>
+          <p id="cfg-save-msg" class="muted" style="margin-top:8px;"></p>
+          {restart_note_html}
         </div>
       </div>
 
@@ -1113,6 +1236,37 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         var bx = document.getElementById("doc-preview-close");
         if (bd) bd.addEventListener("click", closeDocPreview);
         if (bx) bx.addEventListener("click", closeDocPreview);
+        var keyQ = {json.dumps(key_q)};
+        (function () {{
+          var saveBtn = document.getElementById("cfg-save-btn");
+          var restartBtn = document.getElementById("srv-restart-btn");
+          var msgEl = document.getElementById("cfg-save-msg");
+          var ta = document.getElementById("cfg-yaml");
+          if (saveBtn && ta) saveBtn.addEventListener("click", function () {{
+            if (msgEl) msgEl.textContent = "";
+            var fd = new FormData();
+            if (uiKey) fd.append("key", uiKey);
+            fd.append("content", ta.value);
+            fetch("/ui/config/save" + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
+              .then(function (r) {{ return r.json(); }})
+              .then(function (j) {{
+                if (msgEl) msgEl.textContent = j && j.ok ? "Сохранено." : ("Ошибка: " + (j && j.error ? j.error : "?"));
+              }})
+              .catch(function () {{ if (msgEl) msgEl.textContent = "Ошибка сети."; }});
+          }});
+          if (restartBtn) restartBtn.addEventListener("click", function () {{
+            if (!confirm("Запустить настроенную команду перезапуска сервиса?")) return;
+            if (msgEl) msgEl.textContent = "";
+            var fd = new FormData();
+            if (uiKey) fd.append("key", uiKey);
+            fetch("/ui/restart" + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
+              .then(function (r) {{ return r.json(); }})
+              .then(function (j) {{
+                if (msgEl) msgEl.textContent = j && j.ok ? (j.message || "OK") : ("Ошибка: " + (j && j.error ? j.error : "?"));
+              }})
+              .catch(function () {{ if (msgEl) msgEl.textContent = "Ошибка сети."; }});
+          }});
+        }})();
         poll();
         setInterval(poll, pollMs);
       }})();

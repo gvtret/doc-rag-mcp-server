@@ -39,6 +39,215 @@ def _min_chars_per_page(cfg: Dict[str, Any]) -> int:
     return max(0, v)
 
 
+def _ocr_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    o = (cfg.get("parsing", {}) or {}).get("ocr")
+    return o if isinstance(o, dict) else {}
+
+
+def _ocr_enabled(cfg: Dict[str, Any]) -> bool:
+    return bool(_ocr_config(cfg).get("enabled"))
+
+
+def _ocr_runtime_imports() -> Tuple[Any, Any]:
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(
+            "parsing.ocr.enabled requires pytesseract and Pillow. "
+            "Install: pip install 'doc-rag[ocr]' or pytesseract Pillow."
+        ) from e
+    return pytesseract, Image
+
+
+def _ocr_page_text(page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_cfg: Dict[str, Any]) -> str:
+    scale = float(ocr_cfg.get("render_scale", 2.0))
+    scale = max(0.5, min(4.0, scale))
+    mat = fitz_mod.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    lang = str(ocr_cfg.get("tesseract_lang", "rus+eng+equ"))
+    cmd = ocr_cfg.get("tesseract_cmd")
+    if isinstance(cmd, str) and cmd.strip():
+        pytesseract.pytesseract.tesseract_cmd = cmd.strip()
+    cfg_extra = ocr_cfg.get("tesseract_config")
+    extra = cfg_extra.strip() if isinstance(cfg_extra, str) else ""
+    def _run(lang_arg: str) -> str:
+        if extra:
+            return str(pytesseract.image_to_string(img, lang=lang_arg, config=extra) or "")
+        return str(pytesseract.image_to_string(img, lang=lang_arg) or "")
+
+    try:
+        return _run(lang)
+    except Exception as e:
+        err = str(e).lower()
+        if "equ" in lang.lower() and "+equ" in lang.lower() and (
+            "traineddata" in err or "could not load" in err or "failed loading" in err
+        ):
+            # Часто на минимальных образах нет tesseract-ocr-equ — откатываемся на rus+eng.
+            fallback = "+".join(p for p in lang.split("+") if p.strip().lower() != "equ")
+            if fallback and fallback != lang:
+                try:
+                    return _run(fallback)
+                except Exception:
+                    pass
+        if "tesseract" in err or "not installed" in err:
+            raise RuntimeError(
+                "Tesseract OCR engine or language data missing. "
+                "Install: apt install tesseract-ocr-rus tesseract-ocr-eng tesseract-ocr-equ "
+                "(or adjust parsing.ocr.tesseract_lang) and set parsing.ocr.tesseract_cmd if needed."
+            ) from e
+        raise
+
+
+def _empty_ocr_summary() -> Dict[str, Any]:
+    return {
+        "applied": False,
+        "pages_recognized": 0,
+        "native_chars_total": 0,
+        "after_merge_chars_total": 0,
+        "before_ocr_chars": None,
+        "after_ocr_chars": None,
+        "routing": None,
+        "detected_scan": None,
+        "pages_with_embedded_images": None,
+    }
+
+
+def _page_has_embedded_images(page: Any) -> bool:
+    """Страница с растровыми вложениями (не вектор-only)."""
+    try:
+        ims = page.get_images(full=True)
+        return len(ims) > 0
+    except Exception:
+        try:
+            return len(page.get_images()) > 0
+        except Exception:
+            return False
+
+
+def _detect_pdf_is_scan(
+    parts: List[str], *, threshold: int, n_pages: int, ocr_cfg: Dict[str, Any]
+) -> bool:
+    """Эвристика «весь документ — скан»: почти все страницы без нативного текста."""
+    if n_pages <= 0:
+        return False
+    sparse = sum(1 for p in parts if len((p or "").strip()) < threshold)
+    frac = sparse / float(n_pages)
+    try:
+        need_frac = float(ocr_cfg.get("scan_sparse_page_fraction", 0.72))
+    except Exception:
+        need_frac = 0.72
+    need_frac = min(1.0, max(0.0, need_frac))
+
+    try:
+        max_total = int(ocr_cfg.get("scan_max_total_native_chars", 0))
+    except Exception:
+        max_total = 0
+    total_native = sum(len((p or "").strip()) for p in parts)
+
+    if max_total > 0 and total_native <= max_total:
+        return True
+    return frac >= need_frac
+
+
+def _pdf_fitz_extract_with_ocr(
+    cfg: Dict[str, Any], path: str, *, max_pages: int
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """PyMuPDF native text + optional Tesseract per page. Returns text, raw_stats, ocr_summary."""
+    try:
+        import fitz  # pymupdf
+    except ImportError as e:
+        raise RuntimeError(
+            "PDF processing requires pymupdf when using the PyMuPDF code path. Install: pip install pymupdf"
+        ) from e
+
+    ocr_cfg = _ocr_config(cfg)
+    ocr_on = bool(ocr_cfg.get("enabled"))
+    pytesseract = None
+    Image = None
+    if ocr_on:
+        pytesseract, Image = _ocr_runtime_imports()
+
+    doc = fitz.open(path)
+    try:
+        total_pages = len(doc)
+        n_read = min(total_pages, max_pages)
+        parts: List[str] = []
+        for i in range(n_read):
+            parts.append((doc[i].get_text("text") or ""))
+
+        ocr_summary: Dict[str, Any] = {
+            "applied": False,
+            "pages_recognized": 0,
+            "native_chars_total": sum(len((p or "").strip()) for p in parts),
+            "after_merge_chars_total": 0,
+            "before_ocr_chars": None,
+            "after_ocr_chars": None,
+        }
+
+        if ocr_on and pytesseract is not None and Image is not None:
+            threshold = int(ocr_cfg.get("page_native_chars_threshold", 30))
+            threshold = max(0, threshold)
+            force_manual = bool(ocr_cfg.get("force_all_pages", False))
+
+            page_has_img = [_page_has_embedded_images(doc[i]) for i in range(n_read)]
+            is_scan = _detect_pdf_is_scan(parts, threshold=threshold, n_pages=n_read, ocr_cfg=ocr_cfg)
+
+            if force_manual:
+                routing = "force_all_pages"
+            elif is_scan:
+                routing = "scan_all_pages"
+            else:
+                routing = "embedded_images_only"
+
+            before_chars = sum(len((p or "").strip()) for p in parts)
+            pages_hit = 0
+            for i in range(n_read):
+                if force_manual:
+                    need = True
+                elif is_scan:
+                    need = True
+                else:
+                    need = page_has_img[i]
+
+                if not need:
+                    continue
+                try:
+                    ocr_txt = _ocr_page_text(doc[i], fitz, pytesseract, Image, ocr_cfg)
+                except RuntimeError:
+                    raise
+                except Exception:
+                    continue
+                if (ocr_txt or "").strip():
+                    parts[i] = ocr_txt
+                    pages_hit += 1
+            after_chars = sum(len((p or "").strip()) for p in parts)
+            ocr_summary["applied"] = pages_hit > 0
+            ocr_summary["pages_recognized"] = pages_hit
+            ocr_summary["native_chars_total"] = before_chars
+            ocr_summary["after_merge_chars_total"] = after_chars
+            ocr_summary["before_ocr_chars"] = before_chars
+            ocr_summary["after_ocr_chars"] = after_chars
+            ocr_summary["routing"] = routing
+            ocr_summary["detected_scan"] = bool(is_scan)
+            ocr_summary["pages_with_embedded_images"] = int(sum(page_has_img))
+
+        text = "\n\n".join(parts)
+        chars_per = [len((p or "").strip()) for p in parts]
+        raw_stats: Dict[str, Any] = {
+            "format": "pdf",
+            "pdf_backend": "pymupdf+ocr" if ocr_summary.get("applied") else "pymupdf",
+            "source_page_count": total_pages,
+            "pages_extracted": n_read,
+            "chars_per_page": chars_per,
+            "text_chars_extracted": len(text),
+        }
+        return text, raw_stats, ocr_summary
+    finally:
+        doc.close()
+
+
 def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]]:
     from PyPDF2 import PdfReader
     r = PdfReader(path)
@@ -62,28 +271,6 @@ def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]
     }
     return text, stats
 
-def _parse_pdf_pymupdf(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]]:
-    import fitz  # pymupdf
-    doc = fitz.open(path)
-    total_pages = len(doc)
-    n_read = min(total_pages, max_pages)
-    parts: List[str] = []
-    for i, page in enumerate(doc):
-        if i >= max_pages:
-            break
-        parts.append(page.get_text("text") or "")
-    text = "\n\n".join(parts)
-    chars_per = [len((p or "").strip()) for p in parts]
-    stats: Dict[str, Any] = {
-        "format": "pdf",
-        "pdf_backend": "pymupdf",
-        "source_page_count": total_pages,
-        "pages_extracted": n_read,
-        "chars_per_page": chars_per,
-        "text_chars_extracted": len(text),
-    }
-    doc.close()
-    return text, stats
 
 def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]:
     from docx import Document
@@ -122,24 +309,62 @@ def _finalize_pdf_stats(raw: Dict[str, Any], *, min_chars: int) -> Dict[str, Any
     return out
 
 
+def _build_ocr_stats_block(cfg: Dict[str, Any], ocr_summary: Dict[str, Any]) -> Dict[str, Any]:
+    oc = _ocr_config(cfg)
+    lang = oc.get("tesseract_lang")
+    block: Dict[str, Any] = {
+        "applied": bool(ocr_summary.get("applied")),
+        "before_ocr": {"chars": ocr_summary.get("before_ocr_chars")},
+        "after_ocr": {"chars": ocr_summary.get("after_ocr_chars")},
+        "pages_recognized": int(ocr_summary.get("pages_recognized") or 0),
+    }
+    if _ocr_enabled(cfg):
+        block["tesseract_lang"] = str(lang) if lang is not None else "rus+eng+equ"
+    for key in ("routing", "detected_scan", "pages_with_embedded_images"):
+        v = ocr_summary.get(key)
+        if v is not None:
+            block[key] = v
+    return block
+
+
 def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
     _enforce_size_limit(cfg, path)
     text = ""
     tables: List[Any] = []
     min_thr = _min_chars_per_page(cfg)
     extract_stats: Dict[str, Any] = {}
+    ocr_summary: Dict[str, Any] = _empty_ocr_summary()
 
     if path.lower().endswith(".pdf"):
         backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
         max_pages = _max_int(cfg, "max_pdf_pages", 2000)
+        if _ocr_enabled(cfg) and backend == "pypdf2":
+            raise RuntimeError(
+                "parsing.ocr.enabled requires pdf_backend 'auto' or 'pymupdf' (PyMuPDF), not 'pypdf2'."
+            )
+
         raw_stats: Dict[str, Any] = {}
-        if backend in ("pymupdf", "auto"):
-            try:
-                text, raw_stats = _parse_pdf_pymupdf(path, max_pages=max_pages)
-            except Exception:
-                text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
-        else:
+        if backend == "pypdf2":
             text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
+            ocr_summary = _empty_ocr_summary()
+        elif backend in ("pymupdf", "auto"):
+            try:
+                import fitz  # noqa: F401
+            except ImportError:
+                if backend == "pymupdf":
+                    raise RuntimeError(
+                        "pdf_backend is 'pymupdf' but pymupdf is not installed. pip install pymupdf"
+                    ) from None
+                if _ocr_enabled(cfg):
+                    raise RuntimeError(
+                        "parsing.ocr.enabled requires pymupdf. Install: pip install pymupdf"
+                    ) from None
+                text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
+                ocr_summary = _empty_ocr_summary()
+            else:
+                text, raw_stats, ocr_summary = _pdf_fitz_extract_with_ocr(cfg, path, max_pages=max_pages)
+        else:
+            raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif path.lower().endswith(".docx"):
         max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
@@ -162,12 +387,20 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
     native["after_normalize"] = {"chars": text_chars_after_norm}
     native["markdown"] = {"chars": len(md)}
 
-    stats: Dict[str, Any] = {
-        "ocr": {
+    is_pdf = path.lower().endswith(".pdf")
+    ocr_block: Dict[str, Any]
+    if is_pdf:
+        ocr_block = _build_ocr_stats_block(cfg, ocr_summary)
+    else:
+        ocr_block = {
             "applied": False,
             "before_ocr": {"chars": None},
             "after_ocr": {"chars": None},
-        },
+            "pages_recognized": 0,
+        }
+
+    stats: Dict[str, Any] = {
+        "ocr": ocr_block,
         "native_text_extraction": native,
     }
     return {"markdown": md, "tables": tables, "stats": stats}

@@ -30,6 +30,13 @@ pdf = [
   "pymupdf>=1.24.0",
 ]
 
+# OCR for scanned PDFs (requires Tesseract on PATH or parsing.ocr.tesseract_cmd)
+ocr = [
+  "pytesseract>=0.3.10",
+  "Pillow>=10.0",
+  "pymupdf>=1.24.0",
+]
+
 # Vector index (optional)
 faiss = [
   "faiss-cpu>=1.8.0",

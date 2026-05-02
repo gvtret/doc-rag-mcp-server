@@ -69,6 +69,18 @@ if [[ "${ans_pdf}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   ${PIP} install "pymupdf>=1.24.0"
 fi
 
+# Optional: OCR (pytesseract + Pillow; requires system `tesseract-ocr`)
+if [[ "${NONINTERACTIVE}" == "1" ]]; then
+  ans_ocr="${DOC_RAG_BOOTSTRAP_OCR:-N}"
+else
+  read -r -p "[doc-rag] Install OCR deps (pytesseract, Pillow)? Needs apt tesseract-ocr. [y/N] " ans_ocr || true
+  ans_ocr="${ans_ocr:-N}"
+fi
+if [[ "${ans_ocr}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+  echo "[doc-rag] Installing OCR extras..."
+  ${PIP} install "pytesseract>=0.3.10" "Pillow>=10.0"
+fi
+
 # Optional: Embeddings stack
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_torch="${DOC_RAG_BOOTSTRAP_TORCH:-3}"
