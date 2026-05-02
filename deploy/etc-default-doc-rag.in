@@ -10,5 +10,5 @@ DOC_RAG_HTTP_PORT=3333
 # Опционально защита MCP/UI:
 #DOC_RAG_API_KEY=
 
-# Лог HTTP: logrotate из install_server_native.sh (3 архива max, порог размера 5M). См. /etc/logrotate.d/doc-rag-mcp.
-DOC_RAG_HTTP_LOG=@INSTALL_ROOT@/build/http.log
+# Лог HTTP (каталог @INSTALL_ROOT@/build должен быть записываемым пользователем docrag):
+#DOC_RAG_HTTP_LOG=@INSTALL_ROOT@/build/http.log
