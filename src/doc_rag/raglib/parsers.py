@@ -126,6 +126,92 @@ def _page_has_embedded_images(page: Any) -> bool:
             return False
 
 
+def _extract_page_text_structured(page: Any, fitz_mod: Any) -> str:
+    """Extract page text, replacing table regions with pipe-separated row text.
+
+    Uses page.find_tables() (PyMuPDF >= 1.23) when tables are present so that
+    14-column tables like Приложение И produce lines like:
+        1 | 3 | 1.0.12.7.0.255 | Напряжение U | - | G | G | - |  |  |  |  |  | Да
+    instead of one value per line, preserving row context for RAG chunking.
+    Falls back to get_text("text") if find_tables is unavailable or finds nothing.
+    """
+    try:
+        finder = page.find_tables()
+        tables = finder.tables if finder and hasattr(finder, "tables") else []
+    except Exception:
+        return page.get_text("text") or ""
+
+    if not tables:
+        return page.get_text("text") or ""
+
+    # Build (Rect, formatted_text) for each detected table
+    table_entries: List[Tuple[Any, str]] = []
+    for tab in tables:
+        try:
+            trect = fitz_mod.Rect(tab.bbox)
+        except Exception:
+            continue
+        rows_out: List[str] = []
+        try:
+            for row in (tab.extract() or []):
+                if not row:
+                    continue
+                cells = [(c or "").strip() if c is not None else "" for c in row]
+                if any(cells):
+                    rows_out.append(" | ".join(cells))
+        except Exception:
+            pass
+        if rows_out:
+            table_entries.append((trect, "\n".join(rows_out)))
+
+    if not table_entries:
+        return page.get_text("text") or ""
+
+    # Walk text blocks top-to-bottom; replace blocks that fall inside a table rect
+    # with the formatted table text (emitted once per table).
+    try:
+        blocks = page.get_text("blocks", sort=True)
+    except Exception:
+        return page.get_text("text") or ""
+
+    output: List[str] = []
+    emitted: set = set()
+
+    for b in blocks:
+        if len(b) < 5:
+            continue
+        bx0, by0, bx1, by1, btext = b[0], b[1], b[2], b[3], b[4]
+        if len(b) >= 7 and b[6] != 0:  # skip image blocks
+            continue
+        block_rect = fitz_mod.Rect(bx0, by0, bx1, by1)
+
+        matched = None
+        for i, (trect, _) in enumerate(table_entries):
+            inter = trect & block_rect
+            if inter.is_empty:
+                continue
+            block_area = block_rect.get_area()
+            if block_area > 0 and inter.get_area() / block_area > 0.4:
+                matched = i
+                break
+
+        if matched is not None:
+            if matched not in emitted:
+                emitted.add(matched)
+                output.append(table_entries[matched][1])
+        else:
+            text = (btext or "").strip()
+            if text:
+                output.append(text)
+
+    # Emit any tables not reached via blocks (safety net)
+    for i, (_, ttext) in enumerate(table_entries):
+        if i not in emitted:
+            output.append(ttext)
+
+    return "\n\n".join(output)
+
+
 def _detect_pdf_is_scan(
     parts: List[str], *, threshold: int, n_pages: int, ocr_cfg: Dict[str, Any]
 ) -> bool:
@@ -175,7 +261,7 @@ def _pdf_fitz_extract_with_ocr(
         n_read = min(total_pages, max_pages)
         parts: List[str] = []
         for i in range(n_read):
-            parts.append((doc[i].get_text("text") or ""))
+            parts.append(_extract_page_text_structured(doc[i], fitz) or "")
 
         ocr_summary: Dict[str, Any] = {
             "applied": False,
@@ -274,19 +360,50 @@ def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]
 
 def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]:
     from docx import Document
+    from docx.oxml.ns import qn  # type: ignore
+
     d = Document(path)
     parts: List[str] = []
     used = 0
-    for i, p in enumerate(d.paragraphs):
-        if i >= max_paragraphs:
-            break
-        if p.text:
-            parts.append(p.text)
-            used += 1
+    para_count = 0
+    tables_count = 0
+
+    # Iterate body in document order so tables appear at their correct position
+    body = d.element.body
+    for child in body:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            if para_count >= max_paragraphs:
+                continue
+            para_count += 1
+            text = "".join(r.text for r in child.iter(qn("w:t")) if r.text)
+            if text.strip():
+                parts.append(text)
+                used += 1
+        elif tag == "tbl":
+            tables_count += 1
+            rows_out: List[str] = []
+            for tr in child.iter(qn("w:tr")):
+                cells: List[str] = []
+                prev_cell_text = None
+                for tc in tr.iter(qn("w:tc")):
+                    cell_text = "".join(
+                        r.text for r in tc.iter(qn("w:t")) if r.text
+                    ).strip()
+                    # Skip merged-cell duplicates (python-docx repeats merged cells)
+                    if cell_text != prev_cell_text:
+                        cells.append(cell_text)
+                    prev_cell_text = cell_text
+                if any(cells):
+                    rows_out.append(" | ".join(cells))
+            if rows_out:
+                parts.append("\n".join(rows_out))
+
     text = "\n\n".join(parts)
     stats: Dict[str, Any] = {
         "format": "docx",
         "paragraphs_extracted": used,
+        "tables_extracted": tables_count,
         "text_chars_extracted": len(text),
     }
     return text, stats

@@ -50,6 +50,10 @@ sectioning:
 chunking:
   target_tokens: 512
   overlap_tokens: 64
+  # Нечёткая дедупликация чанков между документами (word-bigram Jaccard).
+  # 0 = отключено; 0.85 = убирать чанки с ≥85% совпадением из разных документов.
+  # PDF имеет приоритет над DOCX: при совпадении сохраняется PDF-чанк.
+  dedup_similarity_threshold: 0.85
 
 embeddings:
   model_name: "BAAI/bge-large-en-v1.5"

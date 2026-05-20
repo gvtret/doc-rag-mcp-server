@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
@@ -52,6 +53,76 @@ def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> List[str]
         start += step
     return chunks
 
+
+
+def _dedup_chunks(
+    chunks: List[Dict[str, Any]],
+    doc_id_to_source: Dict[str, str],
+    threshold: float,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Remove near-duplicate chunks that originate from different documents.
+
+    Uses word-bigram Jaccard similarity. When two chunks are near-duplicates,
+    keeps the one from the higher-priority source (.pdf > .docx > other).
+
+    Returns (deduped_chunks, n_dropped).
+    """
+    if threshold <= 0.0 or not chunks:
+        return chunks, 0
+
+    def _norm(text: str) -> str:
+        t = re.sub(r"[^\w\s]", " ", text.lower())
+        return re.sub(r"\s+", " ", t).strip()
+
+    def _bigrams(text: str) -> frozenset:
+        words = text.split()
+        if not words:
+            return frozenset()
+        if len(words) < 2:
+            return frozenset({(words[0],)})
+        return frozenset(zip(words, words[1:]))
+
+    def _jaccard(a: frozenset, b: frozenset) -> float:
+        if not a and not b:
+            return 1.0
+        u = len(a | b)
+        return len(a & b) / u if u else 0.0
+
+    def _priority(doc_id: str) -> int:
+        """Lower value = kept over near-duplicates."""
+        ext = os.path.splitext(doc_id_to_source.get(doc_id, "").lower())[1]
+        if ext == ".pdf":
+            return 0
+        if ext == ".docx":
+            return 1
+        return 2
+
+    # Process higher-priority chunks first so they are retained over near-dupes
+    ordered = sorted(chunks, key=lambda c: _priority(c.get("doc_id", "")))
+    bsets = [_bigrams(_norm(c.get("text", ""))) for c in ordered]
+
+    kept_indices: List[int] = []
+    kept_bsets: List[frozenset] = []
+    kept_doc_ids: List[str] = []
+
+    for i, chunk in enumerate(ordered):
+        doc_id_i = chunk.get("doc_id", "")
+        bs_i = bsets[i]
+        is_dup = False
+        for j, bs_j in enumerate(kept_bsets):
+            # Only flag as duplicate if from a *different* document
+            if kept_doc_ids[j] == doc_id_i:
+                continue
+            if _jaccard(bs_i, bs_j) >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            kept_indices.append(i)
+            kept_bsets.append(bs_i)
+            kept_doc_ids.append(doc_id_i)
+
+    dropped = len(chunks) - len(kept_indices)
+    return [ordered[i] for i in kept_indices], dropped
 
 
 def _log(level: str, msg: str) -> None:
@@ -262,6 +333,12 @@ def ingest(config_path: str) -> None:
     if not incremental:
         manifest_documents, all_chunks, processed = _ingest_sources(cfg, root, sources, docs_md, target, overlap)
 
+        dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
+        if dedup_thresh > 0.0:
+            doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in manifest_documents}
+            all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
+            _log("INFO", f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})")
+
         manifest = _manifest_shell(cfg, manifest_documents)
 
         with open(chunks_path, "w", encoding="utf-8") as f:
@@ -420,8 +497,16 @@ def rebuild(config_path: str) -> None:
     _log("INFO", f"rebuild: incoming ingest pass ({len(incoming_sources)} file(s))")
     man_i, chunks_i, processed_i = _ingest_sources(cfg, root, incoming_sources, docs_md, target, overlap)
 
-    manifest = _manifest_shell(cfg, man_a + man_i)
+    all_docs = man_a + man_i
     all_chunks = chunks_a + chunks_i
+
+    dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
+    if dedup_thresh > 0.0:
+        doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in all_docs}
+        all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
+        _log("INFO", f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})")
+
+    manifest = _manifest_shell(cfg, all_docs)
 
     chunks_path = os.path.join(chunks_dir, "chunks.jsonl")
     with open(chunks_path, "w", encoding="utf-8") as f:
