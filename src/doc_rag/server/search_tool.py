@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from doc_rag.server.retrieval import doc_search
+from doc_rag.server.retrieval import doc_search, indexed_catalog, load_config
+
+
+_FALLBACK_NOTICE = (
+    "⚠ Семантический поиск недоступен (FAISS-индекс отсутствует или ещё не построен). "
+    "Ниже — результаты лексического поиска: они часто менее релевантны и могут "
+    "пропустить семантически близкие формулировки. "
+    "Откройте /ui и нажмите «Rebuild индекса» (займёт ~30–60 мин), затем повторите запрос."
+)
 
 
 def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -28,10 +36,29 @@ def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     except Exception:
         top_k = 6
 
+    # Detect whether semantic mode is configured but the FAISS index isn't
+    # available — in that case doc_search() silently falls back to lexical
+    # search and the caller should know the quality is degraded.
+    fallback_active = False
+    try:
+        cfg = load_config()
+        mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
+        if mode == "semantic":
+            cat = indexed_catalog()
+            if not cat.get("semantic_search_ready"):
+                fallback_active = True
+    except Exception:
+        pass
+
     results = doc_search(query=query, top_k=top_k)
 
+    content: List[Dict[str, Any]] = []
+    if fallback_active:
+        content.append({"type": "text", "text": _FALLBACK_NOTICE})
+
     if not results:
-        return [{"type": "text", "text": "No results."}]
+        content.append({"type": "text", "text": "No results."})
+        return content
 
     lines: List[str] = []
     for i, r in enumerate(results, 1):
@@ -55,4 +82,5 @@ def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             lines.append(" ".join(header_bits))
 
-    return [{"type": "text", "text": "\n\n".join(lines)}]
+    content.append({"type": "text", "text": "\n\n".join(lines)})
+    return content

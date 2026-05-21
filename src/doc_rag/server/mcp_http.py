@@ -1037,6 +1037,13 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         .upload-banner {{ margin:16px 0; padding:10px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:10px; color:#065f46; }}
         .upload-banner.has-dups {{ background:#fefce8; border-color:#fde047; color:#713f12; }}
         .upload-banner.has-errors {{ background:#fef2f2; border-color:#fca5a5; color:#991b1b; }}
+        .semantic-banner {{
+          margin:16px 0; padding:12px 14px;
+          background:#fff7ed; border:1px solid #fdba74; border-radius:10px; color:#7c2d12;
+          display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+        }}
+        .semantic-banner button {{ background:#c2410c; border-color:#c2410c; }}
+        .semantic-banner button:hover {{ background:#9a3412; border-color:#9a3412; }}
         table.idx {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
         table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
         table.idx th {{ background: #f9fafb; font-weight: 600; }}
@@ -1062,6 +1069,15 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     <body>
       <h2>doc-rag — управление индексом</h2>
       <p class="muted">LAN UI. MCP endpoint: <code>/mcp</code></p>
+
+      <div id="semantic-banner" class="semantic-banner" style="display:{("none" if ic0.get("semantic_search_ready") else "flex")};">
+        <strong>Семантический поиск недоступен.</strong>
+        FAISS-индекс отсутствует или повреждён — клиенты получают только лексические результаты.
+        <form action="/ui/rebuild{key_q}" method="post" style="display:inline-block; margin-left:8px;">
+          <input type="hidden" name="key" value="{key}"/>
+          <button type="submit" id="semantic-banner-rebuild-btn"{" disabled" if state.get("running") else ""}>Запустить rebuild</button>
+        </form>
+      </div>
 
       {upload_banner}
 
@@ -1281,6 +1297,13 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               var le = document.getElementById("ingest-last-error");
               if (le) le.textContent = (j.last_error != null && String(j.last_error).length) ? String(j.last_error) : "-";
               renderIndexed(j.indexed);
+              var sb = document.getElementById("semantic-banner");
+              if (sb) {{
+                var ready = j.indexed && j.indexed.semantic_search_ready;
+                sb.style.display = ready ? "none" : "flex";
+              }}
+              var sbBtn = document.getElementById("semantic-banner-rebuild-btn");
+              if (sbBtn) sbBtn.disabled = busy;
               if (j.running && elIng) {{
                 elIng.scrollTop = elIng.scrollHeight;
               }}
