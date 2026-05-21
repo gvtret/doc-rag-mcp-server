@@ -9,6 +9,7 @@ WORKDIR /app
 # System deps (minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    antiword \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy project

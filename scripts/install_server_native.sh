@@ -72,7 +72,7 @@ echo "[install] torch/bootstrap choice: ${TORCH_CHOICE} (1=GPU 2=CPU 3=skip)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 
-echo "[install] apt: базовые пакеты + Tesseract OCR (системный движок и языковые данные)…"
+echo "[install] apt: базовые пакеты + Tesseract OCR (системный движок и языковые данные) + antiword (legacy .doc)…"
 apt-get install -y --no-install-recommends \
   ca-certificates \
   git \
@@ -83,7 +83,8 @@ apt-get install -y --no-install-recommends \
   rsync \
   tesseract-ocr \
   tesseract-ocr-eng \
-  tesseract-ocr-rus
+  tesseract-ocr-rus \
+  antiword
 
 # equ (формулы) есть не во всех выпусках Debian/Ubuntu под тем же именем
 if apt-get install -y --no-install-recommends tesseract-ocr-equ; then
