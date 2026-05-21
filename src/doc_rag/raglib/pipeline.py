@@ -451,7 +451,7 @@ def ingest(config_path: str) -> None:
 
     # Best-effort semantic index update. If FAISS/embeddings are missing, we keep lexical search.
     try:
-        ensure_faiss_index(cfg, force_rebuild=False, log=lambda m: _log("INFO", m))
+        ensure_faiss_index(cfg, force_rebuild=False, log=print)
     except Exception as e:
         _log("WARN", f"index update skipped: {e}")
 
@@ -525,8 +525,20 @@ def rebuild(config_path: str) -> None:
     elif not archive_enabled:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
+    # Delete stale index files before encoding so that an interrupted rebuild
+    # (SIGHUP, OOM, etc.) doesn't leave index_meta.json mismatched against
+    # the freshly written chunks.jsonl — next ingest/rebuild will start clean.
+    _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+    for _fname in ("faiss.index", "index_meta.json"):
+        _p = os.path.join(_index_dir, _fname)
+        if os.path.exists(_p):
+            try:
+                os.remove(_p)
+            except OSError as _e:
+                _log("WARN", f"could not remove stale index file {_fname}: {_e}")
+
     # Force rebuild index so semantic search matches rebuilt chunks (best-effort)
     try:
-        ensure_faiss_index(cfg, force_rebuild=True, log=lambda m: _log("INFO", m))
+        ensure_faiss_index(cfg, force_rebuild=True, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
