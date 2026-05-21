@@ -409,6 +409,51 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]
     return text, stats
 
 
+def _parse_md(path: str) -> Tuple[str, Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    return text, {"format": "md", "text_chars_extracted": len(text)}
+
+
+def _parse_txt(path: str) -> Tuple[str, Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    return text, {"format": "txt", "text_chars_extracted": len(text)}
+
+
+def _parse_doc(path: str) -> Tuple[str, Dict[str, Any]]:
+    """Parse legacy binary .doc via antiword/catdoc subprocess."""
+    import shutil
+    import subprocess
+
+    tool = None
+    for candidate in ("antiword", "catdoc"):
+        if shutil.which(candidate):
+            tool = candidate
+            break
+    if tool is None:
+        raise RuntimeError(
+            ".doc парсинг требует antiword или catdoc. Установите: sudo apt install antiword"
+        )
+
+    try:
+        result = subprocess.run(
+            [tool, path],
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{tool} timed out on {path}") from None
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"{tool} failed (exit {result.returncode}): {stderr or path}")
+
+    text = result.stdout.decode("utf-8", errors="replace")
+    return text, {"format": "doc", "tool": tool, "text_chars_extracted": len(text)}
+
+
 def _finalize_pdf_stats(raw: Dict[str, Any], *, min_chars: int) -> Dict[str, Any]:
     chars_per = raw.get("chars_per_page")
     if not isinstance(chars_per, list):
@@ -486,14 +531,23 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
     elif path.lower().endswith(".docx"):
         max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
         text, extract_stats = _parse_docx(path, max_paragraphs=max_paragraphs)
+    elif path.lower().endswith(".doc"):
+        text, extract_stats = _parse_doc(path)
+    elif path.lower().endswith(".md"):
+        text, extract_stats = _parse_md(path)
+    elif path.lower().endswith(".txt"):
+        text, extract_stats = _parse_txt(path)
     else:
         raise RuntimeError(f"Unsupported file type: {path}")
 
     text_before_norm = text
-    # Minimal normalization
+    # Minimal normalization. Skip blank-line removal for .md/.txt where
+    # blank lines are semantic (paragraph separators) rather than extraction artifacts.
+    ext_lower = os.path.splitext(path.lower())[1]
     if cfg.get("parsing", {}).get("normalize_whitespace", True):
         text = "\n".join([line.rstrip() for line in text.splitlines()])
-        text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
+        if ext_lower not in (".md", ".txt"):
+            text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
 
     md = f"# {os.path.basename(path)}\n\n" + (text.strip() + "\n")
     text_chars_after_norm = len(text.strip())

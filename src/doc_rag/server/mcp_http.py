@@ -30,6 +30,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 
 from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
 
+from doc_rag.raglib.pipeline import (
+  clean_orphans as _pipeline_clean_orphans,
+  clear_incoming as _pipeline_clear_incoming,
+  delete_documents as _pipeline_delete_documents,
+  wipe_index as _pipeline_wipe_index,
+)
+
 Json = Union[Dict[str, Any], List[Any]]
 
 _TOOL_SEM = asyncio.Semaphore(int(os.environ.get("DOC_RAG_MAX_CONCURRENCY", "4")))
@@ -207,9 +214,9 @@ async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> tuple[bo
   """
   name = _sanitize_filename(file.filename or "")
   ext = os.path.splitext(name.lower())[1]
-  if ext not in (".pdf", ".docx"):
+  if ext not in (".pdf", ".docx", ".doc", ".md", ".txt"):
     lab = name or (file.filename or "unnamed")
-    return False, f"{lab}: только .pdf или .docx"
+    return False, f"{lab}: поддерживаются .pdf, .docx, .doc, .md, .txt"
 
   max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
   limit = max(1, max_mb) * 1024 * 1024
@@ -867,8 +874,13 @@ def _indexed_documents_table_rows_html(catalog: Dict[str, Any], max_rows: int = 
     sh = d.get("sha256")
     sh_s = html.escape(str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"), quote=False)
     rows.append(
-      f'<tr><td>{i}</td><td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
-      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td></tr>'
+      f'<tr data-doc-id="{did_attr}">'
+      f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
+      f'<td>{i}</td>'
+      f'<td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
+      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
+      f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
+      f'</tr>'
     )
   return ("\n".join(rows), note)
 
@@ -1029,6 +1041,17 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
         table.idx th {{ background: #f9fafb; font-weight: 600; }}
         table.idx td.doc-id {{ font-size: 11px; color: #6b7280; word-break: break-all; max-width: min(280px, 28vw); }}
+        .idx-toolbar {{ margin: 8px 0; display:flex; gap:10px; align-items:center; }}
+        button.row-delete-btn {{
+          background: transparent; border: 1px solid #fecaca; color: #b91c1c;
+          padding: 2px 8px; border-radius: 6px; font-size: 14px; line-height: 1;
+          cursor: pointer;
+        }}
+        button.row-delete-btn:hover {{ background:#fee2e2; }}
+        button.danger {{ background:#b91c1c; border-color:#b91c1c; }}
+        button.danger:hover {{ background:#991b1b; border-color:#991b1b; }}
+        .danger-zone {{ border-color:#fecaca; background:#fff7f7; }}
+        .danger-actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }}
         textarea.mono-cfg {{
           width: 100%; min-height: 420px; font-size: 12px; line-height: 1.4;
           font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1047,11 +1070,11 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           <h3>Загрузка документов</h3>
           <form action="/ui/upload{key_q}" method="post" enctype="multipart/form-data">
             <input type="hidden" name="key" value="{key}"/>
-            <input type="file" name="files" accept=".pdf,.docx,.PDF,.DOCX" multiple required />
+            <input type="file" name="files" accept=".pdf,.docx,.doc,.md,.txt,.PDF,.DOCX,.DOC,.MD,.TXT" multiple required />
             <div style="height: 12px;"></div>
             <button type="submit" id="ui-btn-upload" {"disabled" if state.get("running") else ""}>Загрузить в sources/incoming</button>
           </form>
-          <p class="muted">PDF, DOCX; можно выбрать несколько файлов сразу (лимит: env <code>DOC_RAG_UI_MAX_UPLOAD_FILES</code>, по умолчанию 48).</p>
+          <p class="muted">PDF, DOCX, DOC, MD, TXT; можно выбрать несколько файлов сразу (лимит: env <code>DOC_RAG_UI_MAX_UPLOAD_FILES</code>, по умолчанию 48).</p>
         </div>
 
         <div class="card">
@@ -1101,22 +1124,41 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           <h3>Проиндексированные документы</h3>
           <div id="indexed-summary">{idx_summary_html}</div>
           <div id="indexed-cap-note">{idx_cap_html}</div>
+          <div class="idx-toolbar">
+            <button type="button" id="idx-bulk-delete-btn" class="secondary" disabled>Удалить выбранные (<span id="idx-bulk-count">0</span>)</button>
+            <span class="muted" id="idx-bulk-msg"></span>
+          </div>
           <div style="overflow:auto; max-height: min(55vh, 520px); border: 1px solid #e5e7eb; border-radius: 10px;">
             <table class="idx" id="indexed-table">
               <thead>
                 <tr>
+                  <th style="width:32px;"><input type="checkbox" id="idx-select-all" title="Выбрать все" /></th>
                   <th style="width:36px;">#</th>
                   <th>Файл</th>
                   <th>doc_id</th>
                   <th style="width:88px;">Чанков</th>
                   <th style="width:72px;">Год</th>
                   <th style="width:120px;">SHA256</th>
+                  <th style="width:40px;"></th>
                 </tr>
               </thead>
               <tbody id="indexed-tbody">{idx_tbody_html}</tbody>
             </table>
           </div>
           <p class="muted" style="margin-top:10px;">Список берётся из <code>build/manifest.json</code> после ingest/rebuild. После завершения задачи таблица обновится автоматически.</p>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card danger-zone" style="flex: 1 1 100%; min-width: min(960px, 100%);">
+          <h3>Опасная зона</h3>
+          <p class="muted">Эти операции необратимы. Дождитесь завершения текущего ingest/rebuild.</p>
+          <div class="danger-actions">
+            <button type="button" id="dz-wipe-btn" class="danger">Удалить всё (sources/archived + build/)</button>
+            <button type="button" id="dz-orphans-btn" class="secondary">Удалить осиротевшие артефакты</button>
+            <button type="button" id="dz-incoming-btn" class="secondary">Очистить sources/incoming</button>
+          </div>
+          <p id="dz-msg" class="muted" style="margin-top:10px;"></p>
         </div>
       </div>
 
@@ -1205,8 +1247,11 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             var yr = d.edition_year != null && d.edition_year !== undefined ? esc(String(d.edition_year)) : '—';
             var sh = d.sha256 ? String(d.sha256) : '';
             var shDisp = sh.length > 16 ? esc(sh.slice(0, 16)) + '…' : esc(sh || '—');
-            return '<tr><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td></tr>';
+            var chk = didRaw ? '<input type="checkbox" class="row-check" data-doc-id="' + didAttr + '" />' : '';
+            var del = didRaw ? '<button type="button" class="row-delete-btn" data-doc-id="' + didAttr + '" data-name="' + esc(d.basename || '') + '" title="Удалить документ">✕</button>' : '';
+            return '<tr data-doc-id="' + didAttr + '"><td>' + chk + '</td><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td><td>' + del + '</td></tr>';
           }}).join('');
+          updateBulkDeleteState();
         }}
         function poll() {{
           fetch(statusPath, {{credentials: "same-origin"}})
@@ -1332,6 +1377,141 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               .catch(function () {{ if (msgEl) msgEl.textContent = "Ошибка сети."; }});
           }});
         }})();
+
+        function getCheckedDocIds() {{
+          var nodes = document.querySelectorAll(".row-check:checked");
+          var ids = [];
+          for (var i = 0; i < nodes.length; i++) {{
+            var v = nodes[i].getAttribute("data-doc-id");
+            if (v) ids.push(v);
+          }}
+          return ids;
+        }}
+        function updateBulkDeleteState() {{
+          var ids = getCheckedDocIds();
+          var btn = document.getElementById("idx-bulk-delete-btn");
+          var cnt = document.getElementById("idx-bulk-count");
+          var sa = document.getElementById("idx-select-all");
+          if (cnt) cnt.textContent = String(ids.length);
+          if (btn) btn.disabled = ids.length === 0;
+          if (sa) {{
+            var rows = document.querySelectorAll(".row-check");
+            sa.checked = rows.length > 0 && ids.length === rows.length;
+            sa.indeterminate = ids.length > 0 && ids.length < rows.length;
+          }}
+        }}
+        document.addEventListener("change", function (ev) {{
+          var t = ev.target;
+          if (!t) return;
+          if (t.id === "idx-select-all") {{
+            var rows = document.querySelectorAll(".row-check");
+            for (var i = 0; i < rows.length; i++) rows[i].checked = t.checked;
+            updateBulkDeleteState();
+            return;
+          }}
+          if (t.classList && t.classList.contains("row-check")) {{
+            updateBulkDeleteState();
+          }}
+        }});
+
+        function postForm(path, fields) {{
+          var fd = new FormData();
+          if (uiKey) fd.append("key", uiKey);
+          for (var k in fields) {{ if (Object.prototype.hasOwnProperty.call(fields, k)) fd.append(k, fields[k]); }}
+          return fetch(path + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
+            .then(function (r) {{ return r.json().then(function (j) {{ return {{ status: r.status, body: j }}; }}); }});
+        }}
+        function flashBulkMsg(text) {{
+          var el = document.getElementById("idx-bulk-msg");
+          if (el) el.textContent = text;
+        }}
+        function flashDangerMsg(text) {{
+          var el = document.getElementById("dz-msg");
+          if (el) el.textContent = text;
+        }}
+
+        document.addEventListener("click", function (ev) {{
+          var btn = ev.target && ev.target.closest ? ev.target.closest(".row-delete-btn") : null;
+          if (!btn) return;
+          var did = btn.getAttribute("data-doc-id");
+          var nm = btn.getAttribute("data-name") || did;
+          if (!did) return;
+          ev.preventDefault();
+          if (!confirm("Удалить документ «" + nm + "» из базы знаний?\\nЭта операция необратима.")) return;
+          flashBulkMsg("Удаляем «" + nm + "»…");
+          postForm("/ui/delete", {{ doc_ids: did }}).then(function (resp) {{
+            if (resp.body && resp.body.ok) {{
+              flashBulkMsg("Удалено: " + (resp.body.deleted || 0) + " док., чанков: " + (resp.body.removed_chunks || 0));
+              poll();
+            }} else {{
+              flashBulkMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
+            }}
+          }}).catch(function () {{ flashBulkMsg("Ошибка сети."); }});
+        }});
+
+        var bulkBtn = document.getElementById("idx-bulk-delete-btn");
+        if (bulkBtn) bulkBtn.addEventListener("click", function () {{
+          var ids = getCheckedDocIds();
+          if (!ids.length) return;
+          if (!confirm("Удалить " + ids.length + " документ(ов) из базы знаний?\\nЭта операция необратима.")) return;
+          flashBulkMsg("Удаляем " + ids.length + " документ(ов)…");
+          postForm("/ui/delete", {{ doc_ids: ids.join(",") }}).then(function (resp) {{
+            if (resp.body && resp.body.ok) {{
+              flashBulkMsg("Удалено: " + (resp.body.deleted || 0) + " док., чанков: " + (resp.body.removed_chunks || 0) + ", векторов: " + ((resp.body.index && resp.body.index.removed_vectors) || 0));
+              poll();
+            }} else {{
+              flashBulkMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
+            }}
+          }}).catch(function () {{ flashBulkMsg("Ошибка сети."); }});
+        }});
+
+        var wipeBtn = document.getElementById("dz-wipe-btn");
+        if (wipeBtn) wipeBtn.addEventListener("click", function () {{
+          var ans = prompt("Это удалит ВСЕ документы, чанки, индекс и архив. Введите DELETE для подтверждения:");
+          if (ans !== "DELETE") {{
+            flashDangerMsg(ans === null ? "" : "Отменено (нужно ввести строго DELETE).");
+            return;
+          }}
+          flashDangerMsg("Удаление всего…");
+          postForm("/ui/wipe", {{ confirm: "DELETE" }}).then(function (resp) {{
+            if (resp.body && resp.body.ok) {{
+              flashDangerMsg("Готово. Удалено записей: " + (resp.body.removed_entries || 0));
+              poll();
+            }} else {{
+              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
+            }}
+          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
+        }});
+
+        var orphBtn = document.getElementById("dz-orphans-btn");
+        if (orphBtn) orphBtn.addEventListener("click", function () {{
+          if (!confirm("Удалить осиротевшие файлы (md/чанки/векторы без записи в manifest)?")) return;
+          flashDangerMsg("Удаление осиротевших…");
+          postForm("/ui/clean-orphans", {{}}).then(function (resp) {{
+            if (resp.body && resp.body.ok) {{
+              flashDangerMsg("Удалено md: " + (resp.body.orphan_md_removed || 0) + ", чанков: " + (resp.body.orphan_chunks_removed || 0) + ", векторов: " + ((resp.body.index && resp.body.index.removed_vectors) || 0));
+              poll();
+            }} else {{
+              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
+            }}
+          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
+        }});
+
+        var incBtn = document.getElementById("dz-incoming-btn");
+        if (incBtn) incBtn.addEventListener("click", function () {{
+          if (!confirm("Удалить все файлы из sources/incoming/?")) return;
+          flashDangerMsg("Очистка incoming…");
+          postForm("/ui/clear-incoming", {{}}).then(function (resp) {{
+            if (resp.body && resp.body.ok) {{
+              flashDangerMsg("Удалено файлов: " + (resp.body.removed || 0));
+              poll();
+            }} else {{
+              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
+            }}
+          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
+        }});
+
+        updateBulkDeleteState();
         poll();
         setInterval(poll, pollMs);
       }})();
@@ -1438,6 +1618,71 @@ async def ui_ingest(request: Request, key: str = Form("")) -> Response:
   # Fire-and-forget
   asyncio.create_task(_run_ingest_background())
   return RedirectResponse(url=f"/ui?key={key}", status_code=303)
+
+
+def _busy_response() -> JSONResponse:
+  return JSONResponse(
+    {"ok": False, "error": "Идёт ingest/rebuild. Дождитесь завершения и повторите."},
+    status_code=409,
+  )
+
+
+@app.post("/ui/delete")
+async def ui_delete(request: Request, key: str = Form(""), doc_ids: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  if _INGEST_STATE.get("running"):
+    return _busy_response()
+  ids = [s.strip() for s in (doc_ids or "").split(",") if s.strip()]
+  if not ids:
+    return JSONResponse({"ok": False, "error": "no doc_ids provided"}, status_code=400)
+  try:
+    result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, **result})
+
+
+@app.post("/ui/wipe")
+async def ui_wipe(request: Request, key: str = Form(""), confirm: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  if _INGEST_STATE.get("running"):
+    return _busy_response()
+  if (confirm or "").strip() != "DELETE":
+    return JSONResponse(
+      {"ok": False, "error": "Подтверждение: введите слово DELETE."},
+      status_code=400,
+    )
+  try:
+    result = await asyncio.to_thread(_pipeline_wipe_index, str(_config_path()))
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, **result})
+
+
+@app.post("/ui/clean-orphans")
+async def ui_clean_orphans(request: Request, key: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  if _INGEST_STATE.get("running"):
+    return _busy_response()
+  try:
+    result = await asyncio.to_thread(_pipeline_clean_orphans, str(_config_path()))
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, **result})
+
+
+@app.post("/ui/clear-incoming")
+async def ui_clear_incoming(request: Request, key: str = Form("")) -> JSONResponse:
+  if not _ui_key_ok(request, key):
+    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+  try:
+    result = await asyncio.to_thread(_pipeline_clear_incoming, str(_config_path()))
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+  return JSONResponse({"ok": True, **result})
 
 
 @app.get("/mcp")

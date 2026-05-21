@@ -17,6 +17,9 @@ from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
 from doc_rag.raglib.indexer import ensure_faiss_index
 
 
+SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
     root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
@@ -317,7 +320,7 @@ def ingest(config_path: str) -> None:
     ensure_dir(docs_md)
     ensure_dir(chunks_dir)
 
-    sources = list_files_recursive(incoming_dir, exts={".pdf", ".docx"})
+    sources = list_files_recursive(incoming_dir, exts=SUPPORTED_EXTS)
     _log("INFO", f"ingest: found {len(sources)} file(s) in {os.path.relpath(incoming_dir, root)}")
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
@@ -489,11 +492,11 @@ def rebuild(config_path: str) -> None:
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
 
-    archived_sources = list_files_recursive(archived_dir, exts={".pdf", ".docx"})
+    archived_sources = list_files_recursive(archived_dir, exts=SUPPORTED_EXTS)
     _log("INFO", f"rebuild: archived pass ({len(archived_sources)} file(s))")
     man_a, chunks_a, _ = _ingest_sources(cfg, root, archived_sources, docs_md, target, overlap)
 
-    incoming_sources = list_files_recursive(incoming_dir, exts={".pdf", ".docx"})
+    incoming_sources = list_files_recursive(incoming_dir, exts=SUPPORTED_EXTS)
     _log("INFO", f"rebuild: incoming ingest pass ({len(incoming_sources)} file(s))")
     man_i, chunks_i, processed_i = _ingest_sources(cfg, root, incoming_sources, docs_md, target, overlap)
 
@@ -542,3 +545,317 @@ def rebuild(config_path: str) -> None:
         ensure_faiss_index(cfg, force_rebuild=True, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
+
+
+def _rebuild_faiss_after_delete(cfg: Dict[str, Any], deleted_doc_ids: set) -> Dict[str, Any]:
+    """Rebuild FAISS index by reconstructing kept vectors (no re-encoding).
+
+    Reads the old index + meta, drops vectors whose chunk_id belongs to a
+    deleted doc, and writes a fresh index with the surviving vectors. If
+    the index/meta files are missing it silently returns.
+    """
+    root = cfg["_root"]
+    index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+    index_file = os.path.join(index_dir, "faiss.index")
+    meta_file = os.path.join(index_dir, "index_meta.json")
+    stats = {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
+
+    if not (os.path.exists(index_file) and os.path.exists(meta_file)):
+        return stats
+    stats["had_index"] = True
+
+    try:
+        import faiss  # type: ignore
+    except Exception as e:
+        _log("WARN", f"faiss unavailable; cannot prune index: {e}")
+        return stats
+
+    try:
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:
+        _log("WARN", f"failed to read index_meta.json: {e}")
+        return stats
+
+    old_chunk_ids: List[str] = list(meta.get("chunk_ids") or [])
+    kept_positions: List[int] = []
+    kept_chunk_ids: List[str] = []
+    for i, cid in enumerate(old_chunk_ids):
+        doc_id = cid.rsplit(":", 1)[0] if ":" in cid else cid
+        if doc_id in deleted_doc_ids:
+            continue
+        kept_positions.append(i)
+        kept_chunk_ids.append(cid)
+
+    stats["removed_vectors"] = len(old_chunk_ids) - len(kept_positions)
+    stats["kept_vectors"] = len(kept_positions)
+
+    if stats["removed_vectors"] == 0:
+        return stats
+
+    if not kept_positions:
+        for p in (index_file, meta_file):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return stats
+
+    try:
+        old_index = faiss.read_index(index_file)
+        dim = int(getattr(old_index, "d", 0)) or int(meta.get("dim", 0))
+        if dim <= 0:
+            _log("WARN", "index has unknown dimension; skipping prune")
+            return stats
+        metric = str(meta.get("metric", "ip")).lower()
+        new_index = faiss.IndexFlatIP(dim) if metric == "ip" else faiss.IndexFlatL2(dim)
+        vecs = np.zeros((len(kept_positions), dim), dtype=np.float32)
+        for new_i, old_pos in enumerate(kept_positions):
+            vecs[new_i] = old_index.reconstruct(int(old_pos))
+        new_index.add(vecs)
+        faiss.write_index(new_index, index_file)
+        meta["chunk_ids"] = kept_chunk_ids
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        _log("WARN", f"FAISS prune failed, removing index for clean rebuild: {e}")
+        for p in (index_file, meta_file):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return stats
+
+
+def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
+    """Remove documents from the index by doc_id.
+
+    Side effects:
+    - Removes archived source file(s)
+    - Deletes build/docs_md/<doc_id>.md
+    - Rewrites chunks.jsonl, manifest.json without the deleted entries
+    - Prunes the FAISS index in-place by reconstructing kept vectors
+    """
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+    target = {d for d in doc_ids if d}
+    if not target:
+        return {"requested": 0, "deleted": 0, "missing": 0}
+
+    manifest_path = os.path.join(root, cfg["paths"]["manifest_path"])
+    chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception as e:
+        raise RuntimeError(f"cannot read manifest: {e}") from e
+
+    docs = manifest.get("documents") if isinstance(manifest, dict) else None
+    if not isinstance(docs, list):
+        raise RuntimeError("manifest.documents is malformed")
+
+    to_delete = [d for d in docs if isinstance(d, dict) and d.get("doc_id") in target]
+    to_keep = [d for d in docs if isinstance(d, dict) and d.get("doc_id") not in target]
+    found_ids = {d["doc_id"] for d in to_delete if d.get("doc_id")}
+    missing = target - found_ids
+
+    for d in to_delete:
+        sf_rel = d.get("source_file") or ""
+        if sf_rel:
+            # The manifest may point to sources/incoming/ even after the file was
+            # moved to sources/archived/. Try the recorded path, then both common
+            # roots with the same basename.
+            candidates = {sf_rel}
+            bn = os.path.basename(sf_rel)
+            for dir_key in ("sources_archived", "sources_incoming"):
+                d_rel = cfg["paths"].get(dir_key)
+                if d_rel:
+                    candidates.add(os.path.join(d_rel, bn))
+            for cand in candidates:
+                cand_abs = os.path.join(root, cand)
+                if os.path.isfile(cand_abs):
+                    try:
+                        os.remove(cand_abs)
+                    except OSError as e:
+                        _log("WARN", f"failed to remove source '{cand}': {e}")
+        md_rel = d.get("md_path") or ""
+        if md_rel:
+            md_abs = os.path.join(root, md_rel)
+            if os.path.isfile(md_abs):
+                try:
+                    os.remove(md_abs)
+                except OSError as e:
+                    _log("WARN", f"failed to remove md '{md_rel}': {e}")
+
+    removed_chunks = 0
+    if os.path.exists(chunks_path):
+        tmp = chunks_path + ".tmp"
+        with open(chunks_path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
+            for line in src:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                if obj.get("doc_id") in target:
+                    removed_chunks += 1
+                    continue
+                dst.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        os.replace(tmp, chunks_path)
+
+    index_stats = _rebuild_faiss_after_delete(cfg, target)
+
+    manifest["documents"] = to_keep
+    manifest["generated_at_utc"] = _utc_now_iso()
+    manifest["corpus_content_sha256"] = compute_corpus_fingerprint(to_keep)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    deleted_names = [os.path.basename(d.get("source_file") or d.get("doc_id") or "") for d in to_delete]
+    _log("INFO", f"delete: removed {len(to_delete)} doc(s), {removed_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    return {
+        "requested": len(target),
+        "deleted": len(to_delete),
+        "missing": sorted(missing),
+        "removed_chunks": removed_chunks,
+        "index": index_stats,
+        "deleted_names": deleted_names,
+    }
+
+
+def wipe_index(config_path: str) -> Dict[str, Any]:
+    """Delete everything: sources/archived/*, build/*, manifest.json, FAISS index.
+
+    sources/incoming is left alone (user-controlled inbox).
+    """
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+    paths = cfg["paths"]
+    targets = [
+        os.path.join(root, paths["sources_archived"]),
+        os.path.join(root, paths["docs_md_dir"]),
+        os.path.join(root, paths["chunks_dir"]),
+        os.path.join(root, paths["index_dir"]),
+    ]
+    removed = 0
+    for d in targets:
+        if not os.path.isdir(d):
+            continue
+        for entry in os.listdir(d):
+            p = os.path.join(d, entry)
+            try:
+                if os.path.isfile(p) or os.path.islink(p):
+                    os.remove(p)
+                    removed += 1
+                elif os.path.isdir(p):
+                    shutil.rmtree(p)
+                    removed += 1
+            except OSError as e:
+                _log("WARN", f"wipe: could not remove '{p}': {e}")
+
+    manifest_path = os.path.join(root, paths["manifest_path"])
+    if os.path.isfile(manifest_path):
+        try:
+            os.remove(manifest_path)
+            removed += 1
+        except OSError as e:
+            _log("WARN", f"wipe: could not remove manifest: {e}")
+
+    _log("INFO", f"wipe: removed {removed} entries (sources/archived, build/, manifest)")
+    return {"removed_entries": removed}
+
+
+def clean_orphans(config_path: str) -> Dict[str, Any]:
+    """Remove artifacts not referenced by the manifest.
+
+    - md files in build/docs_md/ whose doc_id is absent from manifest
+    - chunks.jsonl lines whose doc_id is absent from manifest
+    - rebuilds FAISS index in-place to drop orphan vectors
+    """
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+    paths = cfg["paths"]
+
+    manifest_path = os.path.join(root, paths["manifest_path"])
+    known_ids: set = set()
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for d in data.get("documents", []):
+            did = d.get("doc_id") if isinstance(d, dict) else None
+            if isinstance(did, str):
+                known_ids.add(did)
+    except Exception:
+        pass
+
+    orphan_md = 0
+    docs_md = os.path.join(root, paths["docs_md_dir"])
+    if os.path.isdir(docs_md):
+        for fn in os.listdir(docs_md):
+            if not fn.endswith(".md"):
+                continue
+            doc_id = fn[:-3]
+            if doc_id not in known_ids:
+                try:
+                    os.remove(os.path.join(docs_md, fn))
+                    orphan_md += 1
+                except OSError as e:
+                    _log("WARN", f"clean_orphans: cannot remove {fn}: {e}")
+
+    chunks_path = os.path.join(root, paths["chunks_dir"], "chunks.jsonl")
+    orphan_chunks = 0
+    orphan_doc_ids: set = set()
+    if os.path.exists(chunks_path):
+        tmp = chunks_path + ".tmp"
+        with open(chunks_path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
+            for line in src:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                did = obj.get("doc_id")
+                if did not in known_ids:
+                    orphan_chunks += 1
+                    if isinstance(did, str):
+                        orphan_doc_ids.add(did)
+                    continue
+                dst.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        os.replace(tmp, chunks_path)
+
+    index_stats = _rebuild_faiss_after_delete(cfg, orphan_doc_ids) if orphan_doc_ids else {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
+
+    _log("INFO", f"clean_orphans: removed {orphan_md} md, {orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    return {
+        "orphan_md_removed": orphan_md,
+        "orphan_chunks_removed": orphan_chunks,
+        "orphan_doc_ids": sorted(orphan_doc_ids),
+        "index": index_stats,
+    }
+
+
+def clear_incoming(config_path: str) -> Dict[str, Any]:
+    """Delete all files inside sources/incoming/ (does not touch the index)."""
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+    incoming = os.path.join(root, cfg["paths"]["sources_incoming"])
+    removed = 0
+    if os.path.isdir(incoming):
+        for entry in os.listdir(incoming):
+            p = os.path.join(incoming, entry)
+            try:
+                if os.path.isfile(p) or os.path.islink(p):
+                    os.remove(p)
+                    removed += 1
+                elif os.path.isdir(p):
+                    shutil.rmtree(p)
+                    removed += 1
+            except OSError as e:
+                _log("WARN", f"clear_incoming: cannot remove '{entry}': {e}")
+    _log("INFO", f"clear_incoming: removed {removed} entries")
+    return {"removed": removed}
