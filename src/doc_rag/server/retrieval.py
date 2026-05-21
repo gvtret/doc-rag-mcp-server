@@ -387,12 +387,10 @@ def semantic_search(cfg: Dict[str, Any], chunks: List[Dict[str, Any]], query: st
     index_dir = paths.get("index_dir", "build/index")
     index_path = os.path.join(root, index_dir, "faiss.index")
     if not os.path.exists(index_path):
-        try:
-            ok = ensure_faiss_index(cfg, force_rebuild=False, log=lambda m: None)
-        except Exception:
-            ok = False
-        if not ok or not os.path.exists(index_path):
-            return None
+        # Do NOT try to build the index from a search request — encoding
+        # thousands of chunks on CPU would hang the request for hours.
+        # Caller (doc_search) falls back to lexical search.
+        return None
 
     emb = cfg.get("embeddings", {}) or {}
     model_name = emb.get("model_name")
