@@ -10,6 +10,7 @@ This follows the MCP Streamable HTTP transport spec (2025-03-26+).
 """
 
 import asyncio
+import hashlib
 import html
 import json
 import os
@@ -161,43 +162,95 @@ def _incoming_unique_path(incoming: Path, filename: str) -> Path:
   return dst
 
 
-async def _save_upload_to_path(file: UploadFile, dst: Path) -> Optional[str]:
-  """Write upload to dst. Returns error message or None."""
+def _find_dup_in_manifest(sha256_hex: str) -> Optional[str]:
+  """Return basename of the matching indexed source file, or None."""
+  try:
+    manifest = load_manifest_json()
+    if not manifest:
+      return None
+    for doc in manifest.get("documents", []):
+      if isinstance(doc, dict) and doc.get("sha256") == sha256_hex:
+        src = doc.get("source_file") or doc.get("title_hint") or doc.get("doc_id") or "?"
+        return os.path.basename(src)
+  except Exception:
+    pass
+  return None
+
+
+def _find_dup_in_incoming(sha256_hex: str, incoming: Path) -> Optional[str]:
+  """Return filename of an existing file in incoming/ with the same sha256, or None."""
+  try:
+    for p in incoming.iterdir():
+      if not p.is_file():
+        continue
+      h = hashlib.sha256()
+      try:
+        with open(p, "rb") as f:
+          for blk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(blk)
+        if h.hexdigest() == sha256_hex:
+          return p.name
+      except Exception:
+        continue
+  except Exception:
+    pass
+  return None
+
+
+async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> tuple[bool, Optional[str]]:
+  """Save upload to incoming dir.
+
+  Returns (is_dup, message):
+    (False, None) → saved OK
+    (True,  msg)  → skipped: duplicate (msg names the conflicting file)
+    (False, msg)  → skipped: format/size error
+  """
+  name = _sanitize_filename(file.filename or "")
+  ext = os.path.splitext(name.lower())[1]
+  if ext not in (".pdf", ".docx"):
+    lab = name or (file.filename or "unnamed")
+    return False, f"{lab}: только .pdf или .docx"
+
   max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
   limit = max(1, max_mb) * 1024 * 1024
-  written = 0
+
+  buf: list[bytes] = []
+  total = 0
+  h = hashlib.sha256()
+  try:
+    while True:
+      chunk = await file.read(1024 * 1024)
+      if not chunk:
+        break
+      total += len(chunk)
+      if total > limit:
+        return False, f"{name}: файл больше лимита ({max_mb} MiB)"
+      buf.append(chunk)
+      h.update(chunk)
+  except Exception as e:
+    return False, f"{name}: {e}"
+  sha256_hex = h.hexdigest()
+
+  dup = _find_dup_in_manifest(sha256_hex)
+  if dup:
+    return True, f"{name}: уже проиндексирован — совпадает с «{dup}»"
+
+  dup = _find_dup_in_incoming(sha256_hex, incoming)
+  if dup:
+    return True, f"{name}: уже в очереди — совпадает с «{dup}»"
+
+  dst = _incoming_unique_path(incoming, name)
   try:
     with open(dst, "wb") as out:
-      while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-          break
-        written += len(chunk)
-        if written > limit:
-          out.close()
-          try:
-            dst.unlink(missing_ok=True)
-          except Exception:
-            pass
-          return f"{file.filename or dst.name}: файл больше лимита ({max_mb} MiB)"
-        out.write(chunk)
+      for blk in buf:
+        out.write(blk)
   except Exception as e:
     try:
       dst.unlink(missing_ok=True)
     except Exception:
       pass
-    return f"{file.filename or dst.name}: {e}"
-  return None
-
-
-async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> Optional[str]:
-  name = _sanitize_filename(file.filename or "")
-  ext = os.path.splitext(name.lower())[1]
-  if ext not in (".pdf", ".docx"):
-    lab = name or (file.filename or "unnamed")
-    return f"{lab}: только .pdf или .docx"
-  dst = _incoming_unique_path(incoming, name)
-  return await _save_upload_to_path(file, dst)
+    return False, f"{name}: {e}"
+  return False, None
 
 
 def _ui_key_ok(request: Request, key: str) -> bool:
@@ -866,14 +919,24 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     ue = int(qp.get("up_err") or "0")
   except Exception:
     ue = 0
+  try:
+    ud = int(qp.get("up_dup") or "0")
+  except Exception:
+    ud = 0
   um = (qp.get("up_msg") or "").strip()
-  if us > 0 or ue > 0:
-    hint = ""
-    if um:
-      hint = f" Пример: «{html.escape(um)}»"
-    upload_banner = (
-      f'<div class="upload-banner">Загружено файлов: {us}. Ошибок: {ue}.{hint}</div>'
-    )
+  udm = (qp.get("up_dup_msg") or "").strip()
+  if us > 0 or ue > 0 or ud > 0:
+    parts = []
+    if us > 0:
+      parts.append(f"Загружено файлов: {us}.")
+    if ud > 0:
+      dup_detail = f" «{html.escape(udm)}»" if udm else ""
+      parts.append(f"Пропущено дубликатов: {ud}.{dup_detail}")
+    if ue > 0:
+      err_detail = f" «{html.escape(um)}»" if um else ""
+      parts.append(f"Ошибок: {ue}.{err_detail}")
+    banner_cls = "upload-banner has-errors" if ue > 0 else ("upload-banner has-dups" if ud > 0 else "upload-banner")
+    upload_banner = f'<div class="{banner_cls}">{" ".join(parts)}</div>'
 
   state = dict(_INGEST_STATE)
   incoming = _sources_incoming_dir()
@@ -960,6 +1023,8 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
         #doc-preview-heading {{ margin: 0 36px 8px 0; font-size: 1.1rem; }}
         #doc-preview-text {{ margin: 12px 0 0; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }}
         .upload-banner {{ margin:16px 0; padding:10px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:10px; color:#065f46; }}
+        .upload-banner.has-dups {{ background:#fefce8; border-color:#fde047; color:#713f12; }}
+        .upload-banner.has-errors {{ background:#fef2f2; border-color:#fca5a5; color:#991b1b; }}
         table.idx {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
         table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
         table.idx th {{ background: #f9fafb; font-weight: 600; }}
@@ -1330,13 +1395,16 @@ async def ui_upload(
     )
 
   errors: List[str] = []
+  dups: List[str] = []
   saved = 0
   for uf in files:
-    msg = await _save_upload_to_incoming(uf, incoming)
-    if msg:
-      errors.append(msg)
-    else:
+    is_dup, msg = await _save_upload_to_incoming(uf, incoming)
+    if msg is None:
       saved += 1
+    elif is_dup:
+      dups.append(msg)
+    else:
+      errors.append(msg)
 
   qdict: Dict[str, str] = {}
   k = (key or "").strip()
@@ -1347,6 +1415,9 @@ async def ui_upload(
   if errors:
     qdict["up_err"] = str(len(errors))
     qdict["up_msg"] = errors[0][:280]
+  if dups:
+    qdict["up_dup"] = str(len(dups))
+    qdict["up_dup_msg"] = dups[0][:280]
   loc = "/ui?" + urlencode(qdict)
   return RedirectResponse(url=loc, status_code=303)
 
