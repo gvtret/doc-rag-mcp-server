@@ -24,3 +24,6 @@ doc-rag-deploy-*.tar.gz
 
 # Personal shell helpers
 /resume
+
+# WSL artefacts left by Windows downloads
+*:Zone.Identifier
