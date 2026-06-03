@@ -21,3 +21,6 @@ doc-rag-deploy-*.tar.gz
 .DS_Store
 .idea/
 .vscode/
+
+# Personal shell helpers
+/resume
