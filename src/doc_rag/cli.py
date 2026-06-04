@@ -5,6 +5,7 @@ import os
 import sys
 
 from doc_rag.raglib.pipeline import (
+    MANIFEST_SCHEMA_VERSION,
     clean_orphans,
     clear_incoming,
     delete_documents,
@@ -33,6 +34,10 @@ def main() -> None:
 
     sub.add_parser("clean-orphans", help="Drop md/chunks/vectors not referenced by manifest")
     sub.add_parser("clear-incoming", help="Delete every file in sources/incoming/")
+    sub.add_parser(
+        "migrate",
+        help="Upgrade build/manifest.json to the current schema (no-op when already current)",
+    )
 
     args = parser.parse_args()
     cfg_path = os.path.normpath(args.config)
@@ -67,6 +72,29 @@ def main() -> None:
         return
     if args.cmd == "clear-incoming":
         result = clear_incoming(cfg_path)
+        json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return
+    if args.cmd == "migrate":
+        # Stub for forward compatibility. The handler exists so users and
+        # downstream tooling can rely on `doc-rag migrate` being a valid
+        # invocation; concrete migrations land here as the schema evolves.
+        cfg = load_config(cfg_path)
+        root = cfg["_root"]
+        manifest_path = os.path.join(root, cfg["paths"]["manifest_path"])
+        found_version = None
+        if os.path.isfile(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as fh:
+                    found_version = json.load(fh).get("schema_version", 0)
+            except Exception:
+                found_version = None
+        result = {
+            "supported_schema_version": MANIFEST_SCHEMA_VERSION,
+            "found_schema_version": found_version,
+            "migrations_applied": [],
+            "message": "no migrations defined for this version",
+        }
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return

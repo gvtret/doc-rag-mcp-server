@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
+from doc_rag.raglib.audit_log import record_event as _audit
+
 from doc_rag.raglib.edition_year import resolve_edition_year
 from doc_rag.raglib.parsers import parse_document
 from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
@@ -153,16 +155,49 @@ def compute_corpus_fingerprint(documents: List[dict]) -> str:
     return x.hexdigest()
 
 
+#: Current on-disk schema version for build/manifest.json. Bump only when
+#: the layout changes in a way that an older `doc-rag` would misread.
+MANIFEST_SCHEMA_VERSION = 1
+
+
 def _manifest_shell(cfg: Dict[str, Any], documents: List[dict]) -> Dict[str, Any]:
     pv = cfg.get("pipeline_version")
     if not isinstance(pv, str) or not pv.strip():
         pv = "1.0.0"
     return {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at_utc": _utc_now_iso(),
         "pipeline_version": pv.strip(),
         "corpus_content_sha256": compute_corpus_fingerprint(documents),
         "documents": documents,
     }
+
+
+class ManifestSchemaTooNew(RuntimeError):
+    """Manifest was written by a newer version of doc-rag than this one."""
+
+    def __init__(self, found: int, supported: int) -> None:
+        super().__init__(
+            f"manifest schema_version={found} is newer than this build supports "
+            f"(supported: {supported}). Upgrade doc-rag or run `doc-rag migrate`."
+        )
+        self.found = found
+        self.supported = supported
+
+
+def _check_manifest_schema(data: Dict[str, Any]) -> None:
+    """Raise ManifestSchemaTooNew if the manifest is from a future build.
+
+    Missing `schema_version` is treated as 0, i.e. legacy and still
+    readable — we only refuse explicitly higher values.
+    """
+    raw = data.get("schema_version", 0)
+    try:
+        found = int(raw)
+    except (TypeError, ValueError):
+        return
+    if found > MANIFEST_SCHEMA_VERSION:
+        raise ManifestSchemaTooNew(found=found, supported=MANIFEST_SCHEMA_VERSION)
 
 
 def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources: List[str]) -> None:
@@ -299,6 +334,7 @@ def _load_existing_manifest(manifest_path: str) -> dict:
             data = json.load(f)
         if not isinstance(data, dict):
             return {"generated_at_utc": None, "documents": []}
+        _check_manifest_schema(data)
         docs = data.get("documents")
         if not isinstance(docs, list):
             docs = []
@@ -651,6 +687,8 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"cannot read manifest: {e}") from e
 
+    if isinstance(manifest, dict):
+        _check_manifest_schema(manifest)
     docs = manifest.get("documents") if isinstance(manifest, dict) else None
     if not isinstance(docs, list):
         raise RuntimeError("manifest.documents is malformed")
@@ -711,11 +749,24 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     manifest["documents"] = to_keep
     manifest["generated_at_utc"] = _utc_now_iso()
     manifest["corpus_content_sha256"] = compute_corpus_fingerprint(to_keep)
+    manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     deleted_names = [os.path.basename(d.get("source_file") or d.get("doc_id") or "") for d in to_delete]
     _log("INFO", f"delete: removed {len(to_delete)} doc(s), {removed_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    _audit(
+        root,
+        "delete",
+        doc_ids=sorted(found_ids),
+        counts={
+            "requested": len(target),
+            "deleted": len(to_delete),
+            "missing": len(missing),
+            "removed_chunks": removed_chunks,
+            "removed_vectors": index_stats.get("removed_vectors", 0),
+        },
+    )
     return {
         "requested": len(target),
         "deleted": len(to_delete),
@@ -765,6 +816,7 @@ def wipe_index(config_path: str) -> Dict[str, Any]:
             _log("WARN", f"wipe: could not remove manifest: {e}")
 
     _log("INFO", f"wipe: removed {removed} entries (sources/archived, build/, manifest)")
+    _audit(root, "wipe", counts={"removed_entries": removed})
     return {"removed_entries": removed}
 
 
@@ -831,6 +883,16 @@ def clean_orphans(config_path: str) -> Dict[str, Any]:
     index_stats = _rebuild_faiss_after_delete(cfg, orphan_doc_ids) if orphan_doc_ids else {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
 
     _log("INFO", f"clean_orphans: removed {orphan_md} md, {orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    _audit(
+        root,
+        "clean_orphans",
+        doc_ids=sorted(orphan_doc_ids) if orphan_doc_ids else None,
+        counts={
+            "orphan_md_removed": orphan_md,
+            "orphan_chunks_removed": orphan_chunks,
+            "removed_vectors": index_stats.get("removed_vectors", 0),
+        },
+    )
     return {
         "orphan_md_removed": orphan_md,
         "orphan_chunks_removed": orphan_chunks,
@@ -858,4 +920,5 @@ def clear_incoming(config_path: str) -> Dict[str, Any]:
             except OSError as e:
                 _log("WARN", f"clear_incoming: cannot remove '{entry}': {e}")
     _log("INFO", f"clear_incoming: removed {removed} entries")
+    _audit(root, "clear_incoming", counts={"removed": removed})
     return {"removed": removed}
