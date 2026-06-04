@@ -67,6 +67,12 @@ dev = [
   "pytest-cov>=4.1",
 ]
 
+# Prometheus /metrics endpoint (optional). Without this extra the
+# endpoint exists but returns 503 with an informative body.
+metrics = [
+  "prometheus-client>=0.20",
+]
+
 
 [project.scripts]
 doc-rag = "doc_rag.cli:main"

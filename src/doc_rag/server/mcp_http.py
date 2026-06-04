@@ -35,6 +35,7 @@ from doc_rag.server.logging_setup import (
   new_request_id,
   set_request_id,
 )
+from doc_rag.server import metrics as _metrics
 
 from doc_rag.raglib.pipeline import (
   clean_orphans as _pipeline_clean_orphans,
@@ -712,15 +713,19 @@ def _handle_one(req: Dict[str, Any]) -> Tuple[int, Optional[Dict[str, Any]]]:
     arguments = params.get("arguments") or {}
 
     if name != "doc_search":
+      _metrics.record_mcp_request(tool=name or "unknown", status="unknown_tool", duration_seconds=0.0)
       return 200, _ok(req_id, {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True})
 
     # Lazy import to keep base install lightweight
     from doc_rag.server.search_tool import doc_search_tool
 
+    started = time.time()
     try:
       content = doc_search_tool(arguments)
+      _metrics.record_mcp_request("doc_search", "ok", time.time() - started)
       return 200, _ok(req_id, {"content": content, "isError": False})
     except Exception as exc:
+      _metrics.record_mcp_request("doc_search", "error", time.time() - started)
       return 200, _ok(req_id, {"content": [{"type": "text", "text": f"doc_search failed: {exc}"}], "isError": True})
 
   # Default: method not found
@@ -771,8 +776,8 @@ async def _http_log_mw(request: Request, call_next):
   response: Optional[Response] = None
   try:
     client_host = getattr(getattr(request, "client", None), "host", None) or "unknown"
-    # Don't rate-limit health checks (often polled).
-    if request.url.path != "/health":
+    # Don't rate-limit health checks or metrics scrapes (high-frequency probes).
+    if request.url.path not in ("/health", "/health/live", "/health/ready", "/metrics"):
       if not await _rate_limit_allow(client_host):
         response = PlainTextResponse("Too Many Requests", status_code=429)
         response.headers["X-Request-ID"] = rid
@@ -788,6 +793,9 @@ async def _http_log_mw(request: Request, call_next):
     # Avoid drowning the UI buffer with health checks and UI JSON polling.
     if path not in (
       "/health",
+      "/health/live",
+      "/health/ready",
+      "/metrics",
       "/ui/status",
       "/ui/document-preview",
       "/api/v1/manifest",
@@ -799,9 +807,83 @@ async def _http_log_mw(request: Request, call_next):
     set_request_id(None)
 
 
+def _readiness_state() -> Dict[str, Any]:
+  """Compute current readiness — manifest present, no background job running."""
+  root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
+  manifest_abs = os.path.join(root, "build", "manifest.json")
+  has_manifest = os.path.isfile(manifest_abs)
+  job_running = bool(_INGEST_STATE.get("running"))
+  job_name = _INGEST_STATE.get("job") if job_running else None
+  ready = has_manifest and not job_running
+  reasons: List[str] = []
+  if not has_manifest:
+    reasons.append("manifest_missing")
+  if job_running:
+    reasons.append(f"job_in_flight:{job_name}")
+  return {
+    "ready": ready,
+    "has_manifest": has_manifest,
+    "job_running": job_running,
+    "job": job_name,
+    "reasons": reasons,
+  }
+
+
+@app.get("/health/live")
+async def health_live() -> JSONResponse:
+  """Liveness probe — the process is up. Always 200 unless the event loop is wedged."""
+  return JSONResponse({"status": "ok", "name": "doc-rag"})
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+  """Readiness probe — 200 if the service can answer real queries, 503 otherwise.
+
+  Ready when:
+    - build/manifest.json exists (something has been ingested), and
+    - no ingest or rebuild job is currently in flight.
+  """
+  state = _readiness_state()
+  code = 200 if state["ready"] else 503
+  return JSONResponse({"status": "ready" if state["ready"] else "not_ready", **state}, status_code=code)
+
+
+@app.get("/metrics")
+async def metrics_endpoint() -> Response:
+  """Prometheus text exposition; 503 if the [metrics] extra is not installed."""
+  if not _metrics.metrics_available():
+    return PlainTextResponse(
+      _metrics.render_text().decode("utf-8"),
+      status_code=503,
+      media_type="text/plain; charset=utf-8",
+    )
+  # Refresh the index-size gauge opportunistically each scrape.
+  try:
+    cat = indexed_catalog()
+    n = int(cat.get("indexed_chunks_total", 0) or 0)
+    _metrics.set_faiss_index_size(n)
+  except Exception:
+    pass
+  body = _metrics.render_text()
+  return PlainTextResponse(body.decode("utf-8"), media_type=_metrics.CONTENT_TYPE_LATEST)
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
-  return JSONResponse({"status": "ok", "name": "doc-rag", "version": "1.0"})
+  """Legacy combined health probe — kept for backwards compatibility.
+
+  Returns 200 + ready/not_ready in the body so existing scrapers keep
+  working but can be migrated to /health/live or /health/ready on their
+  own schedule.
+  """
+  state = _readiness_state()
+  return JSONResponse({
+    "status": "ok",
+    "name": "doc-rag",
+    "version": "1.0",
+    "ready": state["ready"],
+    "reasons": state["reasons"],
+  })
 
 
 @app.get("/api/v1/manifest")
