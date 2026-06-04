@@ -231,6 +231,38 @@ not blockers for any v1.x.y tag.
 - A "RAG quality" evaluation harness (retrieval@k, faithfulness scores).
 - A first-party hosted variant.
 
+### Structure-aware chunking (planned for v1.5+)
+
+The current chunker is fixed-size: 512 tokens with 64-token overlap.
+The size matches the embedding model's sweet spot and gives a
+predictable per-chunk encoding cost, but it has known failure modes on
+the documents this project is built for (СТО / ГОСТы / specifications):
+tables get split mid-row, long clauses get cut, short headings get
+glued to unrelated bodies, and the "in this section…" scope reference
+is lost across chunk boundaries.
+
+The intended improvement is a **recursive splitter** that respects the
+existing structure where it can:
+
+1. Split first by the strongest separator available (`\n## `, `\n# `,
+   `\n\n`, `\n`, `. `, ` `), descending.
+2. For each candidate block: if it fits the target window, keep it; if
+   it overshoots, recurse with the next separator; if it undershoots a
+   minimum, merge into the neighbour.
+3. Carry the enclosing section heading as chunk metadata so retrieval
+   answers preserve the "scope" context.
+4. Keep the current fixed-size chunker as a config-selectable fallback
+   (`chunking.strategy: fixed | recursive`).
+
+Acceptance criteria, when this lands:
+- A retrieval@k benchmark on a small fixed Q/A set shows ≥ no
+  regression vs. the fixed-size chunker.
+- Configurable target / min / max chunk sizes.
+- Section heading appears in chunk metadata when the parser can
+  identify one.
+
+This is a v1.5+ task, not a v1.x release blocker.
+
 ## 7. How to update this roadmap
 
 This file is part of the public surface in spirit, not in SemVer. When
