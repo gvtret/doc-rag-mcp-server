@@ -94,6 +94,33 @@ Delete every file under `sources/incoming/` (does not touch the index).
 doc-rag clear-incoming
 ```
 
+## `doc-rag migrate`
+
+Bring `build/manifest.json` up to the schema version this build of
+`doc-rag` understands. Currently a stub: there are no migrations
+defined, so the command always reports the supported and detected
+schema versions and exits cleanly. The CLI surface exists so future
+schema bumps have a stable place to land.
+
+```bash
+doc-rag migrate
+```
+
+Sample output:
+
+```json
+{
+  "supported_schema_version": 1,
+  "found_schema_version": 1,
+  "migrations_applied": [],
+  "message": "no migrations defined for this version"
+}
+```
+
+If `doc-rag` refuses to operate on a manifest because of a higher
+schema version than it knows about, `migrate` is the path forward —
+see also `docs/troubleshooting.md` for the matching error message.
+
 ---
 
 All destructive commands print a JSON summary so they can be piped into other tools.

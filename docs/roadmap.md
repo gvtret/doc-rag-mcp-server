@@ -1,8 +1,9 @@
 # Roadmap to public v1.x.y
 
-This document is the master plan for taking `doc-rag` from its current state
-(a working local RAG with private code at version `1.0.0`) to a
-production-ready, publicly published release. It is organised around
+This document is the master plan for taking `doc-rag` from its initial
+internal state (a working local RAG, private code, internal version
+`1.0.0`) to a production-ready, publicly published release line that
+begins with `v1.1.0`. It is organised around
 four sprints. Each sprint has an acceptance gate; the gate decides
 whether the next sprint can start.
 
@@ -54,9 +55,9 @@ any release:
 
 - Releases are tagged `vX.Y.Z` on `main` after CI is green and `CHANGELOG.md`
   has an entry under that version.
-- Pre-1.x releases are not anticipated — the project is already `1.0.0`
-  internally. The first **public** release will be the first tag after the
-  Sprint 1 gate passes (target: `1.1.0`).
+- Pre-1.x releases are not anticipated — the project started its
+  public life at `v1.1.0`, with `v1.0.0` reserved as the internal
+  pre-publication baseline. The first **public** tag is `v1.1.0`.
 - Patch releases (`1.1.x`) are cut as needed; minor releases follow each
   sprint that ships user-facing features.
 

@@ -69,3 +69,9 @@ These are intended for trusted LAN/admin use. Keep the API key set in production
 | `GET`  | `/ui/status` | JSON status for live polling |
 | `GET`  | `/ui/document-preview` | rendered markdown for a `doc_id` |
 | `GET`  | `/api/v1/manifest` | raw `build/manifest.json` |
+
+In addition, the server exposes the standard probe and observability
+endpoints described in [docs/deploy.md](deploy.md#observability):
+`GET /health/live`, `GET /health/ready`, `GET /metrics`. The Web UI
+itself does not use them — they exist for k8s/uptime monitors and
+Prometheus scrapers.

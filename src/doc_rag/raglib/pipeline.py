@@ -163,7 +163,7 @@ MANIFEST_SCHEMA_VERSION = 1
 def _manifest_shell(cfg: Dict[str, Any], documents: List[dict]) -> Dict[str, Any]:
     pv = cfg.get("pipeline_version")
     if not isinstance(pv, str) or not pv.strip():
-        pv = "1.0.0"
+        pv = "1.1.0"
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at_utc": _utc_now_iso(),
