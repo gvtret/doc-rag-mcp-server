@@ -18,23 +18,12 @@ export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 CFG="${1:-config/config.yaml}"
 
 # Extract paths from YAML via Python (no yq dependency).
-# Extract paths from YAML via Python (no yq dependency).
 readarray -t KV < <(
   "${VENV_PY}" - "${CFG}" <<'PY'
 import sys, os, yaml
 cfg_path = sys.argv[1] if len(sys.argv) > 1 else "config/config.yaml"
 with open(cfg_path, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
-paths = cfg.get("paths", {})
-print("CHUNKS=" + os.path.join(paths.get("chunks_dir","build/chunks_jsonl"), "chunks.jsonl"))
-print("INDEX=" + os.path.join(paths.get("index_dir","build/index"), "faiss.index"))
-print("EMB_MODEL=" + str(cfg.get("embeddings", {}).get("model_name", "")))
-PY
-)
-> 1 else "config/config.yaml"
-with open(cfg_path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)
-
 paths = cfg.get("paths", {})
 print("CHUNKS=" + os.path.join(paths.get("chunks_dir", "build/chunks_jsonl"), "chunks.jsonl"))
 print("INDEX=" + os.path.join(paths.get("index_dir", "build/index"), "faiss.index"))
