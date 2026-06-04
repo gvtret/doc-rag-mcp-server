@@ -1,8 +1,8 @@
 # doc-rag — local RAG over your documents
 
-[![tests](https://github.com/trgv/doc-rag/actions/workflows/tests.yml/badge.svg)](https://github.com/trgv/doc-rag/actions/workflows/tests.yml)
-[![lint](https://github.com/trgv/doc-rag/actions/workflows/lint.yml/badge.svg)](https://github.com/trgv/doc-rag/actions/workflows/lint.yml)
-[![build](https://github.com/trgv/doc-rag/actions/workflows/build.yml/badge.svg)](https://github.com/trgv/doc-rag/actions/workflows/build.yml)
+[![tests](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/tests.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/tests.yml)
+[![lint](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/lint.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/lint.yml)
+[![build](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/build.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/build.yml)
 [![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
 `doc-rag` is a local, offline-first knowledge base for engineering documentation:
@@ -26,7 +26,7 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 ## Quickstart
 
 ```bash
-git clone https://github.com/trgv/doc-rag
+git clone https://github.com/gvtret/doc-rag-mcp-server
 cd doc-rag
 bash scripts/bootstrap.sh        # creates .venv, installs deps (interactive)
 cp YOUR_FILES.pdf sources/incoming/

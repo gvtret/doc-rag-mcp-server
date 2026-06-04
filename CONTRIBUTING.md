@@ -18,7 +18,7 @@ AGPL.
 ## Development setup
 
 ```bash
-git clone https://github.com/<your-fork>/doc-rag
+gh repo clone gvtret/doc-rag-mcp-server doc-rag
 cd doc-rag
 python3 -m venv .venv
 source .venv/bin/activate
@@ -68,7 +68,7 @@ opening a PR.
 
 Before opening a PR:
 
-1. Your branch is rebased on current `main`.
+1. Your branch is rebased on current `master`.
 2. `pytest` passes locally.
 3. `ruff check .` and `ruff format --check .` pass.
 4. If you added a user-facing change, `CHANGELOG.md` has an entry under
