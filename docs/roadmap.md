@@ -218,52 +218,247 @@ public release announced.
 - [ ] CHANGELOG entry for `1.4.0`; GitHub release with release notes;
       public announcement on Habr or equivalent.
 
-## 6. Out of scope for v1.x
+## 6. Post-v1.x: planned major work
+
+Each version below is a coherent slice of the broader **production
+ingest pipeline overhaul** that the project is moving towards. They
+land in order — later items depend on earlier ones (most obviously
+v1.9's recursive chunker depends on the typed blocks layer introduced
+in v1.5). Each is its own MINOR release with its own acceptance gate.
+
+The motivation for this overhaul, in one sentence: the current pipeline
+turns documents into unstructured Markdown and then into fixed-size
+chunks. Both steps lose information that, if preserved, would visibly
+improve retrieval quality on the project's primary corpus (СТО / ГОСТы
+/ specifications), where tables, formulas, multi-column layouts, and
+explicit section hierarchies are the rule rather than the exception.
+
+### v1.5 — Docling-based parsing backend (opt-in)
+
+Introduce [Docling](https://github.com/DS4SD/docling) (IBM Research,
+MIT-licensed) as a new optional parser backend. PyMuPDF remains the
+default; users who opt in get state-of-the-art table extraction
+(TableFormer), formula recognition with LaTeX output, and robust
+multi-column layout analysis.
+
+Concrete deliverables:
+
+- New config: `pdf_backend: docling`, alongside existing `auto` /
+  `pymupdf` / `pypdf2`.
+- New optional extra: `pip install -e .[docling]`.
+- File-type detection via magic bytes, not extension.
+- A new typed-blocks intermediate layer: `build/blocks/<doc_id>.jsonl`.
+  Each line is a `{type: heading|paragraph|table|formula|figure|list,
+  text, level, page, bbox, source_backend, confidence}` record. This
+  layer is the **load-bearing new artifact** — every later release
+  here consumes it.
+- Markdown and `chunks.jsonl` are derived from blocks, not from raw
+  parser output, so the same source-of-truth feeds both.
+
+Acceptance:
+
+- Retrieval@k benchmark on a fixed test corpus shows no regression
+  vs. the PyMuPDF backend.
+- Schema for `blocks.jsonl` documented and SemVer-protected like
+  `manifest.json` already is.
+- `build/quality/<doc_id>.json` placeholder file emitted (filled in
+  v1.7).
+
+### v1.6 — Cascading parser fallback
+
+Add [Unstructured](https://unstructured.io/) (`hi_res` strategy) as
+a second-tier fallback for PDFs that Docling cannot handle (broken
+layout, exotic fonts, OCR-only scans where Docling's preprocessing
+fails). Cascade order:
+
+```
+Docling → Unstructured (hi_res) → PyMuPDF → pypdf
+```
+
+The cascade triggers on (a) parser exception, or (b) quality score
+below a configurable threshold (see v1.7 for the quality module).
+
+Concrete deliverables:
+
+- New config: `pdf_backend: cascade`.
+- Logging line emitted on each fallback hop, with the reason.
+- Per-document `source_backend` field in blocks/manifest so a reader
+  can tell which backend produced each chunk.
+
+Acceptance:
+
+- On a curated set of "problematic" PDFs (multi-column, heavy tables,
+  formula-rich), cascade extracts non-empty text from ≥ 90 % of them
+  vs. ≤ 60 % for any single backend alone.
+
+### v1.7 — Document quality checks + per-doc reports
+
+Mandatory pre-indexing QA on the typed blocks. The pipeline emits
+`build/quality/<doc_id>.json` for every document and a roll-up under
+`build/quality/summary.json`.
+
+Checks (each yields a severity and a human-readable message):
+
+- Empty pages and pages with suspiciously low text density.
+- Broken tables (empty-cells ratio above threshold, mismatched column
+  counts row-to-row).
+- Lost images (count detected by parser vs. count of figure-blocks).
+- Formula garbage (heuristic: fraction of unknown Unicode blocks).
+- Reading-order anomalies (positional vs. logical order mismatches).
+- Duplicate headers and footers (likely header/footer pollution).
+- Unreadable-character percentage above threshold.
+
+Report shape (`schema_version: 1`):
+
+```json
+{
+  "doc_id": "...",
+  "pages": 120,
+  "blocks": {"heading": 24, "paragraph": 706, "table": 24,
+             "figure": 17, "formula": 11},
+  "warnings": [
+    {"severity": "info",    "code": "low_text_density",
+     "page": 45, "message": "..."},
+    {"severity": "warn",    "code": "broken_table",
+     "block_id": "...",   "message": "table 12: empty cells ratio > 40%"}
+  ],
+  "score": 0.87,
+  "schema_version": 1
+}
+```
+
+Concrete deliverables:
+
+- `src/doc_rag/raglib/quality.py` module.
+- UI surfacing: badge on each document row in the Web UI table (green
+  / yellow / red) tied to severity.
+- Manifest entry: `quality_score`, `quality_warning_count`.
+- New config: `quality.fail_on_severity: error | warn | never`
+  (default `never` — warnings do not block ingest).
+
+Acceptance:
+
+- All seven check types have unit tests with synthetic block fixtures.
+- A document with a known broken table is correctly flagged.
+- UI shows the badge.
+
+### v1.8 — Unified DOC / DOCX ingest path
+
+Replace the current `antiword` shell-out for `.doc` with a
+LibreOffice-headless DOC→DOCX conversion in the pipeline, then let
+either python-docx (lightweight) or Docling (rich) handle the DOCX.
+
+Concrete deliverables:
+
+- New config: `docx_backend: python-docx | docling`.
+- LibreOffice headless invoked as a subprocess only for `.doc`; the
+  resulting DOCX flows through the same path as a native `.docx`.
+- `antiword` removed from default install path (its Apache-2.0 vs.
+  GPL-2.0 license is irrelevant; the licence-clean alternative is
+  python-docx).
+
+Acceptance:
+
+- `.doc` parser test from `tests/test_parsers.py` passes against the
+  new path.
+- Existing `sample.doc` fixture remains the regression target.
+
+### v1.9 — Structure-aware (recursive) chunker
+
+Now trivial because `blocks.jsonl` from v1.5 supplies the structure.
+A recursive splitter walks the typed blocks, grouping siblings into
+chunks while respecting headings as hard boundaries and tables as
+atomic units.
+
+Concrete deliverables:
+
+- `src/doc_rag/raglib/chunker_recursive.py`.
+- New config: `chunking.strategy: fixed | recursive` (default
+  `recursive` once retrieval-quality benchmarks confirm no regression
+  on a curated Q/A set; otherwise default stays `fixed`).
+- Section heading carried as `chunk.section_path` metadata, exposed
+  in `doc_search` results so the LLM has scope context.
+- Tables stay as single chunks even when large, with a smaller
+  "table_summary" sibling chunk so retrieval can still match on a
+  query that does not name a specific cell.
+- Coverage gate raised to 70 % (the long-deferred Sprint 2 target —
+  feasible now because `pipeline.py` can be tested at the blocks layer
+  without a real embedding model).
+
+Acceptance:
+
+- Retrieval@k on a small curated Q/A set ≥ baseline (fixed-size
+  chunker on PyMuPDF blocks).
+- Section headings appear in 95 % of returned chunks when the source
+  document has any heading structure at all.
+
+### v2.0 — Vector-store backends and namespaces
+
+Pluggable vector store with FAISS as the default. Opt-in backends:
+[Qdrant](https://qdrant.tech/) (hybrid search, payload filters,
+multi-collection) and [pgvector](https://github.com/pgvector/pgvector)
+(when the operator already runs Postgres). Adds the long-deferred
+multi-collection / namespace concept — for example, separate
+collections for СТО vs. РД vs. internal regulations.
+
+Concrete deliverables:
+
+- New config: `vector_store: faiss | qdrant | pgvector`.
+- Migration tool: `doc-rag migrate --from faiss --to qdrant`.
+- Namespace concept: documents and queries can be scoped to a
+  collection.
+- Hybrid search wired in for Qdrant backend (vector + metadata
+  filter, e.g. `source LIKE 'СТО 34.*' AND section_path LIKE '5.%'`).
+
+Acceptance:
+
+- All three backends pass the existing `doc_search` contract test.
+- Qdrant backend demonstrates a hybrid query that pure FAISS cannot
+  answer.
+- Schema migration v1 → v2 actually moves a corpus end-to-end.
+
+## 7. Hardware acceleration paths
+
+Independently of the version plan, three hardware acceleration paths
+are supported across all v1.x and beyond:
+
+- **CUDA (NVIDIA)** — primary GPU path. Code uses
+  `torch.cuda.is_available()`; configuration uses `device: cuda` or
+  `device: auto` in `config/config.yaml`. Verified end-to-end on
+  GTX 1650 + WSL2 (see `docs/install.md` § "GPU install (NVIDIA /
+  CUDA)"). The typical development workflow uses this path.
+- **ROCm (AMD)** — supported through the PyTorch ROCm wheel for
+  contributors who have a ROCm-compatible AMD GPU. Code path is
+  identical to CUDA (PyTorch's HIP translation is transparent);
+  FAISS stays on CPU because `faiss-gpu` is NVIDIA-only. See
+  `docs/install.md` § "GPU install (AMD / ROCm)" for prerequisites.
+- **CPU-only** — works always. Slower, predictable, no admin work.
+  This is the assumed mode for production server deployments; large
+  ingest jobs run on a schedule (see
+  `docs/deploy.md` § "Scheduled ingest") so the long wall-clock time
+  is absorbed off-hours.
+
+The Docling/Unstructured pipeline introduced in v1.5+ inherits this
+matrix automatically because both libraries route their inference
+through PyTorch.
+
+## 8. Out of scope for v1.x
 
 These items are deliberately deferred and tracked separately. They are
 not blockers for any v1.x.y tag.
 
-- Multi-collection / namespaces (a future v2 feature).
 - Distributed search across multiple FAISS shards.
 - Web UI authentication beyond the existing single-key model
   (multi-user authn, SSO).
 - Background re-embedding when the embedding model changes mid-flight.
-- A "RAG quality" evaluation harness (retrieval@k, faithfulness scores).
+- A "RAG quality" evaluation harness (retrieval@k, faithfulness scores
+  with golden answers).
 - A first-party hosted variant.
 
-### Structure-aware chunking (planned for v1.5+)
+Multi-collection / namespaces was previously here and is now scoped
+into v2.0 instead.
 
-The current chunker is fixed-size: 512 tokens with 64-token overlap.
-The size matches the embedding model's sweet spot and gives a
-predictable per-chunk encoding cost, but it has known failure modes on
-the documents this project is built for (СТО / ГОСТы / specifications):
-tables get split mid-row, long clauses get cut, short headings get
-glued to unrelated bodies, and the "in this section…" scope reference
-is lost across chunk boundaries.
-
-The intended improvement is a **recursive splitter** that respects the
-existing structure where it can:
-
-1. Split first by the strongest separator available (`\n## `, `\n# `,
-   `\n\n`, `\n`, `. `, ` `), descending.
-2. For each candidate block: if it fits the target window, keep it; if
-   it overshoots, recurse with the next separator; if it undershoots a
-   minimum, merge into the neighbour.
-3. Carry the enclosing section heading as chunk metadata so retrieval
-   answers preserve the "scope" context.
-4. Keep the current fixed-size chunker as a config-selectable fallback
-   (`chunking.strategy: fixed | recursive`).
-
-Acceptance criteria, when this lands:
-- A retrieval@k benchmark on a small fixed Q/A set shows ≥ no
-  regression vs. the fixed-size chunker.
-- Configurable target / min / max chunk sizes.
-- Section heading appears in chunk metadata when the parser can
-  identify one.
-
-This is a v1.5+ task, not a v1.x release blocker.
-
-## 7. How to update this roadmap
+## 9. How to update this roadmap
 
 This file is part of the public surface in spirit, not in SemVer. When
 priorities shift:

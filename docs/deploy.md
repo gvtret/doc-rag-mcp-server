@@ -172,3 +172,98 @@ uvicorn (default 30 s, override via `DOC_RAG_SHUTDOWN_TIMEOUT`).
 The bundled systemd unit declares `KillSignal=SIGTERM` and
 `TimeoutStopSec=60`. On `systemctl stop doc-rag-mcp`, in-flight
 requests have up to 30 s to finish before connections are force-closed.
+
+## Scheduled ingest
+
+`doc-rag ingest` is incremental — it only processes files newly
+dropped into `sources/incoming/`. On CPU-only servers a full ingest
+of a fresh batch can take from minutes to hours depending on the
+corpus size, so the typical production pattern is to **run ingest
+on a schedule rather than on demand**: operators drop files into
+`sources/incoming/` during the day, the actual work happens off-hours.
+
+Two implementations work equally well. Pick whichever fits your
+environment.
+
+### Option 1 — `cron`
+
+```cron
+# Nightly ingest at 02:00 — runs as the `docrag` system user
+0 2 * * * /opt/doc-rag-mcp/.venv/bin/doc-rag --config /opt/doc-rag-mcp/config/config.yaml ingest >> /var/log/doc-rag-ingest.log 2>&1
+```
+
+Put this in `/etc/cron.d/doc-rag-ingest` with `docrag` as the user
+column. The script logs to stdout/stderr; rotate
+`/var/log/doc-rag-ingest.log` with logrotate if you want bounded log
+size.
+
+### Option 2 — systemd timer
+
+The unit + timer pair below schedules ingest at 02:00 every day and
+gives it up to 6 hours to finish before systemd considers it failed.
+
+`/etc/systemd/system/doc-rag-ingest.service`:
+
+```ini
+[Unit]
+Description=doc-rag ingest (nightly)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=docrag
+Group=docrag
+WorkingDirectory=/opt/doc-rag-mcp
+EnvironmentFile=-/etc/default/doc-rag
+ExecStart=/opt/doc-rag-mcp/.venv/bin/doc-rag --config /opt/doc-rag-mcp/config/config.yaml ingest
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+```
+
+`/etc/systemd/system/doc-rag-ingest.timer`:
+
+```ini
+[Unit]
+Description=Nightly ingest for doc-rag
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now doc-rag-ingest.timer
+systemctl list-timers doc-rag-ingest.timer
+```
+
+The `Nice=10` + `IOSchedulingClass=idle` lines keep the ingest job
+from contending with the live `doc-rag-mcp` service for CPU and
+disk when both are running.
+
+### Triggering ingest by accumulated-files threshold
+
+If "nightly" is the wrong cadence — for example, a burst of new
+documents needs to be indexed within an hour rather than wait for
+02:00 — wrap `doc-rag ingest` in a watcher that counts files in
+`sources/incoming/` and fires when the count crosses a threshold.
+A 20-line shell script polling every 5 minutes is enough for most
+home and small-office deployments; a richer
+[inotify](https://man7.org/linux/man-pages/man7/inotify.7.html)-driven
+service is overkill for the typical doc-rag corpus.
+
+### What ingest produces
+
+After a scheduled run, the next `GET /health/ready` and the document
+table in the Web UI both reflect the new state automatically. The
+audit log (`build/audit.log`) records nothing — ingest is not in the
+destructive-operations set — but the structured log captures the
+duration and outcome. To detect failures programmatically, scrape
+`doc_rag_ingest_errors_total` from `/metrics`.

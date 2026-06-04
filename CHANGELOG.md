@@ -6,6 +6,27 @@ the project does not yet ship versioned tags, so entries are grouped by date.
 
 ## Unreleased — toward v1.1.0 (first public release)
 
+### Added (Sprint 4: benchmarks, polish, release readiness)
+- `scripts/bench.py` — self-contained, reproducible benchmark for the
+  embedding-encode + FAISS build + FAISS reconstruct paths. Synthetic
+  corpus generated in-process; JSON output with a `schema_version: 1`
+  envelope. Supports CPU and CUDA (`--device cpu|cuda|auto`).
+- `docs/bench-results.md` — reference numbers for `bge-large-en-v1.5`
+  on three host classes (GTX 1650 GPU, i7-class CPU, QEMU server CPU).
+  Documents the index-size memory and latency profile of
+  `IndexFlatIP`, including when to switch to an approximate index
+  (v2 territory).
+- `docs/install.md` § "GPU install (NVIDIA / CUDA)" — full end-to-end
+  GPU install path with explicit hardware requirements, WSL2 caveat,
+  install verification snippet, and a config example. Verified on
+  GTX 1650 + WSL2, `torch 2.6.0+cu124`.
+- `docs/mcp.md` § "API stability (SemVer)" — explicit list of what is
+  SemVer-protected on the MCP surface for the v1.x line (tools,
+  argument schema, response shape, degraded-mode contract) and what
+  is not (internal modules, log format, HTML markup).
+- Triage: no `# TODO` / `# FIXME` / `# XXX` / `# HACK` left in
+  `src/`, `scripts/`, or `tests/`.
+
 ### Added (Sprint 3: production observability and operability)
 - `/health/live` (always 200 while the process answers) and
   `/health/ready` (503 if no manifest or a background ingest/rebuild is

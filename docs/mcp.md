@@ -29,6 +29,44 @@ response telling the client that quality is degraded and pointing them at the
 "Rebuild индекса" / "Rebuild index" button in the UI. See
 [ui.md](ui.md#degraded-mode-banner) for the matching UI signal.
 
+## API stability (SemVer)
+
+The MCP surface of `doc-rag` is SemVer-protected per
+[docs/roadmap.md § 1](roadmap.md). Concretely, for the v1.x release line:
+
+- **The list of exposed tools is fixed at `[doc_search]`.** Adding a
+  new tool is a MINOR bump. Removing or renaming a tool is a MAJOR
+  bump.
+- **`doc_search` argument schema is stable.** `query: str` (required)
+  and `top_k: int` (default 6, capped at 50) — adding optional fields
+  is a MINOR bump, removing or renaming is MAJOR. The capping rule
+  itself is also part of the contract.
+- **Response shape is stable.** Each result item carries `score`
+  (float), `doc_id` (str), `chunk_id` (str), `source_file` (str), and
+  `text` (str). Adding new fields is a MINOR bump; removing or
+  renaming is MAJOR.
+- **Degraded-mode warning content-item is part of the contract.**
+  When the FAISS index is missing, the first `content` element is a
+  `{"type": "text", "text": "<warning>"}` entry. The warning string
+  itself is human-readable and may change wording in patch releases —
+  do not parse it; check `cat["semantic_search_ready"]` via
+  `/ui/status` if you need programmatic detection.
+- **HTTP transport details** (`POST /mcp`, `GET /mcp` SSE) are
+  governed by the upstream Streamable HTTP MCP specification, not by
+  us. We commit to following whatever the published spec says for the
+  protocol version we advertise in `initialize`.
+
+What is **not** SemVer-protected:
+
+- Internal Python module structure (`src/doc_rag/server/*`).
+- Log line formats. Structured-log shape is governed by its own
+  `schema_version` field (see [docs/deploy.md](deploy.md#observability)).
+- The Web UI HTML markup. Routes under `/ui/*` are stable; the markup
+  they return is not.
+
+If you build an MCP client against `doc-rag` v1.x, the above is what
+you can rely on through every v1.y.z release.
+
 ## Run the server
 
 Local:
