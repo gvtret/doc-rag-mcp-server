@@ -1,4 +1,5 @@
 """Tests for the manifest schema_version guard and the migrate CLI."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
 
 import pytest
 
@@ -51,7 +51,7 @@ def test_delete_documents_refuses_future_schema(built_corpus):
         delete_documents(str(root / "config" / "config.yaml"), [doc_ids[0]])
 
 
-def _run_cli(root: Path, args: List[str]) -> subprocess.CompletedProcess:
+def _run_cli(root: Path, args: list[str]) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["DOC_RAG_ROOT"] = str(root)
     cmd = [

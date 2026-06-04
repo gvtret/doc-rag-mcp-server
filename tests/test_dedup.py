@@ -10,6 +10,7 @@ second one prevents the operator from accidentally uploading the same
 file twice in one batch and ending up with two manifest entries after
 the next ingest.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -71,9 +72,7 @@ def test_re_upload_of_archived_file_is_reported_as_duplicate(tmp_corpus_root: Pa
             }
         ]
     }
-    (root / "build" / "manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (root / "build" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     # Now try to upload the same payload under a fresh filename.
     r = client.post(

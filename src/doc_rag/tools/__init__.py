@@ -1,1 +1,1 @@
-from .registry import ToolRegistry
+from .registry import ToolRegistry as ToolRegistry

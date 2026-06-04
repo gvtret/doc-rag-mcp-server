@@ -15,6 +15,7 @@
 
 Код выхода: 0 — ок, 1 — несоответствие, 2 — сеть/HTTP/файл.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,18 +24,18 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 
-def _load_expected(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+def _load_expected(path: str) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError("expected file must be a JSON object")
     return data
 
 
-def _fetch_manifest(url: str, api_key: str) -> Dict[str, Any]:
+def _fetch_manifest(url: str, api_key: str) -> dict[str, Any]:
     headers = {"Accept": "application/json", "User-Agent": "doc-rag-check-manifest/1.0"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -47,8 +48,8 @@ def _fetch_manifest(url: str, api_key: str) -> Dict[str, Any]:
     return data
 
 
-def _remote_sha_set(manifest: Dict[str, Any]) -> Set[str]:
-    out: Set[str] = set()
+def _remote_sha_set(manifest: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
     docs = manifest.get("documents")
     if not isinstance(docs, list):
         return out
@@ -61,7 +62,7 @@ def _remote_sha_set(manifest: Dict[str, Any]) -> Set[str]:
     return out
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Compare remote /api/v1/manifest to expected JSON.")
     p.add_argument(
         "--url",
@@ -99,7 +100,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"check_manifest_remote: request failed: {e}", file=sys.stderr)
         return 2
 
-    errors: List[str] = []
+    errors: list[str] = []
 
     exp_fp = expected.get("corpus_content_sha256")
     if isinstance(exp_fp, str) and exp_fp.strip():

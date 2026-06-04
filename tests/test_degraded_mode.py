@@ -13,14 +13,15 @@ two things must hold:
 Both invariants together are the "degraded-mode contract" advertised in
 the README and in the published Habr article.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
-def _config_with_no_index(tmp_corpus_root: Path) -> Dict[str, Any]:
+def _config_with_no_index(tmp_corpus_root: Path) -> dict[str, Any]:
     """Load the test config and confirm there is no FAISS index on disk."""
     from doc_rag.server.retrieval import load_config
 
@@ -57,12 +58,15 @@ def test_doc_search_tool_prepends_degraded_notice_when_index_missing(
     chunks_path = tmp_corpus_root / "build" / "chunks_jsonl" / "chunks.jsonl"
     chunks_path.parent.mkdir(parents=True, exist_ok=True)
     chunks_path.write_text(
-        json.dumps({
-            "chunk_id": "doc-1:0000",
-            "doc_id": "doc-1",
-            "text": "the unique marker word zeppelin appears here",
-            "source_file": "doc-1.txt",
-        }) + "\n",
+        json.dumps(
+            {
+                "chunk_id": "doc-1:0000",
+                "doc_id": "doc-1",
+                "text": "the unique marker word zeppelin appears here",
+                "source_file": "doc-1.txt",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -86,9 +90,7 @@ def test_doc_search_tool_empty_query_short_circuits(tmp_corpus_root):
     assert "Empty query" in content[0]["text"]
 
 
-def test_doc_search_tool_no_notice_when_semantic_disabled(
-    tmp_corpus_root, monkeypatch
-):
+def test_doc_search_tool_no_notice_when_semantic_disabled(tmp_corpus_root, monkeypatch):
     """If the operator disables semantic mode, there's nothing to warn about.
 
     We rewrite config to retrieval_mode: lexical and verify the notice is
@@ -111,12 +113,15 @@ def test_doc_search_tool_no_notice_when_semantic_disabled(
     chunks_path = tmp_corpus_root / "build" / "chunks_jsonl" / "chunks.jsonl"
     chunks_path.parent.mkdir(parents=True, exist_ok=True)
     chunks_path.write_text(
-        json.dumps({
-            "chunk_id": "doc-1:0000",
-            "doc_id": "doc-1",
-            "text": "no marker here",
-            "source_file": "doc-1.txt",
-        }) + "\n",
+        json.dumps(
+            {
+                "chunk_id": "doc-1:0000",
+                "doc_id": "doc-1",
+                "text": "no marker here",
+                "source_file": "doc-1.txt",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 

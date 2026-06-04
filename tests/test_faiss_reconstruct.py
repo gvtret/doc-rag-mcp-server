@@ -10,6 +10,7 @@ This test bypasses `delete_documents` and calls the prune function
 directly so that the assertion is about the prune itself, not about
 the surrounding manifest/chunks bookkeeping.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,9 +52,7 @@ def _build_index(root: Path, doc_chunks, vectors):
     return chunk_ids
 
 
-def test_reconstruct_preserves_kept_vectors_byte_for_byte(
-    tmp_corpus_root, synthetic_embeddings
-):
+def test_reconstruct_preserves_kept_vectors_byte_for_byte(tmp_corpus_root, synthetic_embeddings):
     """The headline invariant: prune drops vectors, doesn't mutate the rest."""
     import numpy as np
 
@@ -87,14 +86,10 @@ def test_reconstruct_preserves_kept_vectors_byte_for_byte(
 
     for i, cid in enumerate(new_meta["chunk_ids"]):
         kept = new_idx.reconstruct(i)
-        assert np.array_equal(kept, original[cid]), (
-            f"vector for {cid} drifted during prune"
-        )
+        assert np.array_equal(kept, original[cid]), f"vector for {cid} drifted during prune"
 
 
-def test_reconstruct_deletes_all_when_every_doc_targeted(
-    tmp_corpus_root, synthetic_embeddings
-):
+def test_reconstruct_deletes_all_when_every_doc_targeted(tmp_corpus_root, synthetic_embeddings):
     """When the prune empties the index, the on-disk files are removed."""
     from doc_rag.raglib.pipeline import _rebuild_faiss_after_delete, load_config
 
@@ -114,9 +109,7 @@ def test_reconstruct_deletes_all_when_every_doc_targeted(
     assert not (index_dir / "index_meta.json").exists()
 
 
-def test_reconstruct_noop_when_no_deletion_target_matches(
-    tmp_corpus_root, synthetic_embeddings
-):
+def test_reconstruct_noop_when_no_deletion_target_matches(tmp_corpus_root, synthetic_embeddings):
     """If the target set has nothing in the index, nothing must move."""
     import numpy as np
 

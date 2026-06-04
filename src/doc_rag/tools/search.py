@@ -5,17 +5,18 @@ from __future__ import annotations
 This module reuses the same retrieval logic as the HTTP MCP server to avoid drift.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
-from .base import BaseTool, ToolSpec
 from doc_rag.server.retrieval import doc_search
 
+from .base import BaseTool, ToolSpec
 
-def _format_results(results: List[Dict[str, Any]]) -> str:
+
+def _format_results(results: list[dict[str, Any]]) -> str:
     if not results:
         return "No results."
 
-    lines: List[str] = []
+    lines: list[str] = []
     for i, r in enumerate(results, 1):
         score = r.get("score", None)
         score_s = f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"
@@ -56,7 +57,7 @@ class DocSearchTool(BaseTool):
             },
         )
 
-    def call(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def call(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         query = str(arguments.get("query", "")).strip()
         if not query:
             return [{"type": "text", "text": "Empty query. Provide `query` string."}]

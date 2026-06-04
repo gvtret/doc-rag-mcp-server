@@ -20,744 +20,776 @@ import threading
 import time
 import traceback
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
-from fastapi import BackgroundTasks, FastAPI, Request, Response, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-
-from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
-from doc_rag.server.logging_setup import (
-  configure_logging,
-  get_logger,
-  new_request_id,
-  set_request_id,
+from fastapi import BackgroundTasks, FastAPI, File, Form, Request, Response, UploadFile
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
 )
-from doc_rag.server import metrics as _metrics
 
 from doc_rag.raglib.pipeline import (
-  clean_orphans as _pipeline_clean_orphans,
-  clear_incoming as _pipeline_clear_incoming,
-  delete_documents as _pipeline_delete_documents,
-  wipe_index as _pipeline_wipe_index,
+    clean_orphans as _pipeline_clean_orphans,
 )
+from doc_rag.raglib.pipeline import (
+    clear_incoming as _pipeline_clear_incoming,
+)
+from doc_rag.raglib.pipeline import (
+    delete_documents as _pipeline_delete_documents,
+)
+from doc_rag.raglib.pipeline import (
+    wipe_index as _pipeline_wipe_index,
+)
+from doc_rag.server import metrics as _metrics
+from doc_rag.server.logging_setup import (
+    configure_logging,
+    get_logger,
+    new_request_id,
+    set_request_id,
+)
+from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
 
 # Configure structured logging on import. Idempotent; honours
 # DOC_RAG_LOG_LEVEL and DOC_RAG_LOG_FORMAT env vars.
 configure_logging()
 log = get_logger("doc_rag.server.mcp_http")
 
-Json = Union[Dict[str, Any], List[Any]]
+Json = dict[str, Any] | list[Any]
 
 _TOOL_SEM = asyncio.Semaphore(int(os.environ.get("DOC_RAG_MAX_CONCURRENCY", "4")))
 
 _RL_LOCK = asyncio.Lock()
-_RL_STATE: Dict[str, Tuple[float, float]] = {}
+_RL_STATE: dict[str, tuple[float, float]] = {}
 
 
-def _rate_limit_params() -> Tuple[float, float]:
-  """Return (rps, burst). rps<=0 disables rate limiting."""
-  try:
-    rps = float(os.environ.get("DOC_RAG_RATE_LIMIT_RPS", "0"))
-  except Exception:
-    rps = 0.0
-  try:
-    burst = float(os.environ.get("DOC_RAG_RATE_LIMIT_BURST", "5"))
-  except Exception:
-    burst = 5.0
-  return max(0.0, rps), max(1.0, burst)
+def _rate_limit_params() -> tuple[float, float]:
+    """Return (rps, burst). rps<=0 disables rate limiting."""
+    try:
+        rps = float(os.environ.get("DOC_RAG_RATE_LIMIT_RPS", "0"))
+    except Exception:
+        rps = 0.0
+    try:
+        burst = float(os.environ.get("DOC_RAG_RATE_LIMIT_BURST", "5"))
+    except Exception:
+        burst = 5.0
+    return max(0.0, rps), max(1.0, burst)
 
 
 async def _rate_limit_allow(key: str) -> bool:
-  """Simple token bucket per key (usually client IP)."""
-  rps, burst = _rate_limit_params()
-  if rps <= 0:
-    return True
+    """Simple token bucket per key (usually client IP)."""
+    rps, burst = _rate_limit_params()
+    if rps <= 0:
+        return True
 
-  now = time.time()
-  async with _RL_LOCK:
-    tokens, last = _RL_STATE.get(key, (burst, now))
-    # Refill
-    tokens = min(burst, tokens + (now - last) * rps)
-    if tokens < 1.0:
-      _RL_STATE[key] = (tokens, now)
-      return False
-    tokens -= 1.0
-    _RL_STATE[key] = (tokens, now)
-    return True
+    now = time.time()
+    async with _RL_LOCK:
+        tokens, last = _RL_STATE.get(key, (burst, now))
+        # Refill
+        tokens = min(burst, tokens + (now - last) * rps)
+        if tokens < 1.0:
+            _RL_STATE[key] = (tokens, now)
+            return False
+        tokens -= 1.0
+        _RL_STATE[key] = (tokens, now)
+        return True
 
 
-def _api_key_required() -> Optional[str]:
-  # Open-by-default (LAN): if DOC_RAG_API_KEY is not set, allow all requests.
-  key = (os.environ.get("DOC_RAG_API_KEY") or "").strip()
-  return key or None
+def _api_key_required() -> str | None:
+    # Open-by-default (LAN): if DOC_RAG_API_KEY is not set, allow all requests.
+    key = (os.environ.get("DOC_RAG_API_KEY") or "").strip()
+    return key or None
 
 
 def _check_api_key(request: Request) -> bool:
-  required = _api_key_required()
-  if not required:
-    return True
-  hdr = (request.headers.get("authorization") or "").strip()
-  if hdr.lower().startswith("bearer "):
-    return hdr.split(" ", 1)[1].strip() == required
-  xk = (request.headers.get("x-api-key") or "").strip()
-  return xk == required
+    required = _api_key_required()
+    if not required:
+        return True
+    hdr = (request.headers.get("authorization") or "").strip()
+    if hdr.lower().startswith("bearer "):
+        return hdr.split(" ", 1)[1].strip() == required
+    xk = (request.headers.get("x-api-key") or "").strip()
+    return xk == required
 
 
 def _root_dir() -> Path:
-  return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[3]
 
 
 def _config_path() -> Path:
-  # Supports DOC_RAG_ROOT override used elsewhere.
-  root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
-  return root / "config" / "config.yaml"
+    # Supports DOC_RAG_ROOT override used elsewhere.
+    root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
+    return root / "config" / "config.yaml"
 
 
 def _ui_restart_allowed() -> bool:
-  v = (os.environ.get("DOC_RAG_UI_RESTART_ENABLED") or "").strip().lower()
-  return v in ("1", "true", "yes")
+    v = (os.environ.get("DOC_RAG_UI_RESTART_ENABLED") or "").strip().lower()
+    return v in ("1", "true", "yes")
 
 
 def _ui_restart_cmd() -> str:
-  return (os.environ.get("DOC_RAG_UI_RESTART_CMD") or "").strip()
+    return (os.environ.get("DOC_RAG_UI_RESTART_CMD") or "").strip()
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-  path.parent.mkdir(parents=True, exist_ok=True)
-  tmp = path.with_suffix(path.suffix + ".tmp")
-  tmp.write_text(text, encoding="utf-8")
-  tmp.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
-def _validate_root_yaml(raw: str) -> Tuple[bool, str]:
-  try:
-    import yaml
+def _validate_root_yaml(raw: str) -> tuple[bool, str]:
+    try:
+        import yaml
 
-    data = yaml.safe_load(raw)
-  except Exception as e:
-    return False, str(e)
-  if data is None:
-    return False, "YAML пустой или null в корне"
-  if not isinstance(data, dict):
-    return False, "Корень конфигурации должен быть объектом (mapping), не списком"
-  return True, "ok"
+        data = yaml.safe_load(raw)
+    except Exception as e:
+        return False, str(e)
+    if data is None:
+        return False, "YAML пустой или null в корне"
+    if not isinstance(data, dict):
+        return False, "Корень конфигурации должен быть объектом (mapping), не списком"
+    return True, "ok"
 
 
 def _sources_incoming_dir() -> Path:
-  root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
-  return root / "sources" / "incoming"
+    root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
+    return root / "sources" / "incoming"
 
 
 def _sanitize_filename(name: str) -> str:
-  base = os.path.basename(name or "").strip()
-  if not base:
-    return "upload.bin"
-  # keep it simple: replace path separators and control chars
-  base = base.replace("/", "_").replace("\\", "_")
-  base = "".join(ch if ch.isprintable() and ch not in ("\n", "\r", "\t") else "_" for ch in base)
-  return base[:180]
+    base = os.path.basename(name or "").strip()
+    if not base:
+        return "upload.bin"
+    # keep it simple: replace path separators and control chars
+    base = base.replace("/", "_").replace("\\", "_")
+    base = "".join(ch if ch.isprintable() and ch not in ("\n", "\r", "\t") else "_" for ch in base)
+    return base[:180]
 
 
 def _ui_max_upload_files() -> int:
-  try:
-    n = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_FILES", "48"))
-  except Exception:
-    n = 48
-  return max(1, min(200, n))
+    try:
+        n = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_FILES", "48"))
+    except Exception:
+        n = 48
+    return max(1, min(200, n))
 
 
 def _incoming_unique_path(incoming: Path, filename: str) -> Path:
-  name = _sanitize_filename(filename)
-  dst = incoming / name
-  n = 0
-  while dst.exists():
-    stem = Path(name).stem
-    suf = Path(name).suffix
-    n += 1
-    dst = incoming / f"{stem}__{int(time.time())}_{n}{suf}"
-  return dst
+    name = _sanitize_filename(filename)
+    dst = incoming / name
+    n = 0
+    while dst.exists():
+        stem = Path(name).stem
+        suf = Path(name).suffix
+        n += 1
+        dst = incoming / f"{stem}__{int(time.time())}_{n}{suf}"
+    return dst
 
 
-def _find_dup_in_manifest(sha256_hex: str) -> Optional[str]:
-  """Return basename of the matching indexed source file, or None."""
-  try:
-    manifest = load_manifest_json()
-    if not manifest:
-      return None
-    for doc in manifest.get("documents", []):
-      if isinstance(doc, dict) and doc.get("sha256") == sha256_hex:
-        src = doc.get("source_file") or doc.get("title_hint") or doc.get("doc_id") or "?"
-        return os.path.basename(src)
-  except Exception:
-    pass
-  return None
-
-
-def _find_dup_in_incoming(sha256_hex: str, incoming: Path) -> Optional[str]:
-  """Return filename of an existing file in incoming/ with the same sha256, or None."""
-  try:
-    for p in incoming.iterdir():
-      if not p.is_file():
-        continue
-      h = hashlib.sha256()
-      try:
-        with open(p, "rb") as f:
-          for blk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(blk)
-        if h.hexdigest() == sha256_hex:
-          return p.name
-      except Exception:
-        continue
-  except Exception:
-    pass
-  return None
-
-
-async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> tuple[bool, Optional[str]]:
-  """Save upload to incoming dir.
-
-  Returns (is_dup, message):
-    (False, None) → saved OK
-    (True,  msg)  → skipped: duplicate (msg names the conflicting file)
-    (False, msg)  → skipped: format/size error
-  """
-  name = _sanitize_filename(file.filename or "")
-  ext = os.path.splitext(name.lower())[1]
-  if ext not in (".pdf", ".docx", ".doc", ".md", ".txt"):
-    lab = name or (file.filename or "unnamed")
-    return False, f"{lab}: поддерживаются .pdf, .docx, .doc, .md, .txt"
-
-  max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
-  limit = max(1, max_mb) * 1024 * 1024
-
-  buf: list[bytes] = []
-  total = 0
-  h = hashlib.sha256()
-  try:
-    while True:
-      chunk = await file.read(1024 * 1024)
-      if not chunk:
-        break
-      total += len(chunk)
-      if total > limit:
-        return False, f"{name}: файл больше лимита ({max_mb} MiB)"
-      buf.append(chunk)
-      h.update(chunk)
-  except Exception as e:
-    return False, f"{name}: {e}"
-  sha256_hex = h.hexdigest()
-
-  dup = _find_dup_in_manifest(sha256_hex)
-  if dup:
-    return True, f"{name}: уже проиндексирован — совпадает с «{dup}»"
-
-  dup = _find_dup_in_incoming(sha256_hex, incoming)
-  if dup:
-    return True, f"{name}: уже в очереди — совпадает с «{dup}»"
-
-  dst = _incoming_unique_path(incoming, name)
-  try:
-    with open(dst, "wb") as out:
-      for blk in buf:
-        out.write(blk)
-  except Exception as e:
+def _find_dup_in_manifest(sha256_hex: str) -> str | None:
+    """Return basename of the matching indexed source file, or None."""
     try:
-      dst.unlink(missing_ok=True)
+        manifest = load_manifest_json()
+        if not manifest:
+            return None
+        for doc in manifest.get("documents", []):
+            if isinstance(doc, dict) and doc.get("sha256") == sha256_hex:
+                src = doc.get("source_file") or doc.get("title_hint") or doc.get("doc_id") or "?"
+                return os.path.basename(src)
     except Exception:
-      pass
-    return False, f"{name}: {e}"
-  return False, None
+        pass
+    return None
+
+
+def _find_dup_in_incoming(sha256_hex: str, incoming: Path) -> str | None:
+    """Return filename of an existing file in incoming/ with the same sha256, or None."""
+    try:
+        for p in incoming.iterdir():
+            if not p.is_file():
+                continue
+            h = hashlib.sha256()
+            try:
+                with open(p, "rb") as f:
+                    for blk in iter(lambda: f.read(1024 * 1024), b""):
+                        h.update(blk)
+                if h.hexdigest() == sha256_hex:
+                    return p.name
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> tuple[bool, str | None]:
+    """Save upload to incoming dir.
+
+    Returns (is_dup, message):
+      (False, None) → saved OK
+      (True,  msg)  → skipped: duplicate (msg names the conflicting file)
+      (False, msg)  → skipped: format/size error
+    """
+    name = _sanitize_filename(file.filename or "")
+    ext = os.path.splitext(name.lower())[1]
+    if ext not in (".pdf", ".docx", ".doc", ".md", ".txt"):
+        lab = name or (file.filename or "unnamed")
+        return False, f"{lab}: поддерживаются .pdf, .docx, .doc, .md, .txt"
+
+    max_mb = int(os.environ.get("DOC_RAG_UI_MAX_UPLOAD_MB", "100"))
+    limit = max(1, max_mb) * 1024 * 1024
+
+    buf: list[bytes] = []
+    total = 0
+    h = hashlib.sha256()
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                return False, f"{name}: файл больше лимита ({max_mb} MiB)"
+            buf.append(chunk)
+            h.update(chunk)
+    except Exception as e:
+        return False, f"{name}: {e}"
+    sha256_hex = h.hexdigest()
+
+    dup = _find_dup_in_manifest(sha256_hex)
+    if dup:
+        return True, f"{name}: уже проиндексирован — совпадает с «{dup}»"
+
+    dup = _find_dup_in_incoming(sha256_hex, incoming)
+    if dup:
+        return True, f"{name}: уже в очереди — совпадает с «{dup}»"
+
+    dst = _incoming_unique_path(incoming, name)
+    try:
+        with open(dst, "wb") as out:
+            for blk in buf:
+                out.write(blk)
+    except Exception as e:
+        try:
+            dst.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False, f"{name}: {e}"
+    return False, None
 
 
 def _ui_key_ok(request: Request, key: str) -> bool:
-  """Allow UI auth via query/form key when DOC_RAG_API_KEY is set.
+    """Allow UI auth via query/form key when DOC_RAG_API_KEY is set.
 
-  Rationale: plain HTML forms cannot set Authorization headers.
-  """
-  required = _api_key_required()
-  if not required:
-    return True
-  k = (key or "").strip()
-  if k and k == required:
-    return True
-  # Also allow header-based auth if caller can set it.
-  return _check_api_key(request)
+    Rationale: plain HTML forms cannot set Authorization headers.
+    """
+    required = _api_key_required()
+    if not required:
+        return True
+    k = (key or "").strip()
+    if k and k == required:
+        return True
+    # Also allow header-based auth if caller can set it.
+    return _check_api_key(request)
 
 
 def _public_base_url(request: Request) -> str:
-  # Prefer X-Forwarded-* when behind a reverse proxy.
-  proto = (request.headers.get("x-forwarded-proto") or "").strip()
-  host = (request.headers.get("x-forwarded-host") or "").strip()
-  if not proto:
-    proto = request.url.scheme
-  if not host:
-    host = request.headers.get("host", "").strip() or request.url.netloc
-  return f"{proto}://{host}"
+    # Prefer X-Forwarded-* when behind a reverse proxy.
+    proto = (request.headers.get("x-forwarded-proto") or "").strip()
+    host = (request.headers.get("x-forwarded-host") or "").strip()
+    if not proto:
+        proto = request.url.scheme
+    if not host:
+        host = request.headers.get("host", "").strip() or request.url.netloc
+    return f"{proto}://{host}"
 
 
-def _mcp_config_payload(name: str, url: str, api_key: str) -> Dict[str, Any]:
-  cfg: Dict[str, Any] = {
-    "mcpServers": {
-      name: {
-        "transport": "streamableHttp",
-        "url": url,
-      }
+def _mcp_config_payload(name: str, url: str, api_key: str) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "mcpServers": {
+            name: {
+                "transport": "streamableHttp",
+                "url": url,
+            }
+        }
     }
-  }
-  if api_key:
-    # Not all clients support headers in config, but include it for VSCode/others when possible.
-    cfg["mcpServers"][name]["headers"] = {"Authorization": f"Bearer {api_key}"}
-  return cfg
+    if api_key:
+        # Not all clients support headers in config, but include it for VSCode/others when possible.
+        cfg["mcpServers"][name]["headers"] = {"Authorization": f"Bearer {api_key}"}
+    return cfg
 
 
-def _download_json(payload: Dict[str, Any], filename: str) -> Response:
-  return Response(
-    content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-    media_type="application/json",
-    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-  )
+def _download_json(payload: dict[str, Any], filename: str) -> Response:
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 _INGEST_LOCK = asyncio.Lock()
 
 
 def _ingest_ui_log_max_lines() -> int:
-  try:
-    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_MAX_LINES", "500"))
-  except Exception:
-    n = 500
-  return max(50, min(5000, n))
+    try:
+        n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_MAX_LINES", "500"))
+    except Exception:
+        n = 500
+    return max(50, min(5000, n))
 
 
 def _ingest_ui_log_line_max_chars() -> int:
-  try:
-    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_LINE_MAX", "8000"))
-  except Exception:
-    n = 8000
-  return max(200, min(100_000, n))
+    try:
+        n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_LINE_MAX", "8000"))
+    except Exception:
+        n = 8000
+    return max(200, min(100_000, n))
 
 
 def _ingest_ui_log_scratch_max_chars() -> int:
-  try:
-    n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_BUF_MAX", str(128 * 1024)))
-  except Exception:
-    n = 128 * 1024
-  return max(4096, min(8 * 1024 * 1024, n))
+    try:
+        n = int(os.environ.get("DOC_RAG_UI_INGEST_LOG_BUF_MAX", str(128 * 1024)))
+    except Exception:
+        n = 128 * 1024
+    return max(4096, min(8 * 1024 * 1024, n))
 
 
 try:
-  _INGEST_UI_LOG_POLL_MS = max(250, min(600_000, int(os.environ.get("DOC_RAG_UI_INGEST_POLL_MS", "2000"))))
+    _INGEST_UI_LOG_POLL_MS = max(
+        250, min(600_000, int(os.environ.get("DOC_RAG_UI_INGEST_POLL_MS", "2000")))
+    )
 except Exception:
-  _INGEST_UI_LOG_POLL_MS = 2000
+    _INGEST_UI_LOG_POLL_MS = 2000
 
 
 def _server_http_ui_log_max_lines() -> int:
-  try:
-    n = int(os.environ.get("DOC_RAG_UI_HTTP_LOG_MAX_LINES", "500"))
-  except Exception:
-    n = 500
-  return max(50, min(5000, n))
+    try:
+        n = int(os.environ.get("DOC_RAG_UI_HTTP_LOG_MAX_LINES", "500"))
+    except Exception:
+        n = 500
+    return max(50, min(5000, n))
 
 
 _INGEST_LOG_LOCK = threading.Lock()
-_INGEST_UI_LOG_LINES: Deque[str] = deque(maxlen=_ingest_ui_log_max_lines())
+_INGEST_UI_LOG_LINES: deque[str] = deque(maxlen=_ingest_ui_log_max_lines())
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_INGEST_STATE: Dict[str, Any] = {
-  "running": False,
-  "job": None,
-  "last_started": None,
-  "last_finished": None,
-  "last_ok": None,
-  "last_error": None,
+_INGEST_STATE: dict[str, Any] = {
+    "running": False,
+    "job": None,
+    "last_started": None,
+    "last_finished": None,
+    "last_ok": None,
+    "last_error": None,
 }
 
 
 def _reset_ingest_ui_log_lines() -> None:
-  global _INGEST_UI_LOG_LINES
-  with _INGEST_LOG_LOCK:
-    _INGEST_UI_LOG_LINES = deque(maxlen=_ingest_ui_log_max_lines())
+    global _INGEST_UI_LOG_LINES
+    with _INGEST_LOG_LOCK:
+        _INGEST_UI_LOG_LINES = deque(maxlen=_ingest_ui_log_max_lines())
 
 
 def _append_ingest_ui_line(line: str, *, ansi_strip: bool = True) -> None:
-  lm = _ingest_ui_log_line_max_chars()
-  raw = line if not ansi_strip else _ANSI_RE.sub("", line)
-  raw = raw.rstrip("\n\r\t ")
-  # Do not strip leading whitespace: keeps tracebacks/indented diagnostics readable.
-  if not raw.strip():
-    return
-  raw_len = len(raw)
-  if raw_len > lm:
-    raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
-  with _INGEST_LOG_LOCK:
-    _INGEST_UI_LOG_LINES.append(raw)
+    lm = _ingest_ui_log_line_max_chars()
+    raw = line if not ansi_strip else _ANSI_RE.sub("", line)
+    raw = raw.rstrip("\n\r\t ")
+    # Do not strip leading whitespace: keeps tracebacks/indented diagnostics readable.
+    if not raw.strip():
+        return
+    raw_len = len(raw)
+    if raw_len > lm:
+        raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
+    with _INGEST_LOG_LOCK:
+        _INGEST_UI_LOG_LINES.append(raw)
 
 
-def _snapshot_ingest_ui_log_tail() -> List[str]:
-  with _INGEST_LOG_LOCK:
-    return list(_INGEST_UI_LOG_LINES)
+def _snapshot_ingest_ui_log_tail() -> list[str]:
+    with _INGEST_LOG_LOCK:
+        return list(_INGEST_UI_LOG_LINES)
 
 
 _SERVER_HTTP_LOG_LOCK = threading.Lock()
-_SERVER_HTTP_UI_LOG_LINES: Deque[str] = deque(maxlen=_server_http_ui_log_max_lines())
+_SERVER_HTTP_UI_LOG_LINES: deque[str] = deque(maxlen=_server_http_ui_log_max_lines())
 
 
 def _append_server_http_ui_line(msg: str) -> None:
-  """Buffered copy of formatted HTTP access log lines for /ui (avoids reliance on journald)."""
-  lm = _ingest_ui_log_line_max_chars()
-  raw = _ANSI_RE.sub("", msg).rstrip("\n\r\t ")
-  if not raw.strip():
-    return
-  raw_len = len(raw)
-  if raw_len > lm:
-    raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
-  with _SERVER_HTTP_LOG_LOCK:
-    _SERVER_HTTP_UI_LOG_LINES.append(raw)
+    """Buffered copy of formatted HTTP access log lines for /ui (avoids reliance on journald)."""
+    lm = _ingest_ui_log_line_max_chars()
+    raw = _ANSI_RE.sub("", msg).rstrip("\n\r\t ")
+    if not raw.strip():
+        return
+    raw_len = len(raw)
+    if raw_len > lm:
+        raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
+    with _SERVER_HTTP_LOG_LOCK:
+        _SERVER_HTTP_UI_LOG_LINES.append(raw)
 
 
-def _snapshot_server_http_ui_log_tail() -> List[str]:
-  with _SERVER_HTTP_LOG_LOCK:
-    return list(_SERVER_HTTP_UI_LOG_LINES)
+def _snapshot_server_http_ui_log_tail() -> list[str]:
+    with _SERVER_HTTP_LOG_LOCK:
+        return list(_SERVER_HTTP_UI_LOG_LINES)
 
 
 class _TeeStderrToIngestLog:
-  """Tee stderr to the real stderr and split into ingest UI log lines.
+    """Tee stderr to the real stderr and split into ingest UI log lines.
 
-  Mimics carriage return semantics for progress bars (\r rewinds display).
-  """
+    Mimics carriage return semantics for progress bars (\r rewinds display).
+    """
 
-  __slots__ = ("_underlying", "_scratch", "_emit_line", "_enc", "_err")
+    __slots__ = ("_underlying", "_scratch", "_emit_line", "_enc", "_err")
 
-  def __init__(self, underlying: Any, emit_line: Callable[[str], None]) -> None:
-    self._underlying = underlying
-    self._scratch = ""
-    self._emit_line = emit_line
-    self._enc = getattr(underlying, "encoding", None) or "utf-8"
-    self._err = getattr(underlying, "errors", None) or "replace"
+    def __init__(self, underlying: Any, emit_line: Callable[[str], None]) -> None:
+        self._underlying = underlying
+        self._scratch = ""
+        self._emit_line = emit_line
+        self._enc = getattr(underlying, "encoding", None) or "utf-8"
+        self._err = getattr(underlying, "errors", None) or "replace"
 
-  def writable(self) -> bool:
-    return True
+    def writable(self) -> bool:
+        return True
 
-  def write(self, s: Any) -> int:
-    if s is None:
-      return 0
-    enc = getattr(self, "_enc", "utf-8") or "utf-8"
-    err = getattr(self, "_err", "replace") or "replace"
-    if isinstance(s, bytes):
-      s_dec = s.decode(enc, errors=err)
-    elif isinstance(s, str):
-      s_dec = s
-    else:
-      s_dec = str(s)
-    try:
-      self._underlying.write(s_dec)
-    except Exception:
-      pass
-    mx = _ingest_ui_log_scratch_max_chars()
-    scr = self._scratch + s_dec.replace("\r\n", "\n")
-    # Terminal-style \r: drop everything before final segment (overwrite same line).
-    while "\r" in scr:
-      scr = scr.split("\r", 1)[1]
-    while True:
-      pos = scr.find("\n")
-      if pos == -1:
-        break
-      line = scr[:pos]
-      scr = scr[pos + 1 :]
-      self._emit_line(line)
-    if len(scr) > mx:
-      self._emit_line(f"[doc-rag][ui-log] … промежуточный вывод stderr обрезан ({len(scr)} симв.) …")
-      scr = scr[len(scr) - mx // 4 :]
-    self._scratch = scr
-    return len(s_dec)
+    def write(self, s: Any) -> int:
+        if s is None:
+            return 0
+        enc = getattr(self, "_enc", "utf-8") or "utf-8"
+        err = getattr(self, "_err", "replace") or "replace"
+        if isinstance(s, bytes):
+            s_dec = s.decode(enc, errors=err)
+        elif isinstance(s, str):
+            s_dec = s
+        else:
+            s_dec = str(s)
+        try:
+            self._underlying.write(s_dec)
+        except Exception:
+            pass
+        mx = _ingest_ui_log_scratch_max_chars()
+        scr = self._scratch + s_dec.replace("\r\n", "\n")
+        # Terminal-style \r: drop everything before final segment (overwrite same line).
+        while "\r" in scr:
+            scr = scr.split("\r", 1)[1]
+        while True:
+            pos = scr.find("\n")
+            if pos == -1:
+                break
+            line = scr[:pos]
+            scr = scr[pos + 1 :]
+            self._emit_line(line)
+        if len(scr) > mx:
+            self._emit_line(
+                f"[doc-rag][ui-log] … промежуточный вывод stderr обрезан ({len(scr)} симв.) …"
+            )
+            scr = scr[len(scr) - mx // 4 :]
+        self._scratch = scr
+        return len(s_dec)
 
-  def flush(self) -> None:
-    try:
-      self._underlying.flush()
-    except Exception:
-      pass
+    def flush(self) -> None:
+        try:
+            self._underlying.flush()
+        except Exception:
+            pass
 
-  def isatty(self) -> bool:
-    fn = getattr(self._underlying, "isatty", None)
-    if callable(fn):
-      try:
-        return bool(fn())
-      except Exception:
+    def isatty(self) -> bool:
+        fn = getattr(self._underlying, "isatty", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                return False
         return False
-    return False
 
-  def finish(self) -> None:
-    if self._scratch.strip():
-      self._emit_line(self._scratch)
-      self._scratch = ""
+    def finish(self) -> None:
+        if self._scratch.strip():
+            self._emit_line(self._scratch)
+            self._scratch = ""
 
 
 def _sync_run_ingest_with_ui_logging() -> None:
-  from doc_rag.raglib.pipeline import ingest
+    from doc_rag.raglib.pipeline import ingest
 
-  stderr = getattr(sys, "stderr", None) or sys.__stderr__
-  tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
-  old_stderr = sys.stderr
-  sys.stderr = tee
-  try:
-    ingest(str(_config_path()))
-  finally:
-    sys.stderr = old_stderr
-    tee.finish()
+    stderr = getattr(sys, "stderr", None) or sys.__stderr__
+    tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
+    old_stderr = sys.stderr
+    sys.stderr = tee
+    try:
+        ingest(str(_config_path()))
+    finally:
+        sys.stderr = old_stderr
+        tee.finish()
 
 
 def _sync_run_rebuild_with_ui_logging() -> None:
-  from doc_rag.raglib.pipeline import rebuild
+    from doc_rag.raglib.pipeline import rebuild
 
-  stderr = getattr(sys, "stderr", None) or sys.__stderr__
-  tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
-  old_stderr = sys.stderr
-  sys.stderr = tee
-  try:
-    rebuild(str(_config_path()))
-  finally:
-    sys.stderr = old_stderr
-    tee.finish()
+    stderr = getattr(sys, "stderr", None) or sys.__stderr__
+    tee = _TeeStderrToIngestLog(stderr, _append_ingest_ui_line)
+    old_stderr = sys.stderr
+    sys.stderr = tee
+    try:
+        rebuild(str(_config_path()))
+    finally:
+        sys.stderr = old_stderr
+        tee.finish()
 
 
 async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -> None:
-  """Run ingest or rebuild in a worker thread; mutual exclusion via _INGEST_LOCK."""
-  async with _INGEST_LOCK:
-    if _INGEST_STATE.get("running"):
-      return
-    _reset_ingest_ui_log_lines()
-    _INGEST_STATE["running"] = True
-    _INGEST_STATE["job"] = job
-    _INGEST_STATE["last_started"] = time.time()
-    _INGEST_STATE["last_error"] = None
-    _INGEST_STATE["last_ok"] = None
+    """Run ingest or rebuild in a worker thread; mutual exclusion via _INGEST_LOCK."""
+    async with _INGEST_LOCK:
+        if _INGEST_STATE.get("running"):
+            return
+        _reset_ingest_ui_log_lines()
+        _INGEST_STATE["running"] = True
+        _INGEST_STATE["job"] = job
+        _INGEST_STATE["last_started"] = time.time()
+        _INGEST_STATE["last_error"] = None
+        _INGEST_STATE["last_ok"] = None
 
-  _append_ingest_ui_line(f"[doc-rag][INFO] --- старт задачи: {job} ---", ansi_strip=False)
+    _append_ingest_ui_line(f"[doc-rag][INFO] --- старт задачи: {job} ---", ansi_strip=False)
 
-  ok = False
-  err = None
-  try:
-    await asyncio.to_thread(sync_runner)
-    ok = True
-  except Exception as exc:
     ok = False
-    err = str(exc) or repr(exc)
-    for ln in traceback.format_exc().strip().split("\n"):
-      if ln.strip():
-        _append_ingest_ui_line(ln.rstrip("\r"), ansi_strip=False)
+    err = None
+    try:
+        await asyncio.to_thread(sync_runner)
+        ok = True
+    except Exception as exc:
+        ok = False
+        err = str(exc) or repr(exc)
+        for ln in traceback.format_exc().strip().split("\n"):
+            if ln.strip():
+                _append_ingest_ui_line(ln.rstrip("\r"), ansi_strip=False)
 
-  async with _INGEST_LOCK:
-    _INGEST_STATE["running"] = False
-    _INGEST_STATE["job"] = None
-    _INGEST_STATE["last_finished"] = time.time()
-    _INGEST_STATE["last_ok"] = ok
-    _INGEST_STATE["last_error"] = err
-    if ok:
-      _append_ingest_ui_line(f"[doc-rag][INFO] {job} завершился успешно.", ansi_strip=False)
-    elif err:
-      _append_ingest_ui_line(f"[doc-rag][ERROR] {job} завершился с ошибкой: {err}", ansi_strip=False)
+    async with _INGEST_LOCK:
+        _INGEST_STATE["running"] = False
+        _INGEST_STATE["job"] = None
+        _INGEST_STATE["last_finished"] = time.time()
+        _INGEST_STATE["last_ok"] = ok
+        _INGEST_STATE["last_error"] = err
+        if ok:
+            _append_ingest_ui_line(f"[doc-rag][INFO] {job} завершился успешно.", ansi_strip=False)
+        elif err:
+            _append_ingest_ui_line(
+                f"[doc-rag][ERROR] {job} завершился с ошибкой: {err}", ansi_strip=False
+            )
 
 
 async def _run_ingest_background() -> None:
-  await _run_index_job_background("ingest", _sync_run_ingest_with_ui_logging)
+    await _run_index_job_background("ingest", _sync_run_ingest_with_ui_logging)
 
 
 async def _run_rebuild_background() -> None:
-  await _run_index_job_background("rebuild", _sync_run_rebuild_with_ui_logging)
+    await _run_index_job_background("rebuild", _sync_run_rebuild_with_ui_logging)
 
 
-def _origin_allowed(origin: Optional[str]) -> bool:
-  """Basic DNS-rebinding mitigation (configurable).
+def _origin_allowed(origin: str | None) -> bool:
+    """Basic DNS-rebinding mitigation (configurable).
 
-  By default:
-  - If Origin header is absent: allow (native clients often omit it)
-  - If Origin is present: allow only if it matches DOC_RAG_ALLOWED_ORIGINS (comma-separated)
-  """
-  if not origin:
-    return True
-  allowed = [o.strip() for o in os.environ.get("DOC_RAG_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-  if not allowed:
-    # Be conservative: if Origin is present but allow-list is empty, deny.
-    return False
-  return origin in allowed
+    By default:
+    - If Origin header is absent: allow (native clients often omit it)
+    - If Origin is present: allow only if it matches DOC_RAG_ALLOWED_ORIGINS (comma-separated)
+    """
+    if not origin:
+        return True
+    allowed = [
+        o.strip() for o in os.environ.get("DOC_RAG_ALLOWED_ORIGINS", "").split(",") if o.strip()
+    ]
+    if not allowed:
+        # Be conservative: if Origin is present but allow-list is empty, deny.
+        return False
+    return origin in allowed
 
 
 def _accepts_sse(request: Request) -> bool:
-  accept = request.headers.get("accept", "")
-  return "text/event-stream" in accept.lower()
+    accept = request.headers.get("accept", "")
+    return "text/event-stream" in accept.lower()
 
 
-def _is_notification(req: Dict[str, Any]) -> bool:
-  # JSON-RPC: notifications are requests without an id, or with id=null
-  return ("id" not in req) or (req.get("id") is None)
+def _is_notification(req: dict[str, Any]) -> bool:
+    # JSON-RPC: notifications are requests without an id, or with id=null
+    return ("id" not in req) or (req.get("id") is None)
 
 
-def _ok(req_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
-  return {"jsonrpc": "2.0", "id": req_id, "result": result}
+def _ok(req_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def _err(req_id: Any, code: int, message: str) -> Dict[str, Any]:
-  payload: Dict[str, Any] = {"jsonrpc": "2.0", "error": {"code": code, "message": message}}
-  # For errors to requests, include id (can be null)
-  payload["id"] = req_id
-  return payload
+def _err(req_id: Any, code: int, message: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {"jsonrpc": "2.0", "error": {"code": code, "message": message}}
+    # For errors to requests, include id (can be null)
+    payload["id"] = req_id
+    return payload
 
 
 def _log_line(line: str) -> None:
-  """Emit one structured log record and mirror it into UI/file sinks.
+    """Emit one structured log record and mirror it into UI/file sinks.
 
-  The structured logger handles stderr (and JSON when configured); the
-  UI ring buffer and the optional DOC_RAG_HTTP_LOG file are kept on the
-  legacy text format for backwards compatibility with the UI widget and
-  the existing operator habits.
-  """
-  log.info(line)
-  ts = time.strftime("%Y-%m-%d %H:%M:%S")
-  legacy = f"[doc-rag][http] {ts} {line}"
-  _append_server_http_ui_line(legacy)
-  log_path = os.environ.get("DOC_RAG_HTTP_LOG", "").strip()
-  if log_path:
-    try:
-      with open(log_path, "a", encoding="utf-8") as log_file:
-        log_file.write(legacy + "\n")
-    except Exception:
-      # Don't crash on logging issues
-      pass
+    The structured logger handles stderr (and JSON when configured); the
+    UI ring buffer and the optional DOC_RAG_HTTP_LOG file are kept on the
+    legacy text format for backwards compatibility with the UI widget and
+    the existing operator habits.
+    """
+    log.info(line)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    legacy = f"[doc-rag][http] {ts} {line}"
+    _append_server_http_ui_line(legacy)
+    log_path = os.environ.get("DOC_RAG_HTTP_LOG", "").strip()
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(legacy + "\n")
+        except Exception:
+            # Don't crash on logging issues
+            pass
 
 
 @dataclass
 class _SseClient:
-  queue: "asyncio.Queue[str]"
-  created_ts: float
+    queue: asyncio.Queue[str]
+    created_ts: float
 
 
 class _SseHub:
-  """Very small SSE hub for server->client notifications."""
+    """Very small SSE hub for server->client notifications."""
 
-  def __init__(self) -> None:
-    self._clients: List[_SseClient] = []
-    self._lock = asyncio.Lock()
+    def __init__(self) -> None:
+        self._clients: list[_SseClient] = []
+        self._lock = asyncio.Lock()
 
-  async def add(self) -> _SseClient:
-    client = _SseClient(queue=asyncio.Queue(), created_ts=time.time())
-    async with self._lock:
-      self._clients.append(client)
-    return client
+    async def add(self) -> _SseClient:
+        client = _SseClient(queue=asyncio.Queue(), created_ts=time.time())
+        async with self._lock:
+            self._clients.append(client)
+        return client
 
-  async def remove(self, client: _SseClient) -> None:
-    async with self._lock:
-      self._clients = [c for c in self._clients if c is not client]
+    async def remove(self, client: _SseClient) -> None:
+        async with self._lock:
+            self._clients = [c for c in self._clients if c is not client]
 
-  async def broadcast_jsonrpc(self, msg: Dict[str, Any]) -> None:
-    payload = json.dumps(msg, ensure_ascii=False)
-    # SSE "data:" lines must not contain raw newlines. JSON dumps doesn't, unless strings contain them.
-    payload = payload.replace("\n", "\\n")
-    frame = f"data: {payload}\n\n"
-    async with self._lock:
-      for client in list(self._clients):
-        try:
-          client.queue.put_nowait(frame)
-        except Exception:
-          # ignore slow/broken clients
-          pass
+    async def broadcast_jsonrpc(self, msg: dict[str, Any]) -> None:
+        payload = json.dumps(msg, ensure_ascii=False)
+        # SSE "data:" lines must not contain raw newlines. JSON dumps doesn't, unless strings contain them.
+        payload = payload.replace("\n", "\\n")
+        frame = f"data: {payload}\n\n"
+        async with self._lock:
+            for client in list(self._clients):
+                try:
+                    client.queue.put_nowait(frame)
+                except Exception:
+                    # ignore slow/broken clients
+                    pass
 
 
 _sse_hub = _SseHub()
 
-def _sse_frame(msg: Dict[str, Any]) -> str:
-  payload = json.dumps(msg, ensure_ascii=False).replace("\n", "\\n")
-  return f"data: {payload}\n\n"
+
+def _sse_frame(msg: dict[str, Any]) -> str:
+    payload = json.dumps(msg, ensure_ascii=False).replace("\n", "\\n")
+    return f"data: {payload}\n\n"
 
 
-def _handle_one(req: Dict[str, Any]) -> Tuple[int, Optional[Dict[str, Any]]]:
-  """Handle a single JSON-RPC message.
+def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
+    """Handle a single JSON-RPC message.
 
-  Returns:
-  - http_status
-  - jsonrpc response object or None (for notifications/accepted responses)
-  """
-  method = req.get("method", "")
-  req_id = req.get("id", None)
+    Returns:
+    - http_status
+    - jsonrpc response object or None (for notifications/accepted responses)
+    """
+    method = req.get("method", "")
+    req_id = req.get("id", None)
 
-  # MCP handshake
-  if method == "initialize":
-    result = {
-      "protocolVersion": "2024-11-05",
-      "serverInfo": {"name": "doc-rag", "version": "1.4.0"},
-      "capabilities": {"tools": {"listChanged": True}},
-    }
-    return 200, _ok(req_id, result)
+    # MCP handshake
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {"name": "doc-rag", "version": "1.4.0"},
+            "capabilities": {"tools": {"listChanged": True}},
+        }
+        return 200, _ok(req_id, result)
 
-  if method == "tools/list":
-    tools = [
-      {
-        "name": "doc_search",
-        "description": "Search the document knowledge base (semantic if FAISS+embeddings are available).",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "query": {"type": "string"},
-            "top_k": {"type": "integer", "default": 6},
-          },
-          "required": ["query"],
-        },
-      }
-    ]
-    return 200, _ok(req_id, {"tools": tools})
+    if method == "tools/list":
+        tools = [
+            {
+                "name": "doc_search",
+                "description": "Search the document knowledge base (semantic if FAISS+embeddings are available).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "top_k": {"type": "integer", "default": 6},
+                    },
+                    "required": ["query"],
+                },
+            }
+        ]
+        return 200, _ok(req_id, {"tools": tools})
 
-  if method == "tools/call":
-    params = req.get("params") or {}
-    name = params.get("name", "")
-    arguments = params.get("arguments") or {}
+    if method == "tools/call":
+        params = req.get("params") or {}
+        name = params.get("name", "")
+        arguments = params.get("arguments") or {}
 
-    if name != "doc_search":
-      _metrics.record_mcp_request(tool=name or "unknown", status="unknown_tool", duration_seconds=0.0)
-      return 200, _ok(req_id, {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True})
+        if name != "doc_search":
+            _metrics.record_mcp_request(
+                tool=name or "unknown", status="unknown_tool", duration_seconds=0.0
+            )
+            return 200, _ok(
+                req_id,
+                {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True},
+            )
 
-    # Lazy import to keep base install lightweight
-    from doc_rag.server.search_tool import doc_search_tool
+        # Lazy import to keep base install lightweight
+        from doc_rag.server.search_tool import doc_search_tool
 
-    started = time.time()
-    try:
-      content = doc_search_tool(arguments)
-      _metrics.record_mcp_request("doc_search", "ok", time.time() - started)
-      return 200, _ok(req_id, {"content": content, "isError": False})
-    except Exception as exc:
-      _metrics.record_mcp_request("doc_search", "error", time.time() - started)
-      return 200, _ok(req_id, {"content": [{"type": "text", "text": f"doc_search failed: {exc}"}], "isError": True})
+        started = time.time()
+        try:
+            content = doc_search_tool(arguments)
+            _metrics.record_mcp_request("doc_search", "ok", time.time() - started)
+            return 200, _ok(req_id, {"content": content, "isError": False})
+        except Exception as exc:
+            _metrics.record_mcp_request("doc_search", "error", time.time() - started)
+            return 200, _ok(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": f"doc_search failed: {exc}"}],
+                    "isError": True,
+                },
+            )
 
-  # Default: method not found
-  if _is_notification(req):
-    return 202, None
-  return 200, _err(req_id, -32601, f"Method not found: {method}")
+    # Default: method not found
+    if _is_notification(req):
+        return 202, None
+    return 200, _err(req_id, -32601, f"Method not found: {method}")
 
 
-def _handle_jsonrpc(payload: Json) -> Tuple[int, Optional[Json]]:
-  """Handle a JSON-RPC object or batch."""
-  if isinstance(payload, list):
-    responses: List[Dict[str, Any]] = []
-    status = 200
-    for item in payload:
-      if not isinstance(item, dict):
-        continue
-      st, resp = _handle_one(item)
-      status = max(status, st)
-      if resp is not None:
-        responses.append(resp)
-    if not responses:
-      # Only notifications/responses -> 202
-      return 202, None
-    return 200, responses
+def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
+    """Handle a JSON-RPC object or batch."""
+    if isinstance(payload, list):
+        responses: list[dict[str, Any]] = []
+        status = 200
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            st, resp = _handle_one(item)
+            status = max(status, st)
+            if resp is not None:
+                responses.append(resp)
+        if not responses:
+            # Only notifications/responses -> 202
+            return 202, None
+        return 200, responses
 
-  if not isinstance(payload, dict):
-    return 400, _err(None, -32700, "Parse error: expected JSON object or array")
+    if not isinstance(payload, dict):
+        return 400, _err(None, -32700, "Parse error: expected JSON object or array")
 
-  status, resp = _handle_one(payload)
-  if resp is None:
-    return status, None
-  return 200, resp
+    status, resp = _handle_one(payload)
+    if resp is None:
+        return status, None
+    return 200, resp
 
 
 app = FastAPI(title="doc-rag MCP HTTP", version="1.4.0")
@@ -765,343 +797,375 @@ app = FastAPI(title="doc-rag MCP HTTP", version="1.4.0")
 
 @app.middleware("http")
 async def _http_log_mw(request: Request, call_next):
-  # Honour an inbound request id if the client supplies one; otherwise
-  # mint a fresh one. The id is propagated into every log record emitted
-  # during this request via a ContextVar.
-  inbound_rid = request.headers.get("x-request-id") or request.headers.get("X-Request-ID")
-  rid = (inbound_rid or "").strip() or new_request_id()
-  set_request_id(rid)
+    # Honour an inbound request id if the client supplies one; otherwise
+    # mint a fresh one. The id is propagated into every log record emitted
+    # during this request via a ContextVar.
+    inbound_rid = request.headers.get("x-request-id") or request.headers.get("X-Request-ID")
+    rid = (inbound_rid or "").strip() or new_request_id()
+    set_request_id(rid)
 
-  start = time.time()
-  response: Optional[Response] = None
-  try:
-    client_host = getattr(getattr(request, "client", None), "host", None) or "unknown"
-    # Don't rate-limit health checks or metrics scrapes (high-frequency probes).
-    if request.url.path not in ("/health", "/health/live", "/health/ready", "/metrics"):
-      if not await _rate_limit_allow(client_host):
-        response = PlainTextResponse("Too Many Requests", status_code=429)
-        response.headers["X-Request-ID"] = rid
+    start = time.time()
+    response: Response | None = None
+    try:
+        client_host = getattr(getattr(request, "client", None), "host", None) or "unknown"
+        # Don't rate-limit health checks or metrics scrapes (high-frequency probes).
+        if request.url.path not in ("/health", "/health/live", "/health/ready", "/metrics"):
+            if not await _rate_limit_allow(client_host):
+                response = PlainTextResponse("Too Many Requests", status_code=429)
+                response.headers["X-Request-ID"] = rid
+                return response
+        response = await call_next(request)
+        if response is not None:
+            response.headers["X-Request-ID"] = rid
         return response
-    response = await call_next(request)
-    if response is not None:
-      response.headers["X-Request-ID"] = rid
-    return response
-  finally:
-    dur_ms = int((time.time() - start) * 1000)
-    code = getattr(response, "status_code", "ERR")
-    path = request.url.path or ""
-    # Avoid drowning the UI buffer with health checks and UI JSON polling.
-    if path not in (
-      "/health",
-      "/health/live",
-      "/health/ready",
-      "/metrics",
-      "/ui/status",
-      "/ui/document-preview",
-      "/api/v1/manifest",
-      "/ui/config/raw",
-      "/ui/config/save",
-      "/ui/restart",
-    ):
-      _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
-    set_request_id(None)
+    finally:
+        dur_ms = int((time.time() - start) * 1000)
+        code = getattr(response, "status_code", "ERR")
+        path = request.url.path or ""
+        # Avoid drowning the UI buffer with health checks and UI JSON polling.
+        if path not in (
+            "/health",
+            "/health/live",
+            "/health/ready",
+            "/metrics",
+            "/ui/status",
+            "/ui/document-preview",
+            "/api/v1/manifest",
+            "/ui/config/raw",
+            "/ui/config/save",
+            "/ui/restart",
+        ):
+            _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
+        set_request_id(None)
 
 
-def _readiness_state() -> Dict[str, Any]:
-  """Compute current readiness — manifest present, no background job running."""
-  root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
-  manifest_abs = os.path.join(root, "build", "manifest.json")
-  has_manifest = os.path.isfile(manifest_abs)
-  job_running = bool(_INGEST_STATE.get("running"))
-  job_name = _INGEST_STATE.get("job") if job_running else None
-  ready = has_manifest and not job_running
-  reasons: List[str] = []
-  if not has_manifest:
-    reasons.append("manifest_missing")
-  if job_running:
-    reasons.append(f"job_in_flight:{job_name}")
-  return {
-    "ready": ready,
-    "has_manifest": has_manifest,
-    "job_running": job_running,
-    "job": job_name,
-    "reasons": reasons,
-  }
+def _readiness_state() -> dict[str, Any]:
+    """Compute current readiness — manifest present, no background job running."""
+    root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
+    manifest_abs = os.path.join(root, "build", "manifest.json")
+    has_manifest = os.path.isfile(manifest_abs)
+    job_running = bool(_INGEST_STATE.get("running"))
+    job_name = _INGEST_STATE.get("job") if job_running else None
+    ready = has_manifest and not job_running
+    reasons: list[str] = []
+    if not has_manifest:
+        reasons.append("manifest_missing")
+    if job_running:
+        reasons.append(f"job_in_flight:{job_name}")
+    return {
+        "ready": ready,
+        "has_manifest": has_manifest,
+        "job_running": job_running,
+        "job": job_name,
+        "reasons": reasons,
+    }
 
 
 @app.get("/health/live")
 async def health_live() -> JSONResponse:
-  """Liveness probe — the process is up. Always 200 unless the event loop is wedged."""
-  return JSONResponse({"status": "ok", "name": "doc-rag"})
+    """Liveness probe — the process is up. Always 200 unless the event loop is wedged."""
+    return JSONResponse({"status": "ok", "name": "doc-rag"})
 
 
 @app.get("/health/ready")
 async def health_ready() -> JSONResponse:
-  """Readiness probe — 200 if the service can answer real queries, 503 otherwise.
+    """Readiness probe — 200 if the service can answer real queries, 503 otherwise.
 
-  Ready when:
-    - build/manifest.json exists (something has been ingested), and
-    - no ingest or rebuild job is currently in flight.
-  """
-  state = _readiness_state()
-  code = 200 if state["ready"] else 503
-  return JSONResponse({"status": "ready" if state["ready"] else "not_ready", **state}, status_code=code)
+    Ready when:
+      - build/manifest.json exists (something has been ingested), and
+      - no ingest or rebuild job is currently in flight.
+    """
+    state = _readiness_state()
+    code = 200 if state["ready"] else 503
+    return JSONResponse(
+        {"status": "ready" if state["ready"] else "not_ready", **state}, status_code=code
+    )
 
 
 @app.get("/metrics")
 async def metrics_endpoint() -> Response:
-  """Prometheus text exposition; 503 if the [metrics] extra is not installed."""
-  if not _metrics.metrics_available():
-    return PlainTextResponse(
-      _metrics.render_text().decode("utf-8"),
-      status_code=503,
-      media_type="text/plain; charset=utf-8",
-    )
-  # Refresh the index-size gauge opportunistically each scrape.
-  try:
-    cat = indexed_catalog()
-    n = int(cat.get("indexed_chunks_total", 0) or 0)
-    _metrics.set_faiss_index_size(n)
-  except Exception:
-    pass
-  body = _metrics.render_text()
-  return PlainTextResponse(body.decode("utf-8"), media_type=_metrics.CONTENT_TYPE_LATEST)
+    """Prometheus text exposition; 503 if the [metrics] extra is not installed."""
+    if not _metrics.metrics_available():
+        return PlainTextResponse(
+            _metrics.render_text().decode("utf-8"),
+            status_code=503,
+            media_type="text/plain; charset=utf-8",
+        )
+    # Refresh the index-size gauge opportunistically each scrape.
+    try:
+        cat = indexed_catalog()
+        n = int(cat.get("indexed_chunks_total", 0) or 0)
+        _metrics.set_faiss_index_size(n)
+    except Exception:
+        pass
+    body = _metrics.render_text()
+    return PlainTextResponse(body.decode("utf-8"), media_type=_metrics.CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
-  """Legacy combined health probe — kept for backwards compatibility.
+    """Legacy combined health probe — kept for backwards compatibility.
 
-  Returns 200 + ready/not_ready in the body so existing scrapers keep
-  working but can be migrated to /health/live or /health/ready on their
-  own schedule.
-  """
-  state = _readiness_state()
-  return JSONResponse({
-    "status": "ok",
-    "name": "doc-rag",
-    "version": "1.4.0",
-    "ready": state["ready"],
-    "reasons": state["reasons"],
-  })
+    Returns 200 + ready/not_ready in the body so existing scrapers keep
+    working but can be migrated to /health/live or /health/ready on their
+    own schedule.
+    """
+    state = _readiness_state()
+    return JSONResponse(
+        {
+            "status": "ok",
+            "name": "doc-rag",
+            "version": "1.4.0",
+            "ready": state["ready"],
+            "reasons": state["reasons"],
+        }
+    )
 
 
 @app.get("/api/v1/manifest")
 async def api_v1_manifest(request: Request) -> JSONResponse:
-  """Machine-readable manifest for CI / reproducibility (same auth as MCP when DOC_RAG_API_KEY is set)."""
-  if not _check_api_key(request):
-    return JSONResponse({"error": "unauthorized"}, status_code=401)
-  data = load_manifest_json()
-  if not data:
-    return JSONResponse({"error": "manifest_not_found"}, status_code=404)
-  return JSONResponse(data)
+    """Machine-readable manifest for CI / reproducibility (same auth as MCP when DOC_RAG_API_KEY is set)."""
+    if not _check_api_key(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    data = load_manifest_json()
+    if not data:
+        return JSONResponse({"error": "manifest_not_found"}, status_code=404)
+    return JSONResponse(data)
 
 
 @app.get("/ui/config/raw")
 async def ui_config_raw(request: Request, key: str = "") -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"error": "unauthorized"}, status_code=401)
-  p = _config_path()
-  try:
-    yaml_text = p.read_text(encoding="utf-8")
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, "path": str(p), "yaml": yaml_text})
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    p = _config_path()
+    try:
+        yaml_text = p.read_text(encoding="utf-8")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "path": str(p), "yaml": yaml_text})
 
 
 @app.post("/ui/config/save")
-async def ui_config_save(request: Request, key: str = Form(""), content: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  ok, msg = _validate_root_yaml(content)
-  if not ok:
-    return JSONResponse({"ok": False, "error": msg}, status_code=400)
-  try:
-    _atomic_write_text(_config_path(), content)
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, "path": str(_config_path())})
+async def ui_config_save(
+    request: Request, key: str = Form(""), content: str = Form("")
+) -> JSONResponse:
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    ok, msg = _validate_root_yaml(content)
+    if not ok:
+        return JSONResponse({"ok": False, "error": msg}, status_code=400)
+    try:
+        _atomic_write_text(_config_path(), content)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "path": str(_config_path())})
 
 
 @app.post("/ui/restart")
-async def ui_restart_service(request: Request, background_tasks: BackgroundTasks, key: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  if not _ui_restart_allowed():
-    return JSONResponse(
-      {"ok": False, "error": "Задайте DOC_RAG_UI_RESTART_ENABLED=1 и DOC_RAG_UI_RESTART_CMD в окружении сервиса."},
-      status_code=403,
+async def ui_restart_service(
+    request: Request, background_tasks: BackgroundTasks, key: str = Form("")
+) -> JSONResponse:
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if not _ui_restart_allowed():
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Задайте DOC_RAG_UI_RESTART_ENABLED=1 и DOC_RAG_UI_RESTART_CMD в окружении сервиса.",
+            },
+            status_code=403,
+        )
+    cmd = _ui_restart_cmd()
+    if not cmd:
+        return JSONResponse(
+            {"ok": False, "error": "Пустой DOC_RAG_UI_RESTART_CMD."},
+            status_code=400,
+        )
+
+    def _run() -> None:
+        import subprocess
+
+        subprocess.Popen(
+            cmd,
+            shell=True,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    background_tasks.add_task(_run)
+    return JSONResponse({"ok": True, "message": "Команда перезапуска запущена в фоне."})
+
+
+def _ui_status_payload() -> dict[str, Any]:
+    out = dict(_INGEST_STATE)
+    out["log_tail"] = _snapshot_ingest_ui_log_tail()
+    out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
+    log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
+    out["http_log_file"] = log_path if log_path else None
+    try:
+        out["indexed"] = indexed_catalog()
+    except Exception as exc:
+        out["indexed"] = {"error": str(exc), "documents": [], "document_count": 0}
+    return out
+
+
+def _indexed_documents_table_rows_html(
+    catalog: dict[str, Any], max_rows: int = 300
+) -> tuple[str, str]:
+    """Return (tbody inner HTML, optional note HTML)."""
+    docs = catalog.get("documents") if isinstance(catalog.get("documents"), list) else []
+    note = ""
+    shown = docs[:max_rows]
+    if len(docs) > max_rows:
+        note = f'<p class="muted">Показаны первые {max_rows} из {len(docs)} документов.</p>'
+    rows: list[str] = []
+    for i, d in enumerate(shown, 1):
+        if not isinstance(d, dict):
+            continue
+        did_raw = str(d.get("doc_id") or "")
+        did_attr = html.escape(did_raw, quote=True)
+        bn_disp = html.escape(str(d.get("basename") or "—"), quote=False)
+        did_cell = html.escape(did_raw or "—", quote=False)
+        sf = html.escape(str(d.get("source_file") or ""), quote=True)
+        cc = d.get("chunk_count")
+        cc_s = html.escape(str(cc) if cc is not None else "—", quote=False)
+        ey = d.get("edition_year")
+        ey_s = html.escape(str(ey) if ey is not None else "—", quote=False)
+        sh = d.get("sha256")
+        sh_s = html.escape(
+            str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"),
+            quote=False,
+        )
+        rows.append(
+            f'<tr data-doc-id="{did_attr}">'
+            f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
+            f"<td>{i}</td>"
+            f'<td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
+            f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
+            f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
+            f"</tr>"
+        )
+    return ("\n".join(rows), note)
+
+
+def _indexed_documents_summary_html(catalog: dict[str, Any]) -> str:
+    if catalog.get("error"):
+        return f'<p class="muted">Не удалось прочитать индекс: <code>{html.escape(str(catalog.get("error")), quote=False)}</code></p>'
+    n = int(catalog.get("document_count") or 0)
+    mg = catalog.get("manifest_generated_at_utc")
+    mg_s = html.escape(str(mg), quote=False) if mg else "—"
+    corp = catalog.get("corpus_content_sha256")
+    corp_s = (
+        html.escape(str(corp)[:20] + "…", quote=False)
+        if corp and len(str(corp)) > 20
+        else html.escape(str(corp), quote=False)
+        if corp
+        else "—"
     )
-  cmd = _ui_restart_cmd()
-  if not cmd:
-    return JSONResponse(
-      {"ok": False, "error": "Пустой DOC_RAG_UI_RESTART_CMD."},
-      status_code=400,
-    )
-
-  def _run() -> None:
-    import subprocess
-
-    subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-  background_tasks.add_task(_run)
-  return JSONResponse({"ok": True, "message": "Команда перезапуска запущена в фоне."})
-
-
-def _ui_status_payload() -> Dict[str, Any]:
-  out = dict(_INGEST_STATE)
-  out["log_tail"] = _snapshot_ingest_ui_log_tail()
-  out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
-  log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
-  out["http_log_file"] = log_path if log_path else None
-  try:
-    out["indexed"] = indexed_catalog()
-  except Exception as exc:
-    out["indexed"] = {"error": str(exc), "documents": [], "document_count": 0}
-  return out
-
-
-def _indexed_documents_table_rows_html(catalog: Dict[str, Any], max_rows: int = 300) -> Tuple[str, str]:
-  """Return (tbody inner HTML, optional note HTML)."""
-  docs = catalog.get("documents") if isinstance(catalog.get("documents"), list) else []
-  note = ""
-  shown = docs[:max_rows]
-  if len(docs) > max_rows:
-    note = f'<p class="muted">Показаны первые {max_rows} из {len(docs)} документов.</p>'
-  rows: List[str] = []
-  for i, d in enumerate(shown, 1):
-    if not isinstance(d, dict):
-      continue
-    did_raw = str(d.get("doc_id") or "")
-    did_attr = html.escape(did_raw, quote=True)
-    bn_disp = html.escape(str(d.get("basename") or "—"), quote=False)
-    did_cell = html.escape(did_raw or "—", quote=False)
-    sf = html.escape(str(d.get("source_file") or ""), quote=True)
-    cc = d.get("chunk_count")
-    cc_s = html.escape(str(cc) if cc is not None else "—", quote=False)
-    ey = d.get("edition_year")
-    ey_s = html.escape(str(ey) if ey is not None else "—", quote=False)
-    sh = d.get("sha256")
-    sh_s = html.escape(str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"), quote=False)
-    rows.append(
-      f'<tr data-doc-id="{did_attr}">'
-      f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
-      f'<td>{i}</td>'
-      f'<td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
-      f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
-      f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
-      f'</tr>'
-    )
-  return ("\n".join(rows), note)
-
-
-def _indexed_documents_summary_html(catalog: Dict[str, Any]) -> str:
-  if catalog.get("error"):
-    return f'<p class="muted">Не удалось прочитать индекс: <code>{html.escape(str(catalog.get("error")), quote=False)}</code></p>'
-  n = int(catalog.get("document_count") or 0)
-  mg = catalog.get("manifest_generated_at_utc")
-  mg_s = html.escape(str(mg), quote=False) if mg else "—"
-  corp = catalog.get("corpus_content_sha256")
-  corp_s = html.escape(str(corp)[:20] + "…", quote=False) if corp and len(str(corp)) > 20 else html.escape(str(corp), quote=False) if corp else "—"
-  pv = catalog.get("pipeline_version")
-  pv_s = html.escape(str(pv), quote=False) if pv else "—"
-  mp = catalog.get("manifest_present")
-  lex = catalog.get("lexical_search_ready")
-  sem = catalog.get("semantic_search_ready")
-  chunks = catalog.get("chunks_jsonl_present")
-  fidx = catalog.get("semantic_index_present")
-  bits = [
-    f"Записей в <code>manifest</code>: <strong>{n}</strong>.",
-    f"Файл manifest: <strong>{'есть' if mp else 'нет'}</strong>.",
-    f"<code>chunks.jsonl</code>: <strong>{'есть' if chunks else 'нет'}</strong>.",
-    f"Векторный индекс (FAISS): <strong>{'есть' if fidx else 'нет'}</strong>.",
-    f"Лексический поиск (doc_search): <strong>{'готов' if lex else 'не готов'}</strong>.",
-    f"Семантический поиск: <strong>{'готов' if sem else 'не готов'}</strong>.",
-    f"Время генерации manifest (UTC): <code>{mg_s}</code>.",
-    f"Версия пайплайна: <code>{pv_s}</code>. Fingerprint корпуса (SHA): <code>{corp_s}</code>. API: <code>/api/v1/manifest</code>.",
-  ]
-  return '<p class="muted">' + " ".join(bits) + "</p>"
+    pv = catalog.get("pipeline_version")
+    pv_s = html.escape(str(pv), quote=False) if pv else "—"
+    mp = catalog.get("manifest_present")
+    lex = catalog.get("lexical_search_ready")
+    sem = catalog.get("semantic_search_ready")
+    chunks = catalog.get("chunks_jsonl_present")
+    fidx = catalog.get("semantic_index_present")
+    bits = [
+        f"Записей в <code>manifest</code>: <strong>{n}</strong>.",
+        f"Файл manifest: <strong>{'есть' if mp else 'нет'}</strong>.",
+        f"<code>chunks.jsonl</code>: <strong>{'есть' if chunks else 'нет'}</strong>.",
+        f"Векторный индекс (FAISS): <strong>{'есть' if fidx else 'нет'}</strong>.",
+        f"Лексический поиск (doc_search): <strong>{'готов' if lex else 'не готов'}</strong>.",
+        f"Семантический поиск: <strong>{'готов' if sem else 'не готов'}</strong>.",
+        f"Время генерации manifest (UTC): <code>{mg_s}</code>.",
+        f"Версия пайплайна: <code>{pv_s}</code>. Fingerprint корпуса (SHA): <code>{corp_s}</code>. API: <code>/api/v1/manifest</code>.",
+    ]
+    return '<p class="muted">' + " ".join(bits) + "</p>"
 
 
 @app.get("/ui")
 async def ui(request: Request, key: str = "") -> HTMLResponse:
-  if not _ui_key_ok(request, key):
-    return HTMLResponse(
-      "<h3>Unauthorized</h3><p>Append <code>?key=...</code> to URL or send Authorization header.</p>",
-      status_code=401,
-    )
+    if not _ui_key_ok(request, key):
+        return HTMLResponse(
+            "<h3>Unauthorized</h3><p>Append <code>?key=...</code> to URL or send Authorization header.</p>",
+            status_code=401,
+        )
 
-  qp = request.query_params
-  upload_banner = ""
-  try:
-    us = int(qp.get("up_saved") or "0")
-  except Exception:
-    us = 0
-  try:
-    ue = int(qp.get("up_err") or "0")
-  except Exception:
-    ue = 0
-  try:
-    ud = int(qp.get("up_dup") or "0")
-  except Exception:
-    ud = 0
-  um = (qp.get("up_msg") or "").strip()
-  udm = (qp.get("up_dup_msg") or "").strip()
-  if us > 0 or ue > 0 or ud > 0:
-    parts = []
-    if us > 0:
-      parts.append(f"Загружено файлов: {us}.")
-    if ud > 0:
-      dup_detail = f" «{html.escape(udm)}»" if udm else ""
-      parts.append(f"Пропущено дубликатов: {ud}.{dup_detail}")
-    if ue > 0:
-      err_detail = f" «{html.escape(um)}»" if um else ""
-      parts.append(f"Ошибок: {ue}.{err_detail}")
-    banner_cls = "upload-banner has-errors" if ue > 0 else ("upload-banner has-dups" if ud > 0 else "upload-banner")
-    upload_banner = f'<div class="{banner_cls}">{" ".join(parts)}</div>'
+    qp = request.query_params
+    upload_banner = ""
+    try:
+        us = int(qp.get("up_saved") or "0")
+    except Exception:
+        us = 0
+    try:
+        ue = int(qp.get("up_err") or "0")
+    except Exception:
+        ue = 0
+    try:
+        ud = int(qp.get("up_dup") or "0")
+    except Exception:
+        ud = 0
+    um = (qp.get("up_msg") or "").strip()
+    udm = (qp.get("up_dup_msg") or "").strip()
+    if us > 0 or ue > 0 or ud > 0:
+        parts = []
+        if us > 0:
+            parts.append(f"Загружено файлов: {us}.")
+        if ud > 0:
+            dup_detail = f" «{html.escape(udm)}»" if udm else ""
+            parts.append(f"Пропущено дубликатов: {ud}.{dup_detail}")
+        if ue > 0:
+            err_detail = f" «{html.escape(um)}»" if um else ""
+            parts.append(f"Ошибок: {ue}.{err_detail}")
+        banner_cls = (
+            "upload-banner has-errors"
+            if ue > 0
+            else ("upload-banner has-dups" if ud > 0 else "upload-banner")
+        )
+        upload_banner = f'<div class="{banner_cls}">{" ".join(parts)}</div>'
 
-  state = dict(_INGEST_STATE)
-  incoming = _sources_incoming_dir()
-  incoming.mkdir(parents=True, exist_ok=True)
-  try:
-    files = sorted([p.name for p in incoming.iterdir() if p.is_file()])[:200]
-  except Exception:
-    files = []
+    state = dict(_INGEST_STATE)
+    incoming = _sources_incoming_dir()
+    incoming.mkdir(parents=True, exist_ok=True)
+    try:
+        files = sorted([p.name for p in incoming.iterdir() if p.is_file()])[:200]
+    except Exception:
+        files = []
 
-  key_q = f"?key={key}" if key else ""
-  poll_ms_js = int(_INGEST_UI_LOG_POLL_MS)
-  status_query_json = json.dumps(f"?key={key}" if key else "")
-  log_pre_esc = html.escape("\n".join(_snapshot_ingest_ui_log_tail()), quote=False)
-  http_log_pre_esc = html.escape("\n".join(_snapshot_server_http_ui_log_tail()), quote=False)
-  http_log_file_note = ""
-  hl = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
-  if hl:
-    escaped_hl = html.escape(hl, quote=True)
-    http_log_file_note = f"<p class=\"muted\">Тот же текст дублируется в файл: <code>{escaped_hl}</code> (<code>DOC_RAG_HTTP_LOG</code>).</p>"
-  base = _public_base_url(request)
-  mcp_url = f"{base}/mcp"
-  try:
-    ic0 = indexed_catalog()
-  except Exception as exc:
-    ic0 = {"error": str(exc), "documents": [], "document_count": 0}
-  try:
-    cfg_yaml_body = _config_path().read_text(encoding="utf-8")
-  except Exception as exc:
-    cfg_yaml_body = f"# не удалось прочитать конфиг: {exc}\n"
-  cfg_path_esc = html.escape(str(_config_path()), quote=False)
-  cfg_yaml_esc = html.escape(cfg_yaml_body, quote=False)
-  restart_btn_on = _ui_restart_allowed() and bool(_ui_restart_cmd())
-  restart_note_html = ""
-  if not restart_btn_on:
-    restart_note_html = (
-      '<p class="muted">Перезапуск из UI по умолчанию выключен. Для кнопки задайте в окружении процесса '
-      "<code>DOC_RAG_UI_RESTART_ENABLED=1</code> и <code>DOC_RAG_UI_RESTART_CMD</code> "
-      "(например <code>sudo /bin/systemctl restart doc-rag-mcp</code> — см. sudoers).</p>"
-    )
-  restart_disabled_attr = " disabled" if not restart_btn_on else ""
-  idx_summary_html = _indexed_documents_summary_html(ic0)
-  idx_tbody_html, idx_cap_html = _indexed_documents_table_rows_html(ic0)
-  body = f"""
+    key_q = f"?key={key}" if key else ""
+    poll_ms_js = int(_INGEST_UI_LOG_POLL_MS)
+    status_query_json = json.dumps(f"?key={key}" if key else "")
+    log_pre_esc = html.escape("\n".join(_snapshot_ingest_ui_log_tail()), quote=False)
+    http_log_pre_esc = html.escape("\n".join(_snapshot_server_http_ui_log_tail()), quote=False)
+    http_log_file_note = ""
+    hl = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
+    if hl:
+        escaped_hl = html.escape(hl, quote=True)
+        http_log_file_note = f'<p class="muted">Тот же текст дублируется в файл: <code>{escaped_hl}</code> (<code>DOC_RAG_HTTP_LOG</code>).</p>'
+    base = _public_base_url(request)
+    mcp_url = f"{base}/mcp"
+    try:
+        ic0 = indexed_catalog()
+    except Exception as exc:
+        ic0 = {"error": str(exc), "documents": [], "document_count": 0}
+    try:
+        cfg_yaml_body = _config_path().read_text(encoding="utf-8")
+    except Exception as exc:
+        cfg_yaml_body = f"# не удалось прочитать конфиг: {exc}\n"
+    cfg_path_esc = html.escape(str(_config_path()), quote=False)
+    cfg_yaml_esc = html.escape(cfg_yaml_body, quote=False)
+    restart_btn_on = _ui_restart_allowed() and bool(_ui_restart_cmd())
+    restart_note_html = ""
+    if not restart_btn_on:
+        restart_note_html = (
+            '<p class="muted">Перезапуск из UI по умолчанию выключен. Для кнопки задайте в окружении процесса '
+            "<code>DOC_RAG_UI_RESTART_ENABLED=1</code> и <code>DOC_RAG_UI_RESTART_CMD</code> "
+            "(например <code>sudo /bin/systemctl restart doc-rag-mcp</code> — см. sudoers).</p>"
+        )
+    restart_disabled_attr = " disabled" if not restart_btn_on else ""
+    idx_summary_html = _indexed_documents_summary_html(ic0)
+    idx_tbody_html, idx_cap_html = _indexed_documents_table_rows_html(ic0)
+    body = f"""
   <html>
     <head>
       <meta charset="utf-8" />
@@ -1214,9 +1278,9 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             <input type="hidden" name="key" value="{key}"/>
             <button type="submit" id="ui-btn-rebuild" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
           </form>
-          <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get('job') or ('busy')) if state.get('running') else 'idle'}</code></p>
-          <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get('last_ok')}</code></p>
-          <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get('last_error') or '-')}</code></p>
+          <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get("job") or ("busy")) if state.get("running") else "idle"}</code></p>
+          <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get("last_ok")}</code></p>
+          <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get("last_error") or "-")}</code></p>
           <p><a href="/ui/status{key_q}">/ui/status</a></p>
           <p><a href="/ui/mcp/cursor.json{key_q}">Скачать MCP config для Cursor</a></p>
           <p><a href="/ui/mcp/vscode.json{key_q}">Скачать MCP config для VSCode</a></p>
@@ -1653,234 +1717,238 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
     </body>
   </html>
   """
-  return HTMLResponse(body)
+    return HTMLResponse(body)
 
 
 @app.get("/ui/mcp/cursor.json")
 async def ui_mcp_cursor(request: Request, key: str = "") -> Response:
-  if not _ui_key_ok(request, key):
-    return PlainTextResponse("Unauthorized", status_code=401)
-  base = _public_base_url(request)
-  payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
-  return _download_json(payload, "cursor-mcp-doc-rag.json")
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    base = _public_base_url(request)
+    payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
+    return _download_json(payload, "cursor-mcp-doc-rag.json")
 
 
 @app.get("/ui/mcp/vscode.json")
 async def ui_mcp_vscode(request: Request, key: str = "") -> Response:
-  if not _ui_key_ok(request, key):
-    return PlainTextResponse("Unauthorized", status_code=401)
-  base = _public_base_url(request)
-  payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
-  return _download_json(payload, "vscode-mcp-doc-rag.json")
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    base = _public_base_url(request)
+    payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
+    return _download_json(payload, "vscode-mcp-doc-rag.json")
 
 
 @app.get("/ui/status")
 async def ui_status(request: Request, key: str = "") -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"error": "unauthorized"}, status_code=401)
-  return JSONResponse(_ui_status_payload())
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_ui_status_payload())
 
 
 @app.get("/ui/document-preview")
 async def ui_document_preview(request: Request, doc_id: str = "", key: str = "") -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"error": "unauthorized"}, status_code=401)
-  return JSONResponse(document_preview(doc_id))
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(document_preview(doc_id))
 
 
 @app.post("/ui/upload")
 async def ui_upload(
-  request: Request,
-  files: Annotated[List[UploadFile], File()],
-  key: str = Form(""),
+    request: Request,
+    files: Annotated[list[UploadFile], File()],
+    key: str = Form(""),
 ) -> Response:
-  if not _ui_key_ok(request, key):
-    return PlainTextResponse("Unauthorized", status_code=401)
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
 
-  incoming = _sources_incoming_dir()
-  incoming.mkdir(parents=True, exist_ok=True)
+    incoming = _sources_incoming_dir()
+    incoming.mkdir(parents=True, exist_ok=True)
 
-  lim = _ui_max_upload_files()
-  if len(files) > lim:
-    return PlainTextResponse(
-      f"Слишком много файлов за один запрос: {len(files)} > лимит {lim} (DOC_RAG_UI_MAX_UPLOAD_FILES).",
-      status_code=400,
-    )
+    lim = _ui_max_upload_files()
+    if len(files) > lim:
+        return PlainTextResponse(
+            f"Слишком много файлов за один запрос: {len(files)} > лимит {lim} (DOC_RAG_UI_MAX_UPLOAD_FILES).",
+            status_code=400,
+        )
 
-  errors: List[str] = []
-  dups: List[str] = []
-  saved = 0
-  for uf in files:
-    is_dup, msg = await _save_upload_to_incoming(uf, incoming)
-    if msg is None:
-      saved += 1
-    elif is_dup:
-      dups.append(msg)
-    else:
-      errors.append(msg)
+    errors: list[str] = []
+    dups: list[str] = []
+    saved = 0
+    for uf in files:
+        is_dup, msg = await _save_upload_to_incoming(uf, incoming)
+        if msg is None:
+            saved += 1
+        elif is_dup:
+            dups.append(msg)
+        else:
+            errors.append(msg)
 
-  qdict: Dict[str, str] = {}
-  k = (key or "").strip()
-  if k:
-    qdict["key"] = k
-  if saved > 0:
-    qdict["up_saved"] = str(saved)
-  if errors:
-    qdict["up_err"] = str(len(errors))
-    qdict["up_msg"] = errors[0][:280]
-  if dups:
-    qdict["up_dup"] = str(len(dups))
-    qdict["up_dup_msg"] = dups[0][:280]
-  loc = "/ui?" + urlencode(qdict)
-  return RedirectResponse(url=loc, status_code=303)
+    qdict: dict[str, str] = {}
+    k = (key or "").strip()
+    if k:
+        qdict["key"] = k
+    if saved > 0:
+        qdict["up_saved"] = str(saved)
+    if errors:
+        qdict["up_err"] = str(len(errors))
+        qdict["up_msg"] = errors[0][:280]
+    if dups:
+        qdict["up_dup"] = str(len(dups))
+        qdict["up_dup_msg"] = dups[0][:280]
+    loc = "/ui?" + urlencode(qdict)
+    return RedirectResponse(url=loc, status_code=303)
 
 
 @app.post("/ui/rebuild")
 async def ui_rebuild(request: Request, key: str = Form("")) -> Response:
-  if not _ui_key_ok(request, key):
-    return PlainTextResponse("Unauthorized", status_code=401)
-  asyncio.create_task(_run_rebuild_background())
-  kq = f"?key={key}" if key else ""
-  return RedirectResponse(url=f"/ui{kq}", status_code=303)
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    asyncio.create_task(_run_rebuild_background())
+    kq = f"?key={key}" if key else ""
+    return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
 
 @app.post("/ui/ingest")
 async def ui_ingest(request: Request, key: str = Form("")) -> Response:
-  if not _ui_key_ok(request, key):
-    return PlainTextResponse("Unauthorized", status_code=401)
-  # Fire-and-forget
-  asyncio.create_task(_run_ingest_background())
-  return RedirectResponse(url=f"/ui?key={key}", status_code=303)
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    # Fire-and-forget
+    asyncio.create_task(_run_ingest_background())
+    return RedirectResponse(url=f"/ui?key={key}", status_code=303)
 
 
 def _busy_response() -> JSONResponse:
-  return JSONResponse(
-    {"ok": False, "error": "Идёт ingest/rebuild. Дождитесь завершения и повторите."},
-    status_code=409,
-  )
+    return JSONResponse(
+        {"ok": False, "error": "Идёт ingest/rebuild. Дождитесь завершения и повторите."},
+        status_code=409,
+    )
 
 
 @app.post("/ui/delete")
 async def ui_delete(request: Request, key: str = Form(""), doc_ids: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  if _INGEST_STATE.get("running"):
-    return _busy_response()
-  ids = [s.strip() for s in (doc_ids or "").split(",") if s.strip()]
-  if not ids:
-    return JSONResponse({"ok": False, "error": "no doc_ids provided"}, status_code=400)
-  try:
-    result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, **result})
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if _INGEST_STATE.get("running"):
+        return _busy_response()
+    ids = [s.strip() for s in (doc_ids or "").split(",") if s.strip()]
+    if not ids:
+        return JSONResponse({"ok": False, "error": "no doc_ids provided"}, status_code=400)
+    try:
+        result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/wipe")
 async def ui_wipe(request: Request, key: str = Form(""), confirm: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  if _INGEST_STATE.get("running"):
-    return _busy_response()
-  if (confirm or "").strip() != "DELETE":
-    return JSONResponse(
-      {"ok": False, "error": "Подтверждение: введите слово DELETE."},
-      status_code=400,
-    )
-  try:
-    result = await asyncio.to_thread(_pipeline_wipe_index, str(_config_path()))
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, **result})
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if _INGEST_STATE.get("running"):
+        return _busy_response()
+    if (confirm or "").strip() != "DELETE":
+        return JSONResponse(
+            {"ok": False, "error": "Подтверждение: введите слово DELETE."},
+            status_code=400,
+        )
+    try:
+        result = await asyncio.to_thread(_pipeline_wipe_index, str(_config_path()))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/clean-orphans")
 async def ui_clean_orphans(request: Request, key: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  if _INGEST_STATE.get("running"):
-    return _busy_response()
-  try:
-    result = await asyncio.to_thread(_pipeline_clean_orphans, str(_config_path()))
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, **result})
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if _INGEST_STATE.get("running"):
+        return _busy_response()
+    try:
+        result = await asyncio.to_thread(_pipeline_clean_orphans, str(_config_path()))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/clear-incoming")
 async def ui_clear_incoming(request: Request, key: str = Form("")) -> JSONResponse:
-  if not _ui_key_ok(request, key):
-    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-  try:
-    result = await asyncio.to_thread(_pipeline_clear_incoming, str(_config_path()))
-  except Exception as exc:
-    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-  return JSONResponse({"ok": True, **result})
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        result = await asyncio.to_thread(_pipeline_clear_incoming, str(_config_path()))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, **result})
 
 
 @app.get("/mcp")
 async def mcp_get(request: Request) -> Response:
-  # SSE stream endpoint (optional per spec)
-  origin = request.headers.get("origin")
-  if not _origin_allowed(origin):
-    return PlainTextResponse("Origin not allowed", status_code=403)
+    # SSE stream endpoint (optional per spec)
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return PlainTextResponse("Origin not allowed", status_code=403)
 
-  if not _check_api_key(request):
-    return PlainTextResponse("Unauthorized", status_code=401)
+    if not _check_api_key(request):
+        return PlainTextResponse("Unauthorized", status_code=401)
 
-  if not _accepts_sse(request):
-    # Spec allows 405 if SSE is not offered; here we *do* offer SSE, but require Accept.
-    return PlainTextResponse("Client must accept text/event-stream", status_code=406)
+    if not _accepts_sse(request):
+        # Spec allows 405 if SSE is not offered; here we *do* offer SSE, but require Accept.
+        return PlainTextResponse("Client must accept text/event-stream", status_code=406)
 
-  client = await _sse_hub.add()
+    client = await _sse_hub.add()
 
-  async def event_stream():
-    # Send a 'ready' notification to THIS client (no id -> notification)
-    yield _sse_frame({"jsonrpc": "2.0", "method": "doc_rag/ready", "params": {"status": "ok"}})
-    keepalive_sec = int(os.environ.get("DOC_RAG_SSE_KEEPALIVE_SEC", "25"))
-    last_keepalive = time.time()
+    async def event_stream():
+        # Send a 'ready' notification to THIS client (no id -> notification)
+        yield _sse_frame({"jsonrpc": "2.0", "method": "doc_rag/ready", "params": {"status": "ok"}})
+        keepalive_sec = int(os.environ.get("DOC_RAG_SSE_KEEPALIVE_SEC", "25"))
+        last_keepalive = time.time()
 
-    try:
-      while True:
-        # Wait for next message or keepalive
-        timeout = max(1, keepalive_sec - int(time.time() - last_keepalive))
         try:
-          frame = await asyncio.wait_for(client.queue.get(), timeout=timeout)
-          yield frame
-        except asyncio.TimeoutError:
-          # SSE comment keepalive (ignored by clients)
-          last_keepalive = time.time()
-          yield ": keepalive\n\n"
-    except asyncio.CancelledError:
-      raise
-    finally:
-      await _sse_hub.remove(client)
+            while True:
+                # Wait for next message or keepalive
+                timeout = max(1, keepalive_sec - int(time.time() - last_keepalive))
+                try:
+                    frame = await asyncio.wait_for(client.queue.get(), timeout=timeout)
+                    yield frame
+                except asyncio.TimeoutError:
+                    # SSE comment keepalive (ignored by clients)
+                    last_keepalive = time.time()
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await _sse_hub.remove(client)
 
-  return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
+    )
 
 
 @app.post("/mcp")
 async def mcp_post(request: Request) -> Response:
-  origin = request.headers.get("origin")
-  if not _origin_allowed(origin):
-    return PlainTextResponse("Origin not allowed", status_code=403)
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return PlainTextResponse("Origin not allowed", status_code=403)
 
-  if not _check_api_key(request):
-    return PlainTextResponse("Unauthorized", status_code=401)
+    if not _check_api_key(request):
+        return PlainTextResponse("Unauthorized", status_code=401)
 
-  try:
-    payload: Json = await request.json()
-  except Exception:
-    return JSONResponse(_err(None, -32700, "Parse error: invalid JSON"), status_code=400)
-
-  timeout_sec = float(os.environ.get("DOC_RAG_TOOL_TIMEOUT_SEC", "30"))
-  async with _TOOL_SEM:
     try:
-      status, out = await asyncio.wait_for(asyncio.to_thread(_handle_jsonrpc, payload), timeout=timeout_sec)
-    except asyncio.TimeoutError:
-      return JSONResponse(_err(None, -32001, "Request timed out"), status_code=504)
-  if out is None:
-    return Response(status_code=status)
+        payload: Json = await request.json()
+    except Exception:
+        return JSONResponse(_err(None, -32700, "Parse error: invalid JSON"), status_code=400)
 
-  # For now we return JSON. SSE streaming for POST is optional; GET provides notifications streaming.
-  return JSONResponse(out, status_code=status)
+    timeout_sec = float(os.environ.get("DOC_RAG_TOOL_TIMEOUT_SEC", "30"))
+    async with _TOOL_SEM:
+        try:
+            status, out = await asyncio.wait_for(
+                asyncio.to_thread(_handle_jsonrpc, payload), timeout=timeout_sec
+            )
+        except asyncio.TimeoutError:
+            return JSONResponse(_err(None, -32001, "Request timed out"), status_code=504)
+    if out is None:
+        return Response(status_code=status)
+
+    # For now we return JSON. SSE streaming for POST is optional; GET provides notifications streaming.
+    return JSONResponse(out, status_code=status)

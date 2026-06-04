@@ -14,7 +14,6 @@ authors = [{name = "doc-rag contributors"}]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -100,6 +99,7 @@ select = [
 ignore = [
   "E501",  # line too long — formatter handles wrapping where it can
   "B008",  # function call in default arg (FastAPI uses this pattern)
+  "E402",  # module-level import after docstring/__future__ — intentional ordering
 ]
 
 [tool.ruff.format]

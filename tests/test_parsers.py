@@ -5,17 +5,17 @@ its behaviour for `.md`, `.txt`, `.docx`, `.doc`, and `.pdf` (text-mode
 only — the OCR path requires Tesseract and a rendered scan, which is
 out of scope for unit tests).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
 from doc_rag.raglib.parsers import parse_document
 
-
-_MIN_CFG: Dict[str, Any] = {
+_MIN_CFG: dict[str, Any] = {
     "parsing": {
         "pdf_backend": "auto",
         "normalize_whitespace": True,
@@ -135,9 +135,7 @@ def test_parse_docx_bundled_fixture_text_and_table():
 def test_parse_doc_bundled_fixture(antiword_available: bool):
     """If a sample.doc fixture is present and antiword is installed, parse it."""
     if not _SAMPLE_DOC.exists():
-        pytest.skip(
-            f"missing fixture: {_SAMPLE_DOC} (convert sample.docx → .doc to enable)"
-        )
+        pytest.skip(f"missing fixture: {_SAMPLE_DOC} (convert sample.docx → .doc to enable)")
     if not antiword_available:
         pytest.skip("neither antiword nor catdoc on PATH")
 

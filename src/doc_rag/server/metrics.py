@@ -10,9 +10,8 @@
 This keeps the default install footprint small while letting operators
 opt in to Prometheus scraping with a single `pip install -e .[metrics]`.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 try:
     from prometheus_client import (
@@ -30,12 +29,12 @@ except ImportError:  # pragma: no cover — exercised in deployments without [me
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
 
-_REGISTRY: Optional["CollectorRegistry"] = None
-_MCP_REQUESTS: Optional["Counter"] = None
-_MCP_DURATION: Optional["Histogram"] = None
-_INGEST_DOCS_TOTAL: Optional["Counter"] = None
-_INGEST_ERRORS_TOTAL: Optional["Counter"] = None
-_FAISS_INDEX_SIZE: Optional["Gauge"] = None
+_REGISTRY: CollectorRegistry | None = None
+_MCP_REQUESTS: Counter | None = None
+_MCP_DURATION: Histogram | None = None
+_INGEST_DOCS_TOTAL: Counter | None = None
+_INGEST_ERRORS_TOTAL: Counter | None = None
+_FAISS_INDEX_SIZE: Gauge | None = None
 
 
 def metrics_available() -> bool:

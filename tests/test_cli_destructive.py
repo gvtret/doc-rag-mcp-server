@@ -6,6 +6,7 @@ wrappers (`doc_rag.cli`) are also exercised through subprocess in a
 single end-to-end test per command, just enough to be confident the
 argparse glue is wired.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,9 +14,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
-
-import pytest
 
 from doc_rag.raglib.pipeline import (
     clean_orphans,
@@ -23,7 +21,6 @@ from doc_rag.raglib.pipeline import (
     delete_documents,
     wipe_index,
 )
-
 
 # --------------------------------------------------------------------------
 # delete_documents
@@ -113,12 +110,17 @@ def test_clean_orphans_removes_unreferenced_md_and_chunks(built_corpus):
 
     chunks_path = root / "build" / "chunks_jsonl" / "chunks.jsonl"
     with chunks_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "chunk_id": "orphan-zzz:0000",
-            "doc_id": "orphan-zzz",
-            "text": "stray text",
-            "source_file": "orphan.pdf",
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "chunk_id": "orphan-zzz:0000",
+                    "doc_id": "orphan-zzz",
+                    "text": "stray text",
+                    "source_file": "orphan.pdf",
+                }
+            )
+            + "\n"
+        )
 
     result = clean_orphans(config_path)
 
@@ -173,11 +175,17 @@ def test_clear_incoming_empty_is_noop(tmp_corpus_root):
 # --------------------------------------------------------------------------
 
 
-def _run_cli(root: Path, args: List[str]) -> subprocess.CompletedProcess:
+def _run_cli(root: Path, args: list[str]) -> subprocess.CompletedProcess:
     """Invoke doc-rag CLI as a subprocess in the test root."""
     env = os.environ.copy()
     env["DOC_RAG_ROOT"] = str(root)
-    cmd = [sys.executable, "-m", "doc_rag.cli", "--config", str(root / "config" / "config.yaml")] + args
+    cmd = [
+        sys.executable,
+        "-m",
+        "doc_rag.cli",
+        "--config",
+        str(root / "config" / "config.yaml"),
+    ] + args
     return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60, check=False)
 
 

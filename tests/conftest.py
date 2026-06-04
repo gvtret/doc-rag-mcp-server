@@ -10,13 +10,14 @@ Two design choices worth knowing:
 2. We isolate every test that touches the filesystem inside `tmp_path`
    and set `DOC_RAG_ROOT` so the server module reads from there.
 """
+
 from __future__ import annotations
 
 import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import pytest
 
@@ -30,7 +31,7 @@ if _SRC.is_dir():
 # Tiny config helper
 # --------------------------------------------------------------------------
 
-_BASE_CONFIG: Dict[str, Any] = {
+_BASE_CONFIG: dict[str, Any] = {
     "pipeline_version": "test",
     "paths": {
         "sources_incoming": "sources/incoming",
@@ -82,7 +83,7 @@ _BASE_CONFIG: Dict[str, Any] = {
 }
 
 
-def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
+def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     import yaml
 
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -188,12 +189,12 @@ def built_corpus(tmp_corpus_root: Path, synthetic_chunks, synthetic_embeddings):
     root = tmp_corpus_root
 
     # Two synthetic documents, three chunks each.
-    docs: List[Tuple[str, List[Dict[str, Any]]]] = [
+    docs: list[tuple[str, list[dict[str, Any]]]] = [
         ("doc-aaa", synthetic_chunks(3, doc_id="doc-aaa", source_file="aaa.pdf")),
         ("doc-bbb", synthetic_chunks(3, doc_id="doc-bbb", source_file="bbb.pdf")),
     ]
 
-    all_chunks: List[Dict[str, Any]] = []
+    all_chunks: list[dict[str, Any]] = []
     for _, chunks in docs:
         all_chunks.extend(chunks)
 
@@ -225,7 +226,7 @@ def built_corpus(tmp_corpus_root: Path, synthetic_chunks, synthetic_embeddings):
     # Source files
     archived = root / "sources" / "archived"
     archived.mkdir(parents=True, exist_ok=True)
-    for doc_id, chunks in docs:
+    for _doc_id, chunks in docs:
         src = archived / chunks[0]["source_file"]
         src.write_bytes(b"%PDF-1.4 stub\n")
 
@@ -233,9 +234,7 @@ def built_corpus(tmp_corpus_root: Path, synthetic_chunks, synthetic_embeddings):
     md_dir = root / "build" / "docs_md"
     md_dir.mkdir(parents=True, exist_ok=True)
     for doc_id, _ in docs:
-        (md_dir / f"{doc_id}.md").write_text(
-            f"# {doc_id}\n\nplaceholder\n", encoding="utf-8"
-        )
+        (md_dir / f"{doc_id}.md").write_text(f"# {doc_id}\n\nplaceholder\n", encoding="utf-8")
 
     # Manifest
     manifest = {
@@ -288,7 +287,9 @@ def make_txt(tmp_path: Path):
 def make_docx(tmp_path: Path):
     """Build a real .docx with python-docx; skip the test if it is unavailable."""
 
-    def _factory(name: str, paragraphs: List[str], table_rows: Optional[List[List[str]]] = None) -> Path:
+    def _factory(
+        name: str, paragraphs: list[str], table_rows: list[list[str]] | None = None
+    ) -> Path:
         try:
             from docx import Document
         except Exception:

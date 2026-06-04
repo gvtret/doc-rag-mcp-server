@@ -31,6 +31,7 @@ Exit status:
         or faiss); pip install -e .[faiss,embeddings] to fix
     2 — bad arguments
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,7 +42,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,6 +52,7 @@ def _have_runtime_deps() -> bool:
         import faiss  # noqa: F401
         import numpy  # noqa: F401
         from sentence_transformers import SentenceTransformer  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -76,11 +78,11 @@ _SENTENCE_POOL = [
 ]
 
 
-def _make_synthetic_chunks(n: int, target_words: int = 80, seed: int = 0) -> List[Dict[str, Any]]:
+def _make_synthetic_chunks(n: int, target_words: int = 80, seed: int = 0) -> list[dict[str, Any]]:
     rng = random.Random(seed)
-    chunks: List[Dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = []
     for i in range(n):
-        words: List[str] = []
+        words: list[str] = []
         # Splice random sentences until we hit the target word count.
         while len(words) < target_words:
             words.extend(rng.choice(_SENTENCE_POOL).split())
@@ -103,9 +105,9 @@ def _bench(
     device: str,
     batch_size: int,
     deletion_fraction: float,
-) -> Dict[str, Any]:
-    import numpy as np
+) -> dict[str, Any]:
     import faiss  # type: ignore
+    import numpy as np
     from sentence_transformers import SentenceTransformer  # type: ignore
 
     chunks = _make_synthetic_chunks(n_chunks)
@@ -136,7 +138,9 @@ def _bench(
     n_delete = max(1, int(n_chunks * deletion_fraction))
     doomed_doc_ids = {chunks[i]["doc_id"] for i in range(0, n_delete)}
     chunk_ids = [c["chunk_id"] for c in chunks]
-    kept_pairs = [(i, cid) for i, cid in enumerate(chunk_ids) if cid.rsplit(":", 1)[0] not in doomed_doc_ids]
+    kept_pairs = [
+        (i, cid) for i, cid in enumerate(chunk_ids) if cid.rsplit(":", 1)[0] not in doomed_doc_ids
+    ]
 
     t0 = time.perf_counter()
     new_idx = faiss.IndexFlatIP(dim)
@@ -159,7 +163,7 @@ def _bench(
     }
 
 
-def _platform_info() -> Dict[str, Any]:
+def _platform_info() -> dict[str, Any]:
     import multiprocessing
 
     info = {
@@ -183,7 +187,9 @@ def _platform_info() -> Dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--size", type=int, default=1000, help="number of synthetic chunks (default 1000)")
+    parser.add_argument(
+        "--size", type=int, default=1000, help="number of synthetic chunks (default 1000)"
+    )
     parser.add_argument(
         "--model",
         default=os.environ.get("DOC_RAG_BENCH_MODEL", "BAAI/bge-small-en-v1.5"),
@@ -209,9 +215,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if not _have_runtime_deps():
-        sys.stderr.write(
-            "missing runtime deps. pip install -e .[faiss,embeddings] then retry.\n"
-        )
+        sys.stderr.write("missing runtime deps. pip install -e .[faiss,embeddings] then retry.\n")
         return 1
 
     device = args.device

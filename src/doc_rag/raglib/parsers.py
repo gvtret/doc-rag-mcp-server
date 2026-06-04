@@ -1,8 +1,10 @@
 from __future__ import annotations
-import os
-from typing import Any, Dict, List, Tuple
 
-def _max_int(cfg: Dict[str, Any], key: str, default: int) -> int:
+import os
+from typing import Any
+
+
+def _max_int(cfg: dict[str, Any], key: str, default: int) -> int:
     try:
         v = int((cfg.get("parsing", {}) or {}).get(key, default))
     except Exception:
@@ -10,7 +12,7 @@ def _max_int(cfg: Dict[str, Any], key: str, default: int) -> int:
     return max(1, v)
 
 
-def _max_file_bytes(cfg: Dict[str, Any]) -> int:
+def _max_file_bytes(cfg: dict[str, Any]) -> int:
     parsing = cfg.get("parsing", {}) or {}
     mb = parsing.get("max_file_mb", 50)
     try:
@@ -21,7 +23,7 @@ def _max_file_bytes(cfg: Dict[str, Any]) -> int:
     return mb_i * 1024 * 1024
 
 
-def _enforce_size_limit(cfg: Dict[str, Any], path: str) -> None:
+def _enforce_size_limit(cfg: dict[str, Any], path: str) -> None:
     try:
         size = os.path.getsize(path)
     except Exception:
@@ -31,7 +33,7 @@ def _enforce_size_limit(cfg: Dict[str, Any], path: str) -> None:
         raise RuntimeError(f"File too large ({size} bytes > {limit} bytes): {path}")
 
 
-def _min_chars_per_page(cfg: Dict[str, Any]) -> int:
+def _min_chars_per_page(cfg: dict[str, Any]) -> int:
     try:
         v = int((cfg.get("parsing", {}) or {}).get("min_chars_per_page", 20))
     except Exception:
@@ -39,16 +41,16 @@ def _min_chars_per_page(cfg: Dict[str, Any]) -> int:
     return max(0, v)
 
 
-def _ocr_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _ocr_config(cfg: dict[str, Any]) -> dict[str, Any]:
     o = (cfg.get("parsing", {}) or {}).get("ocr")
     return o if isinstance(o, dict) else {}
 
 
-def _ocr_enabled(cfg: Dict[str, Any]) -> bool:
+def _ocr_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_ocr_config(cfg).get("enabled"))
 
 
-def _ocr_runtime_imports() -> Tuple[Any, Any]:
+def _ocr_runtime_imports() -> tuple[Any, Any]:
     try:
         import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
@@ -60,7 +62,9 @@ def _ocr_runtime_imports() -> Tuple[Any, Any]:
     return pytesseract, Image
 
 
-def _ocr_page_text(page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_cfg: Dict[str, Any]) -> str:
+def _ocr_page_text(
+    page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_cfg: dict[str, Any]
+) -> str:
     scale = float(ocr_cfg.get("render_scale", 2.0))
     scale = max(0.5, min(4.0, scale))
     mat = fitz_mod.Matrix(scale, scale)
@@ -72,6 +76,7 @@ def _ocr_page_text(page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_c
         pytesseract.pytesseract.tesseract_cmd = cmd.strip()
     cfg_extra = ocr_cfg.get("tesseract_config")
     extra = cfg_extra.strip() if isinstance(cfg_extra, str) else ""
+
     def _run(lang_arg: str) -> str:
         if extra:
             return str(pytesseract.image_to_string(img, lang=lang_arg, config=extra) or "")
@@ -81,8 +86,10 @@ def _ocr_page_text(page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_c
         return _run(lang)
     except Exception as e:
         err = str(e).lower()
-        if "equ" in lang.lower() and "+equ" in lang.lower() and (
-            "traineddata" in err or "could not load" in err or "failed loading" in err
+        if (
+            "equ" in lang.lower()
+            and "+equ" in lang.lower()
+            and ("traineddata" in err or "could not load" in err or "failed loading" in err)
         ):
             # Часто на минимальных образах нет tesseract-ocr-equ — откатываемся на rus+eng.
             fallback = "+".join(p for p in lang.split("+") if p.strip().lower() != "equ")
@@ -100,7 +107,7 @@ def _ocr_page_text(page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_c
         raise
 
 
-def _empty_ocr_summary() -> Dict[str, Any]:
+def _empty_ocr_summary() -> dict[str, Any]:
     return {
         "applied": False,
         "pages_recognized": 0,
@@ -145,15 +152,15 @@ def _extract_page_text_structured(page: Any, fitz_mod: Any) -> str:
         return page.get_text("text") or ""
 
     # Build (Rect, formatted_text) for each detected table
-    table_entries: List[Tuple[Any, str]] = []
+    table_entries: list[tuple[Any, str]] = []
     for tab in tables:
         try:
             trect = fitz_mod.Rect(tab.bbox)
         except Exception:
             continue
-        rows_out: List[str] = []
+        rows_out: list[str] = []
         try:
-            for row in (tab.extract() or []):
+            for row in tab.extract() or []:
                 if not row:
                     continue
                 cells = [(c or "").strip() if c is not None else "" for c in row]
@@ -174,7 +181,7 @@ def _extract_page_text_structured(page: Any, fitz_mod: Any) -> str:
     except Exception:
         return page.get_text("text") or ""
 
-    output: List[str] = []
+    output: list[str] = []
     emitted: set = set()
 
     for b in blocks:
@@ -213,7 +220,7 @@ def _extract_page_text_structured(page: Any, fitz_mod: Any) -> str:
 
 
 def _detect_pdf_is_scan(
-    parts: List[str], *, threshold: int, n_pages: int, ocr_cfg: Dict[str, Any]
+    parts: list[str], *, threshold: int, n_pages: int, ocr_cfg: dict[str, Any]
 ) -> bool:
     """Эвристика «весь документ — скан»: почти все страницы без нативного текста."""
     if n_pages <= 0:
@@ -238,8 +245,8 @@ def _detect_pdf_is_scan(
 
 
 def _pdf_fitz_extract_with_ocr(
-    cfg: Dict[str, Any], path: str, *, max_pages: int
-) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    cfg: dict[str, Any], path: str, *, max_pages: int
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """PyMuPDF native text + optional Tesseract per page. Returns text, raw_stats, ocr_summary."""
     try:
         import fitz  # pymupdf
@@ -259,11 +266,11 @@ def _pdf_fitz_extract_with_ocr(
     try:
         total_pages = len(doc)
         n_read = min(total_pages, max_pages)
-        parts: List[str] = []
+        parts: list[str] = []
         for i in range(n_read):
             parts.append(_extract_page_text_structured(doc[i], fitz) or "")
 
-        ocr_summary: Dict[str, Any] = {
+        ocr_summary: dict[str, Any] = {
             "applied": False,
             "pages_recognized": 0,
             "native_chars_total": sum(len((p or "").strip()) for p in parts),
@@ -278,7 +285,9 @@ def _pdf_fitz_extract_with_ocr(
             force_manual = bool(ocr_cfg.get("force_all_pages", False))
 
             page_has_img = [_page_has_embedded_images(doc[i]) for i in range(n_read)]
-            is_scan = _detect_pdf_is_scan(parts, threshold=threshold, n_pages=n_read, ocr_cfg=ocr_cfg)
+            is_scan = _detect_pdf_is_scan(
+                parts, threshold=threshold, n_pages=n_read, ocr_cfg=ocr_cfg
+            )
 
             if force_manual:
                 routing = "force_all_pages"
@@ -321,7 +330,7 @@ def _pdf_fitz_extract_with_ocr(
 
         text = "\n\n".join(parts)
         chars_per = [len((p or "").strip()) for p in parts]
-        raw_stats: Dict[str, Any] = {
+        raw_stats: dict[str, Any] = {
             "format": "pdf",
             "pdf_backend": "pymupdf+ocr" if ocr_summary.get("applied") else "pymupdf",
             "source_page_count": total_pages,
@@ -334,12 +343,13 @@ def _pdf_fitz_extract_with_ocr(
         doc.close()
 
 
-def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]]:
+def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> tuple[str, dict[str, Any]]:
     from PyPDF2 import PdfReader
+
     r = PdfReader(path)
     total_pages = len(r.pages)
     n_read = min(total_pages, max_pages)
-    parts: List[str] = []
+    parts: list[str] = []
     for page in r.pages[:max_pages]:
         try:
             parts.append(page.extract_text() or "")
@@ -347,7 +357,7 @@ def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]
             parts.append("")
     text = "\n\n".join(parts)
     chars_per = [len((p or "").strip()) for p in parts]
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "format": "pdf",
         "pdf_backend": "pypdf2",
         "source_page_count": total_pages,
@@ -358,12 +368,12 @@ def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> Tuple[str, Dict[str, Any]
     return text, stats
 
 
-def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]:
+def _parse_docx(path: str, *, max_paragraphs: int) -> tuple[str, dict[str, Any]]:
     from docx import Document
     from docx.oxml.ns import qn  # type: ignore
 
     d = Document(path)
-    parts: List[str] = []
+    parts: list[str] = []
     used = 0
     para_count = 0
     tables_count = 0
@@ -382,14 +392,12 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]
                 used += 1
         elif tag == "tbl":
             tables_count += 1
-            rows_out: List[str] = []
+            rows_out: list[str] = []
             for tr in child.iter(qn("w:tr")):
-                cells: List[str] = []
+                cells: list[str] = []
                 prev_cell_text = None
                 for tc in tr.iter(qn("w:tc")):
-                    cell_text = "".join(
-                        r.text for r in tc.iter(qn("w:t")) if r.text
-                    ).strip()
+                    cell_text = "".join(r.text for r in tc.iter(qn("w:t")) if r.text).strip()
                     # Skip merged-cell duplicates (python-docx repeats merged cells)
                     if cell_text != prev_cell_text:
                         cells.append(cell_text)
@@ -400,7 +408,7 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]
                 parts.append("\n".join(rows_out))
 
     text = "\n\n".join(parts)
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "format": "docx",
         "paragraphs_extracted": used,
         "tables_extracted": tables_count,
@@ -409,19 +417,19 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> Tuple[str, Dict[str, Any]]
     return text, stats
 
 
-def _parse_md(path: str) -> Tuple[str, Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+def _parse_md(path: str) -> tuple[str, dict[str, Any]]:
+    with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     return text, {"format": "md", "text_chars_extracted": len(text)}
 
 
-def _parse_txt(path: str) -> Tuple[str, Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+def _parse_txt(path: str) -> tuple[str, dict[str, Any]]:
+    with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     return text, {"format": "txt", "text_chars_extracted": len(text)}
 
 
-def _parse_doc(path: str) -> Tuple[str, Dict[str, Any]]:
+def _parse_doc(path: str) -> tuple[str, dict[str, Any]]:
     """Parse legacy binary .doc via antiword/catdoc subprocess."""
     import shutil
     import subprocess
@@ -454,7 +462,7 @@ def _parse_doc(path: str) -> Tuple[str, Dict[str, Any]]:
     return text, {"format": "doc", "tool": tool, "text_chars_extracted": len(text)}
 
 
-def _finalize_pdf_stats(raw: Dict[str, Any], *, min_chars: int) -> Dict[str, Any]:
+def _finalize_pdf_stats(raw: dict[str, Any], *, min_chars: int) -> dict[str, Any]:
     chars_per = raw.get("chars_per_page")
     if not isinstance(chars_per, list):
         chars_per = []
@@ -471,10 +479,10 @@ def _finalize_pdf_stats(raw: Dict[str, Any], *, min_chars: int) -> Dict[str, Any
     return out
 
 
-def _build_ocr_stats_block(cfg: Dict[str, Any], ocr_summary: Dict[str, Any]) -> Dict[str, Any]:
+def _build_ocr_stats_block(cfg: dict[str, Any], ocr_summary: dict[str, Any]) -> dict[str, Any]:
     oc = _ocr_config(cfg)
     lang = oc.get("tesseract_lang")
-    block: Dict[str, Any] = {
+    block: dict[str, Any] = {
         "applied": bool(ocr_summary.get("applied")),
         "before_ocr": {"chars": ocr_summary.get("before_ocr_chars")},
         "after_ocr": {"chars": ocr_summary.get("after_ocr_chars")},
@@ -489,13 +497,13 @@ def _build_ocr_stats_block(cfg: Dict[str, Any], ocr_summary: Dict[str, Any]) -> 
     return block
 
 
-def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
+def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     _enforce_size_limit(cfg, path)
     text = ""
-    tables: List[Any] = []
+    tables: list[Any] = []
     min_thr = _min_chars_per_page(cfg)
-    extract_stats: Dict[str, Any] = {}
-    ocr_summary: Dict[str, Any] = _empty_ocr_summary()
+    extract_stats: dict[str, Any] = {}
+    ocr_summary: dict[str, Any] = _empty_ocr_summary()
 
     if path.lower().endswith(".pdf"):
         backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
@@ -505,7 +513,7 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
                 "parsing.ocr.enabled requires pdf_backend 'auto' or 'pymupdf' (PyMuPDF), not 'pypdf2'."
             )
 
-        raw_stats: Dict[str, Any] = {}
+        raw_stats: dict[str, Any] = {}
         if backend == "pypdf2":
             text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
             ocr_summary = _empty_ocr_summary()
@@ -524,7 +532,9 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
                 text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
                 ocr_summary = _empty_ocr_summary()
             else:
-                text, raw_stats, ocr_summary = _pdf_fitz_extract_with_ocr(cfg, path, max_pages=max_pages)
+                text, raw_stats, ocr_summary = _pdf_fitz_extract_with_ocr(
+                    cfg, path, max_pages=max_pages
+                )
         else:
             raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
@@ -553,13 +563,13 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
     text_chars_after_norm = len(text.strip())
     before_norm_chars = len(text_before_norm.strip()) if text_before_norm else 0
 
-    native: Dict[str, Any] = dict(extract_stats)
+    native: dict[str, Any] = dict(extract_stats)
     native["before_normalize"] = {"chars": before_norm_chars}
     native["after_normalize"] = {"chars": text_chars_after_norm}
     native["markdown"] = {"chars": len(md)}
 
     is_pdf = path.lower().endswith(".pdf")
-    ocr_block: Dict[str, Any]
+    ocr_block: dict[str, Any]
     if is_pdf:
         ocr_block = _build_ocr_stats_block(cfg, ocr_summary)
     else:
@@ -570,7 +580,7 @@ def parse_document(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
             "pages_recognized": 0,
         }
 
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "ocr": ocr_block,
         "native_text_extraction": native,
     }

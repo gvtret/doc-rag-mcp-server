@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 @dataclass
@@ -26,9 +26,9 @@ class IndexMeta:
     metric: str
     normalize: bool
     dim: int
-    chunk_ids: List[str]
+    chunk_ids: list[str]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "protocol_version": self.protocol_version,
             "model_name": self.model_name,
@@ -39,7 +39,7 @@ class IndexMeta:
         }
 
     @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "IndexMeta":
+    def from_dict(d: dict[str, Any]) -> IndexMeta:
         return IndexMeta(
             protocol_version=str(d.get("protocol_version", "1")),
             model_name=str(d.get("model_name", "")),
@@ -53,6 +53,7 @@ class IndexMeta:
 def _try_import_faiss():
     try:
         import faiss  # type: ignore
+
         return faiss
     except Exception:
         return None
@@ -61,10 +62,10 @@ def _try_import_faiss():
 def _try_import_sentence_transformers():
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
+
         return SentenceTransformer
     except Exception:
         return None
-
 
 
 def _resolve_device(device: str) -> str:
@@ -77,6 +78,7 @@ def _resolve_device(device: str) -> str:
     if dev == "" or dev == "auto":
         try:
             import torch  # type: ignore
+
             return "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
         except Exception:
             return "cpu"
@@ -84,12 +86,14 @@ def _resolve_device(device: str) -> str:
     if dev == "gpu":
         try:
             import torch  # type: ignore
+
             return "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
         except Exception:
             return "cpu"
     return device.strip()
 
-def _load_embedder(cfg: Dict[str, Any]):
+
+def _load_embedder(cfg: dict[str, Any]):
     SentenceTransformer = _try_import_sentence_transformers()
     if SentenceTransformer is None:
         return None
@@ -105,9 +109,8 @@ def _load_embedder(cfg: Dict[str, Any]):
             return None
 
 
-
-def _read_chunks_jsonl(chunks_jsonl_path: Path) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
+def _read_chunks_jsonl(chunks_jsonl_path: Path) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     if not chunks_jsonl_path.exists():
         return items
     with chunks_jsonl_path.open("r", encoding="utf-8") as f:
@@ -123,7 +126,7 @@ def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
-def _paths_from_cfg(cfg: Dict[str, Any]) -> Tuple[Path, Path, Path]:
+def _paths_from_cfg(cfg: dict[str, Any]) -> tuple[Path, Path, Path]:
     root = Path(cfg.get("_root", "."))
     index_dir = root / cfg["paths"]["index_dir"]
     chunks_path = root / cfg["paths"]["chunks_dir"] / "chunks.jsonl"
@@ -132,7 +135,7 @@ def _paths_from_cfg(cfg: Dict[str, Any]) -> Tuple[Path, Path, Path]:
     return chunks_path, index_file, meta_file
 
 
-def ensure_faiss_index(cfg: Dict[str, Any], *, force_rebuild: bool = False, log=print) -> bool:
+def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=print) -> bool:
     """Ensure that FAISS index exists and is up to date with chunks.jsonl.
 
     Returns True if semantic index is available (built/updated or already OK).
@@ -156,7 +159,7 @@ def ensure_faiss_index(cfg: Dict[str, Any], *, force_rebuild: bool = False, log=
     model_name = str(cfg.get("embeddings", {}).get("model_name", ""))
     protocol_version = str(cfg.get("pipeline_version", "1"))
 
-    meta: Optional[IndexMeta] = None
+    meta: IndexMeta | None = None
     if meta_file.exists() and not force_rebuild:
         try:
             meta = IndexMeta.from_dict(json.loads(meta_file.read_text("utf-8")))
@@ -216,7 +219,9 @@ def ensure_faiss_index(cfg: Dict[str, Any], *, force_rebuild: bool = False, log=
         log("[doc-rag][index] Index up to date")
         return True
 
-    log(f"[doc-rag][index] Updating FAISS index incrementally: +{len(all_chunk_ids) - already} chunks")
+    log(
+        f"[doc-rag][index] Updating FAISS index incrementally: +{len(all_chunk_ids) - already} chunks"
+    )
     index = faiss.read_index(str(index_file))
     if getattr(index, "d", None) and int(index.d) != int(meta.dim):
         log("[doc-rag][index] Dimension mismatch -> forcing rebuild")

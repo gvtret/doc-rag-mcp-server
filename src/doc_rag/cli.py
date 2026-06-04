@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -18,7 +19,9 @@ from doc_rag.server.http_server import run as run_http
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="doc-rag", description="Universal local document RAG pipeline")
+    parser = argparse.ArgumentParser(
+        prog="doc-rag", description="Universal local document RAG pipeline"
+    )
     parser.add_argument("--config", default="config/config.yaml", help="Path to config.yaml")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -29,7 +32,9 @@ def main() -> None:
     p_delete = sub.add_parser("delete", help="Remove one or more documents by doc_id")
     p_delete.add_argument("doc_ids", nargs="+", help="doc_id(s) to delete")
 
-    p_wipe = sub.add_parser("wipe", help="Delete EVERYTHING (sources/archived, build/, manifest, index)")
+    p_wipe = sub.add_parser(
+        "wipe", help="Delete EVERYTHING (sources/archived, build/, manifest, index)"
+    )
     p_wipe.add_argument("--confirm", default="", help="Must equal 'DELETE' to proceed")
 
     sub.add_parser("clean-orphans", help="Drop md/chunks/vectors not referenced by manifest")
@@ -85,7 +90,7 @@ def main() -> None:
         found_version = None
         if os.path.isfile(manifest_path):
             try:
-                with open(manifest_path, "r", encoding="utf-8") as fh:
+                with open(manifest_path, encoding="utf-8") as fh:
                     found_version = json.load(fh).get("schema_version", 0)
             except Exception:
                 found_version = None

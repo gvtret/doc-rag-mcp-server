@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 
-def _coerce_year(v: Any) -> Optional[int]:
+def _coerce_year(v: Any) -> int | None:
     if v is None:
         return None
     try:
@@ -23,7 +23,7 @@ def _norm_rel(rel: str) -> str:
     return rel.replace("\\", "/")
 
 
-def _year_from_pdf_date_string(s: Any) -> Optional[int]:
+def _year_from_pdf_date_string(s: Any) -> int | None:
     if not isinstance(s, str):
         return None
     t = s.strip()
@@ -45,7 +45,7 @@ def _year_from_pdf_date_string(s: Any) -> Optional[int]:
     return None
 
 
-def _year_from_pypdf2_metadata(path: str) -> Optional[int]:
+def _year_from_pypdf2_metadata(path: str) -> int | None:
     try:
         from PyPDF2 import PdfReader
     except Exception:
@@ -69,7 +69,7 @@ def _year_from_pypdf2_metadata(path: str) -> Optional[int]:
     return None
 
 
-def _year_from_pymupdf_metadata(path: str) -> Optional[int]:
+def _year_from_pymupdf_metadata(path: str) -> int | None:
     try:
         import fitz  # pymupdf
     except Exception:
@@ -87,14 +87,14 @@ def _year_from_pymupdf_metadata(path: str) -> Optional[int]:
     return None
 
 
-def _year_from_pdf_file(path: str) -> Optional[int]:
+def _year_from_pdf_file(path: str) -> int | None:
     y = _year_from_pymupdf_metadata(path)
     if y is not None:
         return y
     return _year_from_pypdf2_metadata(path)
 
 
-def _year_from_filename(basename: str, pattern: Optional[str]) -> Optional[int]:
+def _year_from_filename(basename: str, pattern: str | None) -> int | None:
     if not pattern or not isinstance(pattern, str) or not pattern.strip():
         return None
     try:
@@ -111,12 +111,12 @@ def _year_from_filename(basename: str, pattern: Optional[str]) -> Optional[int]:
 
 
 def resolve_edition_year(
-    cfg: Dict[str, Any],
+    cfg: dict[str, Any],
     *,
     abs_path: str,
     rel_path: str,
     sha256_hex: str,
-) -> Optional[int]:
+) -> int | None:
     """Приоритет: by_basename → by_source_rel_path → by_sha256 → PDF metadata → filename_regex."""
     ey = (cfg.get("parsing", {}) or {}).get("edition_year")
     if not isinstance(ey, dict):

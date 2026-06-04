@@ -7,7 +7,7 @@ All business logic for tools lives under :mod:`doc_rag.tools`.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ToolSpec:
 
     name: str
     description: str
-    input_schema: Dict[str, Any]
+    input_schema: dict[str, Any]
 
 
 class BaseTool:
@@ -25,7 +25,7 @@ class BaseTool:
     def spec(self) -> ToolSpec:
         raise NotImplementedError
 
-    def call(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def call(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         """Execute tool.
 
         Returns MCP `content` array, e.g. ``[{"type":"text","text":"..."}]``.

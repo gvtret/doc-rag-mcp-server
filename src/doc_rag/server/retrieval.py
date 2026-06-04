@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from doc_rag.raglib.indexer import ensure_faiss_index
-
-
-_MANIFEST_CACHE: Dict[str, Any] = {"root": None, "mtime": None, "map": None}
-_CFG_CACHE: Dict[str, Any] = {"root": None, "mtime": None, "cfg": None}
-_CHUNKS_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "chunks": None}
-_SEMANTIC_CACHE: Dict[str, Any] = {"index_path": None, "index_mtime": None, "model_key": None, "index": None, "embedder": None}
+_MANIFEST_CACHE: dict[str, Any] = {"root": None, "mtime": None, "map": None}
+_CFG_CACHE: dict[str, Any] = {"root": None, "mtime": None, "cfg": None}
+_CHUNKS_CACHE: dict[str, Any] = {"path": None, "mtime": None, "chunks": None}
+_SEMANTIC_CACHE: dict[str, Any] = {
+    "index_path": None,
+    "index_mtime": None,
+    "model_key": None,
+    "index": None,
+    "embedder": None,
+}
 
 
 def project_root() -> str:
@@ -28,7 +31,7 @@ def project_root() -> str:
     return os.path.abspath(os.path.join(here, "..", "..", ".."))
 
 
-def load_config() -> Dict[str, Any]:
+def load_config() -> dict[str, Any]:
     import yaml
 
     root = project_root()
@@ -46,8 +49,8 @@ def load_config() -> Dict[str, Any]:
     ):
         return _CFG_CACHE["cfg"]
 
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        cfg: Dict[str, Any] = yaml.safe_load(f) or {}
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg: dict[str, Any] = yaml.safe_load(f) or {}
     cfg["_root"] = root
 
     if st is not None:
@@ -57,7 +60,7 @@ def load_config() -> Dict[str, Any]:
     return cfg
 
 
-def load_chunks(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+def load_chunks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     root = str(cfg.get("_root", project_root()))
     paths = cfg.get("paths", {}) or {}
     chunks_dir = paths.get("chunks_dir", "build/chunks_jsonl")
@@ -74,8 +77,8 @@ def load_chunks(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     ):
         return _CHUNKS_CACHE["chunks"]
 
-    out: List[Dict[str, Any]] = []
-    with open(chunks_path, "r", encoding="utf-8") as f:
+    out: list[dict[str, Any]] = []
+    with open(chunks_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -91,7 +94,7 @@ def load_chunks(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _load_manifest_source_map(cfg: Dict[str, Any]) -> Dict[str, str]:
+def _load_manifest_source_map(cfg: dict[str, Any]) -> dict[str, str]:
     """Map doc_id -> source_file from manifest (best-effort)."""
     root = str(cfg.get("_root", project_root()))
     paths = cfg.get("paths", {}) or {}
@@ -110,9 +113,9 @@ def _load_manifest_source_map(cfg: Dict[str, Any]) -> Dict[str, str]:
     ):
         return _MANIFEST_CACHE["map"]
 
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
         docs = data.get("documents", []) if isinstance(data, dict) else []
         if isinstance(docs, list):
@@ -121,7 +124,12 @@ def _load_manifest_source_map(cfg: Dict[str, Any]) -> Dict[str, str]:
                     continue
                 doc_id = d.get("doc_id")
                 source_file = d.get("source_file")
-                if isinstance(doc_id, str) and isinstance(source_file, str) and doc_id and source_file:
+                if (
+                    isinstance(doc_id, str)
+                    and isinstance(source_file, str)
+                    and doc_id
+                    and source_file
+                ):
                     out[doc_id] = source_file
     except Exception:
         out = {}
@@ -132,7 +140,9 @@ def _load_manifest_source_map(cfg: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
-def _enrich_results_with_source_file(cfg: Dict[str, Any], results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _enrich_results_with_source_file(
+    cfg: dict[str, Any], results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     if not results:
         return results
     m = _load_manifest_source_map(cfg)
@@ -146,12 +156,16 @@ def _enrich_results_with_source_file(cfg: Dict[str, Any], results: List[Dict[str
         doc_id = r.get("doc_id")
         if isinstance(doc_id, str) and doc_id in m:
             src = m[doc_id]
-            expose = (os.environ.get("DOC_RAG_EXPOSE_SOURCE_PATHS") or "").strip() in ("1", "true", "yes")
+            expose = (os.environ.get("DOC_RAG_EXPOSE_SOURCE_PATHS") or "").strip() in (
+                "1",
+                "true",
+                "yes",
+            )
             r["source_file"] = src if expose else os.path.basename(src)
     return results
 
 
-def load_manifest_json() -> Optional[Dict[str, Any]]:
+def load_manifest_json() -> dict[str, Any] | None:
     """Return the on-disk manifest dict, or None if missing/unreadable."""
     cfg = load_config()
     root = str(cfg.get("_root", project_root()))
@@ -159,14 +173,14 @@ def load_manifest_json() -> Optional[Dict[str, Any]]:
     manifest_rel = str(paths.get("manifest_path", "build/manifest.json"))
     manifest_path = os.path.join(root, manifest_rel)
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return None
     return data if isinstance(data, dict) else None
 
 
-def indexed_catalog() -> Dict[str, Any]:
+def indexed_catalog() -> dict[str, Any]:
     """Summarize manifest + artifact presence for UI (indexed documents, search readiness)."""
     cfg = load_config()
     root = str(cfg.get("_root", project_root()))
@@ -183,13 +197,13 @@ def indexed_catalog() -> Dict[str, Any]:
     chunks_present = os.path.isfile(chunks_path)
     semantic_index_present = os.path.isfile(faiss_path) and os.path.isfile(meta_path)
 
-    documents: List[Dict[str, Any]] = []
-    generated_at: Optional[str] = None
+    documents: list[dict[str, Any]] = []
+    generated_at: str | None = None
     manifest_present = False
-    corpus_content_sha256: Optional[str] = None
-    pipeline_version: Optional[str] = None
+    corpus_content_sha256: str | None = None
+    pipeline_version: str | None = None
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             manifest_present = True
@@ -210,10 +224,10 @@ def indexed_catalog() -> Dict[str, Any]:
                     sf = d.get("source_file")
                     sf_s = str(sf) if sf is not None else ""
                     cov = d.get("coverage")
-                    cov_d: Dict[str, Any] = cov if isinstance(cov, dict) else {}
+                    cov_d: dict[str, Any] = cov if isinstance(cov, dict) else {}
                     th = d.get("title_hint")
                     ey = d.get("edition_year")
-                    ey_out: Optional[int] = None
+                    ey_out: int | None = None
                     if isinstance(ey, int):
                         ey_out = ey
                     elif isinstance(ey, str) and ey.strip().isdigit():
@@ -236,7 +250,9 @@ def indexed_catalog() -> Dict[str, Any]:
     except Exception:
         pass
 
-    documents.sort(key=lambda x: ((str(x.get("basename") or "").lower()), str(x.get("doc_id") or "")))
+    documents.sort(
+        key=lambda x: ((str(x.get("basename") or "").lower()), str(x.get("doc_id") or ""))
+    )
 
     doc_n = len(documents)
     lexical_ready = chunks_present and doc_n > 0
@@ -257,7 +273,7 @@ def indexed_catalog() -> Dict[str, Any]:
     }
 
 
-def annotation_from_markdown(md: str, *, max_chars: int = 720) -> Tuple[str, str]:
+def annotation_from_markdown(md: str, *, max_chars: int = 720) -> tuple[str, str]:
     """Derive a short title and plain-text preview from normalized markdown (build/docs_md/*.md)."""
     text = (md or "").strip()
     if not text:
@@ -271,7 +287,7 @@ def annotation_from_markdown(md: str, *, max_chars: int = 720) -> Tuple[str, str
         title = m.group(1).strip()
         body_text = text.split("\n", 1)[1] if "\n" in text else ""
 
-    lines_out: List[str] = []
+    lines_out: list[str] = []
     for line in body_text.splitlines():
         ls = line.strip()
         if re.match(r"^#{1,6}\s", ls):
@@ -296,7 +312,7 @@ def annotation_from_markdown(md: str, *, max_chars: int = 720) -> Tuple[str, str
     return title, body_one
 
 
-def document_preview(doc_id: str) -> Dict[str, Any]:
+def document_preview(doc_id: str) -> dict[str, Any]:
     """Load markdown for a manifest doc_id and return title + preview for UI."""
     doc_id = (doc_id or "").strip()
     if not doc_id:
@@ -309,12 +325,12 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
     docs_md_dir = str(paths.get("docs_md_dir", "build/docs_md"))
 
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         return {"ok": False, "error": f"manifest: {exc}"}
 
-    doc_entry: Optional[Dict[str, Any]] = None
+    doc_entry: dict[str, Any] | None = None
     docs_list = data.get("documents") if isinstance(data, dict) else None
     if isinstance(docs_list, list):
         for d in docs_list:
@@ -331,7 +347,7 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
         md_abs = os.path.join(root, docs_md_dir, f"{doc_id}.md")
 
     try:
-        with open(md_abs, "r", encoding="utf-8") as f:
+        with open(md_abs, encoding="utf-8") as f:
             raw = f.read(400_000)
     except Exception as exc:
         return {"ok": False, "error": f"read markdown: {exc}"}
@@ -340,7 +356,7 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
     src = doc_entry.get("source_file")
     src_s = str(src) if src is not None else ""
     ey = doc_entry.get("edition_year")
-    ey_out: Optional[int] = None
+    ey_out: int | None = None
     if isinstance(ey, int):
         ey_out = ey
     elif isinstance(ey, str) and ey.strip().isdigit():
@@ -359,11 +375,11 @@ def document_preview(doc_id: str) -> Dict[str, Any]:
     }
 
 
-def lexical_search(chunks: List[Dict[str, Any]], query: str, top_k: int) -> List[Dict[str, Any]]:
+def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list[dict[str, Any]]:
     q = (query or "").strip().lower()
     if not q:
         return []
-    scored: List[Tuple[int, Dict[str, Any]]] = []
+    scored: list[tuple[int, dict[str, Any]]] = []
     for ch in chunks:
         txt = str(ch.get("text", ""))
         hay = txt.lower()
@@ -381,7 +397,9 @@ def lexical_search(chunks: List[Dict[str, Any]], query: str, top_k: int) -> List
     return [it for _, it in scored[: max(1, top_k)]]
 
 
-def semantic_search(cfg: Dict[str, Any], chunks: List[Dict[str, Any]], query: str, top_k: int) -> Optional[List[Dict[str, Any]]]:
+def semantic_search(
+    cfg: dict[str, Any], chunks: list[dict[str, Any]], query: str, top_k: int
+) -> list[dict[str, Any]] | None:
     root = str(cfg.get("_root", project_root()))
     paths = cfg.get("paths", {}) or {}
     index_dir = paths.get("index_dir", "build/index")
@@ -398,8 +416,8 @@ def semantic_search(cfg: Dict[str, Any], chunks: List[Dict[str, Any]], query: st
         return None
 
     try:
-        import numpy as np  # type: ignore
         import faiss  # type: ignore
+        import numpy as np  # type: ignore
         import torch  # type: ignore
         from sentence_transformers import SentenceTransformer  # type: ignore
     except Exception:
@@ -437,19 +455,19 @@ def semantic_search(cfg: Dict[str, Any], chunks: List[Dict[str, Any]], query: st
     vec = model.encode([query], normalize_embeddings=True)
     vec = np.asarray(vec, dtype=np.float32)
 
-    D, I = index.search(vec, max(1, int(top_k)))
+    distances, indices = index.search(vec, max(1, int(top_k)))
 
-    out: List[Dict[str, Any]] = []
-    for rank, idx in enumerate(I[0]):
+    out: list[dict[str, Any]] = []
+    for rank, idx in enumerate(indices[0]):
         ii = int(idx)
         if 0 <= ii < len(chunks):
             item = dict(chunks[ii])
-            item["score"] = float(D[0][rank])
+            item["score"] = float(distances[0][rank])
             out.append(item)
     return out
 
 
-def doc_search(query: str, top_k: int) -> List[Dict[str, Any]]:
+def doc_search(query: str, top_k: int) -> list[dict[str, Any]]:
     cfg = load_config()
     chunks = load_chunks(cfg)
     top_k = max(1, min(50, int(top_k) if top_k else 6))

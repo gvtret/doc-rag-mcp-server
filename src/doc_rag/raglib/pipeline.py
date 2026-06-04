@@ -1,29 +1,27 @@
-
 from __future__ import annotations
+
 import hashlib
 import json
 import os
 import re
 import shutil
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import yaml
 
 from doc_rag.raglib.audit_log import record_event as _audit
-
 from doc_rag.raglib.edition_year import resolve_edition_year
+from doc_rag.raglib.indexer import ensure_faiss_index
 from doc_rag.raglib.parsers import parse_document
 from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
-from doc_rag.raglib.indexer import ensure_faiss_index
-
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
 
 
-def load_config(config_path: str) -> Dict[str, Any]:
-    cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
+def load_config(config_path: str) -> dict[str, Any]:
+    cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
     root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
     cfg["_root"] = root
     return cfg
@@ -37,7 +35,7 @@ def _hash_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> List[str]:
+def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> list[str]:
     if not text.strip():
         return []
     chars_per_token = 4
@@ -59,12 +57,11 @@ def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> List[str]
     return chunks
 
 
-
 def _dedup_chunks(
-    chunks: List[Dict[str, Any]],
-    doc_id_to_source: Dict[str, str],
+    chunks: list[dict[str, Any]],
+    doc_id_to_source: dict[str, str],
     threshold: float,
-) -> Tuple[List[Dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int]:
     """Remove near-duplicate chunks that originate from different documents.
 
     Uses word-bigram Jaccard similarity. When two chunks are near-duplicates,
@@ -85,7 +82,7 @@ def _dedup_chunks(
             return frozenset()
         if len(words) < 2:
             return frozenset({(words[0],)})
-        return frozenset(zip(words, words[1:]))
+        return frozenset(zip(words, words[1:], strict=False))
 
     def _jaccard(a: frozenset, b: frozenset) -> float:
         if not a and not b:
@@ -106,9 +103,9 @@ def _dedup_chunks(
     ordered = sorted(chunks, key=lambda c: _priority(c.get("doc_id", "")))
     bsets = [_bigrams(_norm(c.get("text", ""))) for c in ordered]
 
-    kept_indices: List[int] = []
-    kept_bsets: List[frozenset] = []
-    kept_doc_ids: List[str] = []
+    kept_indices: list[int] = []
+    kept_bsets: list[frozenset] = []
+    kept_doc_ids: list[str] = []
 
     for i, chunk in enumerate(ordered):
         doc_id_i = chunk.get("doc_id", "")
@@ -138,9 +135,9 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def compute_corpus_fingerprint(documents: List[dict]) -> str:
+def compute_corpus_fingerprint(documents: list[dict]) -> str:
     """Deterministic fingerprint: SHA-256 over sorted per-document content hashes (manifest `corpus_content_sha256`)."""
-    hashes: List[str] = []
+    hashes: list[str] = []
     for d in documents:
         if not isinstance(d, dict):
             continue
@@ -160,7 +157,7 @@ def compute_corpus_fingerprint(documents: List[dict]) -> str:
 MANIFEST_SCHEMA_VERSION = 1
 
 
-def _manifest_shell(cfg: Dict[str, Any], documents: List[dict]) -> Dict[str, Any]:
+def _manifest_shell(cfg: dict[str, Any], documents: list[dict]) -> dict[str, Any]:
     pv = cfg.get("pipeline_version")
     if not isinstance(pv, str) or not pv.strip():
         pv = "1.4.0"
@@ -185,7 +182,7 @@ class ManifestSchemaTooNew(RuntimeError):
         self.supported = supported
 
 
-def _check_manifest_schema(data: Dict[str, Any]) -> None:
+def _check_manifest_schema(data: dict[str, Any]) -> None:
     """Raise ManifestSchemaTooNew if the manifest is from a future build.
 
     Missing `schema_version` is treated as 0, i.e. legacy and still
@@ -200,7 +197,7 @@ def _check_manifest_schema(data: Dict[str, Any]) -> None:
         raise ManifestSchemaTooNew(found=found, supported=MANIFEST_SCHEMA_VERSION)
 
 
-def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources: List[str]) -> None:
+def _archive_or_dedup_sources(cfg: dict[str, Any], root: str, processed_sources: list[str]) -> None:
     """Deduplicate/move processed source files from incoming to archived.
 
     Policy (as requested):
@@ -237,14 +234,19 @@ def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources:
             try:
                 dst_hash = _hash_file(dst)
             except Exception as e:
-                _log("WARN", f"hash failed for archived '{os.path.relpath(dst, archived_dir)}': {e}; will not overwrite")
+                _log(
+                    "WARN",
+                    f"hash failed for archived '{os.path.relpath(dst, archived_dir)}': {e}; will not overwrite",
+                )
                 dst_hash = None
 
             if dst_hash is not None and dst_hash == src_hash:
                 # Same content: drop incoming copy
                 try:
                     os.remove(src)
-                    _log("INFO", f"dedup: incoming '{rel_from_incoming}' removed (same as archived).")
+                    _log(
+                        "INFO", f"dedup: incoming '{rel_from_incoming}' removed (same as archived)."
+                    )
                 except Exception as e:
                     _log("ERROR", f"failed to remove incoming '{rel_from_incoming}': {e}")
                 continue
@@ -253,11 +255,17 @@ def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources:
             base, ext = os.path.splitext(dst)
             suffix = src_hash[:10]
             dst = f"{base}__{suffix}{ext}"
-            _log("WARN", f"name collision: archived has '{rel_from_incoming}' with different hash; moving as '{os.path.relpath(dst, archived_dir)}'.")
+            _log(
+                "WARN",
+                f"name collision: archived has '{rel_from_incoming}' with different hash; moving as '{os.path.relpath(dst, archived_dir)}'.",
+            )
 
         try:
             shutil.move(src, dst)
-            _log("INFO", f"archived: '{rel_from_incoming}' -> '{os.path.relpath(dst, archived_dir)}'.")
+            _log(
+                "INFO",
+                f"archived: '{rel_from_incoming}' -> '{os.path.relpath(dst, archived_dir)}'.",
+            )
         except Exception as e:
             _log("ERROR", f"failed to move '{rel_from_incoming}' to archived: {e}")
 
@@ -270,7 +278,14 @@ def _archive_or_dedup_sources(cfg: Dict[str, Any], root: str, processed_sources:
                 pass
 
 
-def _ingest_sources(cfg: Dict[str, Any], root: str, sources: List[str], docs_md: str, chunk_target: int, chunk_overlap: int) -> tuple[list[dict], list[dict], list[str]]:
+def _ingest_sources(
+    cfg: dict[str, Any],
+    root: str,
+    sources: list[str],
+    docs_md: str,
+    chunk_target: int,
+    chunk_overlap: int,
+) -> tuple[list[dict], list[dict], list[str]]:
     """Parse sources into MD + chunk list.
 
     Returns:
@@ -299,27 +314,33 @@ def _ingest_sources(cfg: Dict[str, Any], root: str, sources: List[str], docs_md:
 
             chunks = _chunk_text(md_text, chunk_target, chunk_overlap)
             for idx, c in enumerate(chunks):
-                all_chunks.append({
-                    "doc_id": doc_id,
-                    "chunk_id": f"{doc_id}:{idx}",
-                    "text": c,
-                })
+                all_chunks.append(
+                    {
+                        "doc_id": doc_id,
+                        "chunk_id": f"{doc_id}:{idx}",
+                        "text": c,
+                    }
+                )
 
             cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
             ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
-            manifest_documents.append({
-                "doc_id": doc_id,
-                "source_file": rel_src,
-                "md_path": os.path.relpath(md_path, root),
-                "sha256": file_hash,
-                "chunk_count": len(chunks),
-                "title_hint": os.path.splitext(base)[0],
-                "edition_year": ed_y,
-                "coverage": cov,
-            })
+            manifest_documents.append(
+                {
+                    "doc_id": doc_id,
+                    "source_file": rel_src,
+                    "md_path": os.path.relpath(md_path, root),
+                    "sha256": file_hash,
+                    "chunk_count": len(chunks),
+                    "title_hint": os.path.splitext(base)[0],
+                    "edition_year": ed_y,
+                    "coverage": cov,
+                }
+            )
 
             processed_sources.append(src)
-            _log("INFO", f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(chunks)})")
+            _log(
+                "INFO", f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(chunks)})"
+            )
         except Exception as e:
             _log("ERROR", f"failed: {rel_src}: {e}")
 
@@ -330,7 +351,7 @@ def _load_existing_manifest(manifest_path: str) -> dict:
     if not os.path.exists(manifest_path):
         return {"generated_at_utc": None, "documents": []}
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return {"generated_at_utc": None, "documents": []}
@@ -370,13 +391,18 @@ def ingest(config_path: str) -> None:
     processed_for_archive: list[str] = []
 
     if not incremental:
-        manifest_documents, all_chunks, processed = _ingest_sources(cfg, root, sources, docs_md, target, overlap)
+        manifest_documents, all_chunks, processed = _ingest_sources(
+            cfg, root, sources, docs_md, target, overlap
+        )
 
         dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
         if dedup_thresh > 0.0:
             doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in manifest_documents}
             all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
-            _log("INFO", f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})")
+            _log(
+                "INFO",
+                f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})",
+            )
 
         manifest = _manifest_shell(cfg, manifest_documents)
 
@@ -388,7 +414,10 @@ def ingest(config_path: str) -> None:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
 
         _log("INFO", f"written: {os.path.relpath(chunks_path, root)} (chunks={len(all_chunks)})")
-        _log("INFO", f"written: {os.path.relpath(manifest_path, root)} (docs={len(manifest_documents)})")
+        _log(
+            "INFO",
+            f"written: {os.path.relpath(manifest_path, root)} (docs={len(manifest_documents)})",
+        )
 
         processed_for_archive = processed
     else:
@@ -448,15 +477,23 @@ def ingest(config_path: str) -> None:
 
                     chunks = _chunk_text(md_text, target, overlap)
                     for idx, c in enumerate(chunks):
-                        chunks_f.write(json.dumps({
-                            "doc_id": doc_id,
-                            "chunk_id": f"{doc_id}:{idx}",
-                            "text": c,
-                        }, ensure_ascii=False) + "\n")
+                        chunks_f.write(
+                            json.dumps(
+                                {
+                                    "doc_id": doc_id,
+                                    "chunk_id": f"{doc_id}:{idx}",
+                                    "text": c,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
                     appended_chunks += len(chunks)
 
                     cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
-                    ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
+                    ed_y = resolve_edition_year(
+                        cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash
+                    )
                     entry = {
                         "doc_id": doc_id,
                         "source_file": rel_src,
@@ -473,7 +510,10 @@ def ingest(config_path: str) -> None:
                     existing_doc_ids.add(doc_id)
                     processed_for_archive.append(src)
 
-                    _log("INFO", f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(chunks)})")
+                    _log(
+                        "INFO",
+                        f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(chunks)})",
+                    )
                 except Exception as e:
                     failed += 1
                     _log("ERROR", f"failed: {rel_src}: {e}")
@@ -485,8 +525,14 @@ def ingest(config_path: str) -> None:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-        _log("INFO", f"updated: {os.path.relpath(chunks_path, root)} (appended_chunks={appended_chunks}, total_docs={len(documents)})")
-        _log("INFO", f"updated: {os.path.relpath(manifest_path, root)} (new_docs={len(new_docs)}, skipped={skipped}, failed={failed})")
+        _log(
+            "INFO",
+            f"updated: {os.path.relpath(chunks_path, root)} (appended_chunks={appended_chunks}, total_docs={len(documents)})",
+        )
+        _log(
+            "INFO",
+            f"updated: {os.path.relpath(manifest_path, root)} (new_docs={len(new_docs)}, skipped={skipped}, failed={failed})",
+        )
 
     # Best-effort semantic index update. If FAISS/embeddings are missing, we keep lexical search.
     try:
@@ -499,6 +545,8 @@ def ingest(config_path: str) -> None:
         _archive_or_dedup_sources(cfg, root, processed_for_archive)
     elif not archive_enabled:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
+
+
 def rebuild(config_path: str) -> None:
     """Full rebuild from archived first, then ingest incoming."""
     cfg = load_config(config_path)
@@ -534,7 +582,9 @@ def rebuild(config_path: str) -> None:
 
     incoming_sources = list_files_recursive(incoming_dir, exts=SUPPORTED_EXTS)
     _log("INFO", f"rebuild: incoming ingest pass ({len(incoming_sources)} file(s))")
-    man_i, chunks_i, processed_i = _ingest_sources(cfg, root, incoming_sources, docs_md, target, overlap)
+    man_i, chunks_i, processed_i = _ingest_sources(
+        cfg, root, incoming_sources, docs_md, target, overlap
+    )
 
     all_docs = man_a + man_i
     all_chunks = chunks_a + chunks_i
@@ -556,7 +606,10 @@ def rebuild(config_path: str) -> None:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     _log("INFO", f"written: {os.path.relpath(chunks_path, root)} (chunks={len(all_chunks)})")
-    _log("INFO", f"written: {os.path.relpath(manifest_path, root)} (docs={len(manifest['documents'])})")
+    _log(
+        "INFO",
+        f"written: {os.path.relpath(manifest_path, root)} (docs={len(manifest['documents'])})",
+    )
 
     archive_enabled = bool(cfg.get("sources", {}).get("archive_after_ingest", True))
     if archive_enabled and processed_i:
@@ -583,7 +636,7 @@ def rebuild(config_path: str) -> None:
         _log("WARN", f"index rebuild skipped: {e}")
 
 
-def _rebuild_faiss_after_delete(cfg: Dict[str, Any], deleted_doc_ids: set) -> Dict[str, Any]:
+def _rebuild_faiss_after_delete(cfg: dict[str, Any], deleted_doc_ids: set) -> dict[str, Any]:
     """Rebuild FAISS index by reconstructing kept vectors (no re-encoding).
 
     Reads the old index + meta, drops vectors whose chunk_id belongs to a
@@ -607,15 +660,15 @@ def _rebuild_faiss_after_delete(cfg: Dict[str, Any], deleted_doc_ids: set) -> Di
         return stats
 
     try:
-        with open(meta_file, "r", encoding="utf-8") as f:
+        with open(meta_file, encoding="utf-8") as f:
             meta = json.load(f)
     except Exception as e:
         _log("WARN", f"failed to read index_meta.json: {e}")
         return stats
 
-    old_chunk_ids: List[str] = list(meta.get("chunk_ids") or [])
-    kept_positions: List[int] = []
-    kept_chunk_ids: List[str] = []
+    old_chunk_ids: list[str] = list(meta.get("chunk_ids") or [])
+    kept_positions: list[int] = []
+    kept_chunk_ids: list[str] = []
     for i, cid in enumerate(old_chunk_ids):
         doc_id = cid.rsplit(":", 1)[0] if ":" in cid else cid
         if doc_id in deleted_doc_ids:
@@ -663,7 +716,7 @@ def _rebuild_faiss_after_delete(cfg: Dict[str, Any], deleted_doc_ids: set) -> Di
     return stats
 
 
-def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
+def delete_documents(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
     """Remove documents from the index by doc_id.
 
     Side effects:
@@ -682,7 +735,7 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
 
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             manifest = json.load(f)
     except Exception as e:
         raise RuntimeError(f"cannot read manifest: {e}") from e
@@ -729,7 +782,7 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     removed_chunks = 0
     if os.path.exists(chunks_path):
         tmp = chunks_path + ".tmp"
-        with open(chunks_path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
+        with open(chunks_path, encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
             for line in src:
                 s = line.strip()
                 if not s:
@@ -753,8 +806,13 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-    deleted_names = [os.path.basename(d.get("source_file") or d.get("doc_id") or "") for d in to_delete]
-    _log("INFO", f"delete: removed {len(to_delete)} doc(s), {removed_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    deleted_names = [
+        os.path.basename(d.get("source_file") or d.get("doc_id") or "") for d in to_delete
+    ]
+    _log(
+        "INFO",
+        f"delete: removed {len(to_delete)} doc(s), {removed_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)",
+    )
     _audit(
         root,
         "delete",
@@ -777,7 +835,7 @@ def delete_documents(config_path: str, doc_ids: List[str]) -> Dict[str, Any]:
     }
 
 
-def wipe_index(config_path: str) -> Dict[str, Any]:
+def wipe_index(config_path: str) -> dict[str, Any]:
     """Delete everything: sources/archived/*, build/*, manifest.json, FAISS index.
 
     sources/incoming is left alone (user-controlled inbox).
@@ -820,7 +878,7 @@ def wipe_index(config_path: str) -> Dict[str, Any]:
     return {"removed_entries": removed}
 
 
-def clean_orphans(config_path: str) -> Dict[str, Any]:
+def clean_orphans(config_path: str) -> dict[str, Any]:
     """Remove artifacts not referenced by the manifest.
 
     - md files in build/docs_md/ whose doc_id is absent from manifest
@@ -834,7 +892,7 @@ def clean_orphans(config_path: str) -> Dict[str, Any]:
     manifest_path = os.path.join(root, paths["manifest_path"])
     known_ids: set = set()
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
         for d in data.get("documents", []):
             did = d.get("doc_id") if isinstance(d, dict) else None
@@ -862,7 +920,7 @@ def clean_orphans(config_path: str) -> Dict[str, Any]:
     orphan_doc_ids: set = set()
     if os.path.exists(chunks_path):
         tmp = chunks_path + ".tmp"
-        with open(chunks_path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
+        with open(chunks_path, encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
             for line in src:
                 s = line.strip()
                 if not s:
@@ -880,9 +938,16 @@ def clean_orphans(config_path: str) -> Dict[str, Any]:
                 dst.write(json.dumps(obj, ensure_ascii=False) + "\n")
         os.replace(tmp, chunks_path)
 
-    index_stats = _rebuild_faiss_after_delete(cfg, orphan_doc_ids) if orphan_doc_ids else {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
+    index_stats = (
+        _rebuild_faiss_after_delete(cfg, orphan_doc_ids)
+        if orphan_doc_ids
+        else {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
+    )
 
-    _log("INFO", f"clean_orphans: removed {orphan_md} md, {orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)")
+    _log(
+        "INFO",
+        f"clean_orphans: removed {orphan_md} md, {orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)",
+    )
     _audit(
         root,
         "clean_orphans",
@@ -901,7 +966,7 @@ def clean_orphans(config_path: str) -> Dict[str, Any]:
     }
 
 
-def clear_incoming(config_path: str) -> Dict[str, Any]:
+def clear_incoming(config_path: str) -> dict[str, Any]:
     """Delete all files inside sources/incoming/ (does not touch the index)."""
     cfg = load_config(config_path)
     root = cfg["_root"]

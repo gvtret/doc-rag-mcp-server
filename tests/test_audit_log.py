@@ -1,4 +1,5 @@
 """Tests for the destructive-operations audit log."""
+
 from __future__ import annotations
 
 import json

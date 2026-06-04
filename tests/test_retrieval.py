@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from doc_rag.server.retrieval import annotation_from_markdown, document_preview, indexed_catalog, lexical_search
+from doc_rag.server.retrieval import (
+    annotation_from_markdown,
+    document_preview,
+    indexed_catalog,
+    lexical_search,
+)
 
 
 def test_lexical_search_finds_match_and_scores() -> None:
@@ -41,4 +46,3 @@ def test_document_preview_rejects_empty_doc_id() -> None:
     out = document_preview("")
     assert out.get("ok") is False
     assert "empty" in str(out.get("error", "")).lower()
-

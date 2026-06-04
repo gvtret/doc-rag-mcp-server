@@ -170,4 +170,3 @@ def test_ui_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert r.status_code == 401
     r = c.get("/ui?key=secret")
     assert r.status_code == 200
-

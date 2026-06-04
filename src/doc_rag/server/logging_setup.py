@@ -25,9 +25,8 @@ import os
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Optional
 
-_request_id: ContextVar[Optional[str]] = ContextVar("doc_rag_request_id", default=None)
+_request_id: ContextVar[str | None] = ContextVar("doc_rag_request_id", default=None)
 
 _LEVELS = {
     "DEBUG": logging.DEBUG,
@@ -41,10 +40,28 @@ _LEVELS = {
 # Anything passed via `logger.info("...", extra={...})` is included as-is
 # in JSON mode under the same keys.
 _RESERVED = {
-    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-    "created", "msecs", "relativeCreated", "thread", "threadName",
-    "processName", "process", "message", "asctime",
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+    "message",
+    "asctime",
     "taskName",  # Python 3.12+ asyncio adds this; almost always None for us.
 }
 
@@ -54,12 +71,12 @@ def new_request_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def set_request_id(rid: Optional[str]) -> None:
+def set_request_id(rid: str | None) -> None:
     """Set the request id for the current logical execution context."""
     _request_id.set(rid)
 
 
-def get_request_id() -> Optional[str]:
+def get_request_id() -> str | None:
     """Return the request id of the current context, or None."""
     return _request_id.get()
 
@@ -93,9 +110,7 @@ class _JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "ts": time.strftime(
-                "%Y-%m-%dT%H:%M:%S%z", time.localtime(record.created)
-            ),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(record.created)),
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),

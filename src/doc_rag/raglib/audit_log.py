@@ -21,13 +21,14 @@ The schema is intentionally tiny: this file is read by humans when
 something goes wrong, not by another machine. If automation needs more,
 parse `op` and `counts` — we promise those keys are stable.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
 
 SCHEMA_VERSION = 1
 _AUDIT_FILENAME = "audit.log"
@@ -42,10 +43,10 @@ def record_event(
     root: str,
     op: str,
     *,
-    counts: Optional[Dict[str, Any]] = None,
-    doc_ids: Optional[Iterable[str]] = None,
-    principal: Optional[str] = None,
-    extra: Optional[Dict[str, Any]] = None,
+    counts: dict[str, Any] | None = None,
+    doc_ids: Iterable[str] | None = None,
+    principal: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Append one event line to the audit log.
 
@@ -53,7 +54,7 @@ def record_event(
     cannot break a destructive operation that has already succeeded in
     memory. The structured logger still captures the error elsewhere.
     """
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
         "op": op,
         "schema_version": SCHEMA_VERSION,

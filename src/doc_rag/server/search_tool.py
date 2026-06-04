@@ -2,10 +2,9 @@ from __future__ import annotations
 
 """HTTP MCP tool helpers."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 from doc_rag.server.retrieval import doc_search, indexed_catalog, load_config
-
 
 _FALLBACK_NOTICE = (
     "⚠ Семантический поиск недоступен (FAISS-индекс отсутствует или ещё не построен). "
@@ -15,7 +14,7 @@ _FALLBACK_NOTICE = (
 )
 
 
-def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Execute `doc_search` tool and return MCP `content` array.
 
     Args:
@@ -52,7 +51,7 @@ def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     results = doc_search(query=query, top_k=top_k)
 
-    content: List[Dict[str, Any]] = []
+    content: list[dict[str, Any]] = []
     if fallback_active:
         content.append({"type": "text", "text": _FALLBACK_NOTICE})
 
@@ -60,7 +59,7 @@ def doc_search_tool(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
         content.append({"type": "text", "text": "No results."})
         return content
 
-    lines: List[str] = []
+    lines: list[str] = []
     for i, r in enumerate(results, 1):
         score = r.get("score", None)
         score_s = f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"

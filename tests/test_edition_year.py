@@ -71,4 +71,3 @@ def test_parse_document_coverage_ocr_and_native(tmp_path):
     assert st["native_text_extraction"]["before_normalize"]["chars"] > 0
     assert st["native_text_extraction"]["after_normalize"]["chars"] > 0
     assert st["native_text_extraction"]["markdown"]["chars"] > 0
-
