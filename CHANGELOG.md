@@ -4,7 +4,26 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
-## Unreleased
+## Unreleased — toward v1.1.0 (first public release)
+
+### Added (Sprint 1: legal, CI, observability foundation)
+- `LICENSE` (AGPL-3.0-or-later) and `NOTICE` listing third-party
+  dependencies with their licenses.
+- `SECURITY.md` with vulnerability reporting policy and response SLAs.
+- `CONTRIBUTING.md` with dev setup, test instructions, commit style, and
+  the AGPL contributor agreement.
+- `docs/roadmap.md` — master plan with SemVer policy and acceptance gates
+  for the path to v1.x.y public release.
+- GitHub Actions CI: `.github/workflows/tests.yml` (pytest on Python
+  3.10/3.11/3.12 with coverage), `.github/workflows/lint.yml`
+  (`ruff check` + `ruff format --check`), `.github/workflows/build.yml`
+  (Docker build smoke test).
+- Structured logging (`src/doc_rag/server/logging_setup.py`): selectable
+  `text` / `json` format via `DOC_RAG_LOG_FORMAT`, log level via
+  `DOC_RAG_LOG_LEVEL`, per-request `X-Request-ID` correlation id
+  propagated into every log line emitted during a request and echoed
+  back to clients in the response header.
+- Ruff config and pytest config blocks in `pyproject.toml`.
 
 ### Added
 - `.md`, `.txt`, and legacy `.doc` (via `antiword` / `catdoc`) as first-class source
@@ -32,6 +51,16 @@ the project does not yet ship versioned tags, so entries are grouped by date.
   `sources/archived/` after archive moves.
 
 ### Changed
+- **License switched from MIT to AGPL-3.0-or-later.** This is consistent
+  with the project's use of PyMuPDF (AGPL) in the default Docker image
+  and native installer. See `LICENSE` and `NOTICE` for details.
+- `pyproject.toml` license expression updated to PEP 639 form; build
+  requires `setuptools>=77`.
+- `README.md` now in English; project layout, license, and "Talks and
+  articles" sections added.
+- `docs/{mcp,ui,troubleshooting}.md` — UI button labels are now shown in
+  both Russian (as in the interface) and English for international
+  readers.
 - README split into focused docs under `docs/` (install, cli, mcp, ui, deploy,
   troubleshooting); the README is now an overview + quickstart.
 - Removed empty leftover packages `server/` and `tools/raglib/` (legacy stubs from an

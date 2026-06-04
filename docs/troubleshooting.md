@@ -5,9 +5,10 @@
 1. **Empty index?** `doc-rag ingest` was never run, or the corpus was wiped. Drop files
    into `sources/incoming/` and ingest.
 2. **Index missing → degraded mode?** Check `GET /ui/status` or look for the
-   "Семантический поиск недоступен" banner. The fix is `doc-rag rebuild` (or the
-   "Запустить rebuild" button). Lexical fallback should still return *something*; if it
-   doesn't, the manifest itself is empty.
+   "Семантический поиск недоступен" / "Semantic search unavailable" banner. The
+   fix is `doc-rag rebuild` (or the "Запустить rebuild" / "Start rebuild" button).
+   Lexical fallback should still return *something*; if it doesn't, the manifest
+   itself is empty.
 
 ## `doc_search` hangs / 60+ second timeouts
 

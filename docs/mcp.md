@@ -23,8 +23,8 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 If the FAISS index isn't available (e.g. corpus was wiped or rebuild is in progress),
 `doc_search` falls back to lexical search and prepends a warning content-item to the
 response telling the client that quality is degraded and pointing them at the
-"Rebuild индекса" button in the UI. See [ui.md](ui.md#degraded-mode-banner) for the
-matching UI signal.
+"Rebuild индекса" / "Rebuild index" button in the UI. See
+[ui.md](ui.md#degraded-mode-banner) for the matching UI signal.
 
 ## Run the server
 

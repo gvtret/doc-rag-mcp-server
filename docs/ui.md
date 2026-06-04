@@ -19,10 +19,12 @@ If `DOC_RAG_API_KEY` is set, append `?key=<DOC_RAG_API_KEY>`.
 - **Browse indexed documents** in a table — doc_id, source file, chunks, parser used,
   OCR coverage, ingest timestamp.
 - **Preview a document's markdown** with one click.
-- **Delete documents** (per-row ✕ button or bulk checkbox + "Удалить выбранные").
+- **Delete documents** (per-row ✕ button, or bulk checkbox plus
+  "Удалить выбранные" / "Delete selected").
 - **Danger zone** — three additional buttons:
-  - **Удалить всё** (`POST /ui/wipe`) — clears archived sources, build artefacts,
-    manifest, and index. Requires explicit confirmation.
+  - **"Удалить всё"** / **"Delete everything"** (`POST /ui/wipe`) —
+    clears archived sources, build artefacts, manifest, and index.
+    Requires explicit confirmation.
   - **Clean orphans** (`POST /ui/clean-orphans`) — drops md/chunks/vectors not in the
     manifest.
   - **Clear incoming** (`POST /ui/clear-incoming`) — empties `sources/incoming/`.
@@ -34,8 +36,9 @@ UI can't trigger overlapping mutations.
 
 When the configured retrieval mode is `semantic` but the FAISS index isn't ready
 (missing, corrupted, or being rebuilt), the UI shows a persistent banner at the top
-with a one-click **"Запустить rebuild"** button. The banner is tied to the same
-polling that updates document status, so it auto-clears the moment the index is back.
+with a one-click **"Запустить rebuild"** / **"Start rebuild"** button. The banner
+is tied to the same polling that updates document status, so it auto-clears the
+moment the index is back.
 
 This complements the MCP-side signal: a matching warning content-item is prepended to
 `doc_search` responses so MCP clients also know quality is degraded. See
