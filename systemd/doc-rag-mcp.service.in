@@ -1,0 +1,28 @@
+[Unit]
+Description=doc-rag MCP HTTP (uvicorn /mcp + /health + /ui)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=docrag
+Group=docrag
+
+EnvironmentFile=-/etc/default/doc-rag
+WorkingDirectory=@INSTALL_ROOT@
+Environment=DOC_RAG_ROOT=@INSTALL_ROOT@
+
+ExecStart=@INSTALL_ROOT@/scripts/run_mcp_http.sh
+Restart=on-failure
+RestartSec=10
+
+# Graceful shutdown: systemd sends SIGTERM, uvicorn drains in-flight
+# requests up to DOC_RAG_SHUTDOWN_TIMEOUT (default 30s, set in
+# run_mcp_http.sh). Give systemd a bit more headroom than that.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

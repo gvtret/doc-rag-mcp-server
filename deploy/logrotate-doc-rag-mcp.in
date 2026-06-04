@@ -1,0 +1,13 @@
+# HTTP access log (должен совпадать с DOC_RAG_HTTP_LOG в /etc/default/doc-rag).
+# Установка: scripts/install_server_native.sh → /etc/logrotate.d/doc-rag-mcp
+
+@INSTALL_ROOT@/build/http.log {
+	size 5M
+	rotate 3
+	missingok
+	notifempty
+	compress
+	delaycompress
+	copytruncate
+	create 0640 docrag docrag
+}

@@ -1,0 +1,181 @@
+# Changelog
+
+All notable changes to `doc-rag` are documented here.
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+the project does not yet ship versioned tags, so entries are grouped by date.
+
+## v1.4.0 — 2026-06-04 (first public release)
+
+This release is the cumulative result of internal Sprints 1 through 4
+(see `docs/roadmap.md`). Earlier intermediate version tags
+(`v1.1.0`–`v1.3.0`) existed only locally and were never published.
+
+### Added (Sprint 4: benchmarks, polish, release readiness)
+- `scripts/bench.py` — self-contained, reproducible benchmark for the
+  embedding-encode + FAISS build + FAISS reconstruct paths. Synthetic
+  corpus generated in-process; JSON output with a `schema_version: 1`
+  envelope. Supports CPU and CUDA (`--device cpu|cuda|auto`).
+- `docs/bench-results.md` — reference numbers for `bge-large-en-v1.5`
+  on three host classes (GTX 1650 GPU, i7-class CPU, QEMU server CPU).
+  Documents the index-size memory and latency profile of
+  `IndexFlatIP`, including when to switch to an approximate index
+  (v2 territory).
+- `docs/install.md` § "GPU install (NVIDIA / CUDA)" — full end-to-end
+  GPU install path with explicit hardware requirements, WSL2 caveat,
+  install verification snippet, and a config example. Verified on
+  GTX 1650 + WSL2, `torch 2.6.0+cu124`.
+- `docs/mcp.md` § "API stability (SemVer)" — explicit list of what is
+  SemVer-protected on the MCP surface for the v1.x line (tools,
+  argument schema, response shape, degraded-mode contract) and what
+  is not (internal modules, log format, HTML markup).
+- Triage: no `# TODO` / `# FIXME` / `# XXX` / `# HACK` left in
+  `src/`, `scripts/`, or `tests/`.
+
+### Added (Sprint 3: production observability and operability)
+- `/health/live` (always 200 while the process answers) and
+  `/health/ready` (503 if no manifest or a background ingest/rebuild is
+  in flight). The legacy `/health` keeps returning 200 and now carries
+  `ready` and `reasons` fields for clients that want to migrate.
+- `/metrics` endpoint in Prometheus exposition format. Counters:
+  `doc_rag_mcp_requests_total{tool,status}`, `doc_rag_ingest_documents_total`,
+  `doc_rag_ingest_errors_total`. Gauge: `doc_rag_faiss_index_size`.
+  Histogram: `doc_rag_mcp_request_duration_seconds`. Requires the new
+  `[metrics]` extra (`pip install -e .[metrics]`); without it the
+  endpoint returns 503 with an informative body.
+- `manifest.schema_version` (currently `1`) stamped on every write.
+  Reads refuse manifests with a higher schema version than the running
+  build supports, with an actionable error pointing at `doc-rag migrate`.
+  `ManifestSchemaTooNew` is raised at the boundary so callers can react.
+- `doc-rag migrate` subcommand stub. Prints the supported and detected
+  schema version and exits cleanly when no migrations are defined; the
+  surface exists so future migrations have a stable place to land.
+- `build/audit.log` — append-only JSONL of destructive operations
+  (`delete`, `wipe`, `clean_orphans`, `clear_incoming`). Schema version
+  pinned at `1`; the file is best-effort (I/O errors do not propagate).
+- `scripts/backup.sh` and `scripts/restore.sh`. Backups carry an
+  embedded `MANIFEST.sha256` and `restore.sh` refuses to overwrite a
+  populated `build/` without `--force`. Verified end-to-end on a
+  synthetic corpus.
+- Graceful-shutdown configuration: `scripts/run_mcp_http.sh` now passes
+  `--timeout-graceful-shutdown` to uvicorn (default 30 s, override via
+  `DOC_RAG_SHUTDOWN_TIMEOUT`). The systemd unit declares matching
+  `KillSignal=SIGTERM` and `TimeoutStopSec=60`.
+
+### Added — tests (Sprint 3)
+- `tests/test_health_metrics.py` — live/ready/legacy/metrics endpoint
+  contract.
+- `tests/test_audit_log.py` — one record per destructive op, JSONL
+  parseability, `read_recent` tail.
+- `tests/test_schema_version.py` — guard accepts current/legacy,
+  refuses future, `doc-rag migrate` CLI smoke test.
+
+### Added (Sprint 2: test coverage)
+- Reusable test fixtures in `tests/conftest.py`: `tmp_corpus_root`,
+  `synthetic_chunks`, `synthetic_embeddings`, `built_corpus`,
+  `make_md`, `make_txt`, `make_docx`.
+- Parser tests for `.md`, `.txt`, `.docx` (with table), `.doc`
+  (against bundled fixture if antiword is on PATH), `.pdf` (text mode
+  via PyMuPDF).
+- CLI destructive-op tests: `delete`, `wipe` (refuses without
+  `--confirm DELETE`), `clean-orphans`, `clear-incoming`, plus CLI
+  wrapper smoke tests via subprocess.
+- FAISS reconstruct regression test — the headline invariant that
+  remaining vectors after prune are byte-identical to originals.
+- Degraded-mode contract tests: `semantic_search` returns `None` when
+  the index is missing; `doc_search_tool` prepends the warning
+  content-item; no warning when retrieval mode is `lexical`.
+- Upload dedup tests: same payload twice in one batch, re-upload of an
+  already-archived file, sanity that distinct payloads pass through.
+- `tests/fixtures/sample.docx` — a realistic ~44 kB Word document with
+  headings, paragraphs, bold/italic runs, bulleted and numbered lists,
+  a 4×3 table, and an embedded PNG schematic.
+- `tests/fixtures/sample.doc` — legacy Word 97 binary derived from the
+  same source, enables the `.doc` parser test.
+- `tests/fixtures/_build_sample_docx.py` — committed generator so the
+  fixture can be rebuilt.
+
+### Fixed (Sprint 2)
+- `tests/test_mcp_http.py::test_ui_multi_upload_writes_incoming` — the
+  fixture payloads `batch_a.pdf` and `batch_b.pdf` now have distinct
+  sha256s, so the test exercises happy-path multi-upload as intended
+  (the dedup behaviour is covered separately in `tests/test_dedup.py`).
+
+### Changed (Sprint 2)
+- Coverage gate enforced in CI at 40 % (doubled from the pre-sprint
+  baseline of 22 %; 70 % deferred to Sprint 3 after a `pipeline.py`
+  testability refactor — see `docs/roadmap.md`).
+
+### Added (Sprint 1: legal, CI, observability foundation)
+- `LICENSE` (AGPL-3.0-or-later) and `NOTICE` listing third-party
+  dependencies with their licenses.
+- `SECURITY.md` with vulnerability reporting policy and response SLAs.
+- `CONTRIBUTING.md` with dev setup, test instructions, commit style, and
+  the AGPL contributor agreement.
+- `docs/roadmap.md` — master plan with SemVer policy and acceptance gates
+  for the path to v1.x.y public release.
+- GitHub Actions CI: `.github/workflows/tests.yml` (pytest on Python
+  3.10/3.11/3.12 with coverage), `.github/workflows/lint.yml`
+  (`ruff check` + `ruff format --check`), `.github/workflows/build.yml`
+  (Docker build smoke test).
+- Structured logging (`src/doc_rag/server/logging_setup.py`): selectable
+  `text` / `json` format via `DOC_RAG_LOG_FORMAT`, log level via
+  `DOC_RAG_LOG_LEVEL`, per-request `X-Request-ID` correlation id
+  propagated into every log line emitted during a request and echoed
+  back to clients in the response header.
+- Ruff config and pytest config blocks in `pyproject.toml`.
+
+### Added
+- `.md`, `.txt`, and legacy `.doc` (via `antiword` / `catdoc`) as first-class source
+  formats alongside `.pdf` and `.docx`.
+- CLI commands for content management: `doc-rag delete <doc_id> ...`,
+  `doc-rag wipe --confirm DELETE`, `doc-rag clean-orphans`, `doc-rag clear-incoming`.
+- Matching Web UI controls: per-row delete, bulk-delete with checkboxes, and a
+  "Danger zone" card exposing wipe / clean-orphans / clear-incoming.
+- Smart FAISS rebuild on delete — remaining vectors are reconstructed from the existing
+  index instead of being re-encoded from scratch.
+- Upload-time deduplication: files whose sha256 already exists in the manifest or in the
+  incoming queue are skipped and reported in a yellow banner.
+- Degraded-mode signalling: when semantic search is configured but FAISS is unavailable,
+  `doc_search` falls back to lexical search and prepends a warning content-item; the UI
+  shows a persistent banner with a one-click "Запустить rebuild" button. The banner
+  auto-clears once the index is back.
+- `antiword` installed by `docker/Dockerfile` and `scripts/install_server_native.sh`.
+
+### Fixed
+- `semantic_search` no longer triggers a FAISS rebuild from inside an HTTP request
+  (a single missing-index search could hang for hours and pin all CPUs). The function
+  now returns `None` and the caller falls back to lexical search.
+- Stale FAISS index files are removed before a rebuild starts.
+- `delete_documents` tolerates manifest path drift between `sources/incoming/` and
+  `sources/archived/` after archive moves.
+
+### Changed
+- **License switched from MIT to AGPL-3.0-or-later.** This is consistent
+  with the project's use of PyMuPDF (AGPL) in the default Docker image
+  and native installer. See `LICENSE` and `NOTICE` for details.
+- `pyproject.toml` license expression updated to PEP 639 form; build
+  requires `setuptools>=77`.
+- `README.md` now in English; project layout, license, and "Talks and
+  articles" sections added.
+- `docs/{mcp,ui,troubleshooting}.md` — UI button labels are now shown in
+  both Russian (as in the interface) and English for international
+  readers.
+- README split into focused docs under `docs/` (install, cli, mcp, ui, deploy,
+  troubleshooting); the README is now an overview + quickstart.
+- Removed empty leftover packages `server/` and `tools/raglib/` (legacy stubs from an
+  earlier refactor).
+
+## 2025-05
+
+- Table extraction improvements + fuzzy chunk deduplication (`2cb364c`).
+- OCR pipeline: install + verification in bootstrap and native installer
+  (`bcedf85`, `29739b4`).
+- Manifest stores OCR coverage and parser metadata (`9c45a81`).
+- UI: button accessibility and state management (`e155c54`).
+- Document indexing and preview features in the MCP HTTP server (`94ee4dd`).
+- Logging refactor; logrotate dependency dropped (`59ed435`).
+- Multi-file upload and ingest from the UI (`7daa756`).
+
+## 2025-04
+
+- Initial commit: doc-rag MCP HTTP server with Web UI (`3425b6f`).

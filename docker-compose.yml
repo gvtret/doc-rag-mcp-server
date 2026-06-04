@@ -1,0 +1,22 @@
+services:
+  doc-rag-mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: doc-rag-mcp
+    environment:
+      - DOC_RAG_HTTP_HOST=0.0.0.0
+      - DOC_RAG_HTTP_PORT=3333
+      # If your client sends an Origin header, allow-list it:
+      - DOC_RAG_ALLOWED_ORIGINS=http://127.0.0.1,http://localhost,http://192.168.1.1
+      - DOC_RAG_HTTP_LOG=/app/build/http.log
+      # Optional: protect MCP/UI with an API key
+      # - DOC_RAG_API_KEY=change-me
+    ports:
+      - "3333:3333"
+    volumes:
+      # Persist build artifacts / indexes:
+      - ./build:/app/build
+      - ./config:/app/config:ro
+      - ./sources:/app/sources
+    restart: unless-stopped

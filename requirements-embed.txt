@@ -1,0 +1,4 @@
+# Optional: Embeddings stack
+# Install torch FIRST (cpu or gpu) using scripts/install_torch_*.sh
+# Then install these (will reuse existing torch):
+sentence-transformers>=2.7.0

@@ -1,0 +1,45 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Generated artifacts
+build/
+
+# Local document corpus (NEVER ship internal documents publicly).
+# A maintainer testing locally drops files into sources/incoming/ and
+# the ingest pipeline archives them to sources/archived/. Neither
+# subtree should ever land in a public repository — but the empty
+# directories themselves are preserved via .gitkeep so a fresh
+# checkout has the layout the ingest pipeline expects.
+sources/incoming/*
+sources/archived/*
+!sources/incoming/.gitkeep
+!sources/archived/.gitkeep
+
+# Logs
+*.log
+
+# Deploy bundle (пересборка: bash scripts/make_deploy_archive.sh)
+doc-rag-deploy-*.tar.gz
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Personal shell helpers
+/resume
+
+# WSL artefacts left by Windows downloads
+*:Zone.Identifier
+
+# Local agent / IDE configuration that is per-developer, not per-project
+.claude/
+.gigacode/
+doc_rag_for_habr/

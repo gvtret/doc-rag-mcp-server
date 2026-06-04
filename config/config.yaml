@@ -1,0 +1,71 @@
+pipeline_version: "1.0.0"
+
+paths:
+  sources_incoming: "sources/incoming"
+  sources_archived: "sources/archived"
+  docs_md_dir: "build/docs_md"
+  tables_json_dir: "build/tables_json"
+  chunks_dir: "build/chunks_jsonl"
+  embeddings_dir: "build/embeddings"
+  index_dir: "build/index"
+  manifest_path: "build/manifest.json"
+
+parsing:
+  pdf_backend: "auto"
+  normalize_whitespace: true
+  # Порог «почти пустой страницы» для метрик покрытия (не OCR; извлечённый текст).
+  min_chars_per_page: 20
+  # Год редакции в manifest: ручные карты и эвристики (метаданные PDF / имя файла).
+  edition_year:
+    from_pdf_metadata: true
+    filename_regex: null
+    by_basename: {}
+    by_source_rel_path: {}
+    by_sha256: {}
+
+  # OCR (Tesseract): только для PDF; нужны pymupdf + apt: tesseract-ocr-rus, -eng, -equ (или свой tessdata).
+  ocr:
+    enabled: false
+    # Ниже порога символов на странице страница считается «почти без текста» (для эвристики скана).
+    page_native_chars_threshold: 30
+    # Доля таких страниц ≥ этого значения → весь PDF считается сканом, OCR по всем страницам.
+    scan_sparse_page_fraction: 0.72
+    # Если суммарно символов нативного текста ≤ этого (0 = не использовать), тоже считаем сканом.
+    scan_max_total_native_chars: 0
+    # Вручную: OCR на каждой странице (игнорирует эвристику скана/картинок).
+    force_all_pages: false
+    # rus+eng — русский и английский; +equ — модуль формул (интегралы, дроби и т.п., см. tesseract-ocr-equ).
+    tesseract_lang: "rus+eng+equ"
+    # Доп. аргументы Tesseract, например "--oem 1 --psm 6" (единый блок текста; часто лучше для плотных формул в строке).
+    tesseract_config: "--oem 1"
+    # tesseract_cmd: null
+    render_scale: 2.2
+
+sectioning:
+  enable_numbered_headings: true
+  enable_allcaps_headings: true
+  min_heading_len: 4
+  max_heading_len: 120
+
+chunking:
+  target_tokens: 512
+  overlap_tokens: 64
+  # Нечёткая дедупликация чанков между документами (word-bigram Jaccard).
+  # 0 = отключено; 0.85 = убирать чанки с ≥85% совпадением из разных документов.
+  # PDF имеет приоритет над DOCX: при совпадении сохраняется PDF-чанк.
+  dedup_similarity_threshold: 0.85
+
+embeddings:
+  model_name: "BAAI/bge-large-en-v1.5"
+  device: "cpu"
+  batch_size: 32
+  normalize: true
+
+index:
+  backend: "faiss"
+  metric: "ip"
+  top_k: 6
+
+server:
+  host: "127.0.0.1"
+  port: 3333

@@ -1,0 +1,106 @@
+doc-rag — Local-first RAG over engineering documents
+Copyright (C) 2025-2026 doc-rag contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version. See the LICENSE file for the full text.
+
+================================================================================
+Third-party dependencies
+================================================================================
+
+`doc-rag` builds on the following open-source projects. Their respective
+licenses apply to copies redistributed as part of this project (e.g. in
+Docker images or deployment archives).
+
+This list covers the project's declared dependencies and the optional
+extras commonly installed alongside it. It is not exhaustive of
+transitive dependencies — `pip show <package>` is authoritative for any
+specific install.
+
+Required runtime dependencies
+-----------------------------
+
+  numpy               — BSD-3-Clause
+                        https://numpy.org/
+  PyYAML              — MIT
+                        https://pyyaml.org/
+  PyPDF2              — BSD-3-Clause
+                        https://github.com/py-pdf/PyPDF2
+                        (Successor: pypdf, same license)
+  python-docx         — MIT
+                        https://github.com/python-openxml/python-docx
+  tqdm                — MPL-2.0 AND MIT
+                        https://github.com/tqdm/tqdm
+
+Optional extras
+---------------
+
+  [server]
+    fastapi            — MIT
+                         https://github.com/fastapi/fastapi
+    uvicorn            — BSD-3-Clause
+                         https://github.com/encode/uvicorn
+    python-multipart   — Apache-2.0
+                         https://github.com/Kludex/python-multipart
+
+  [pdf]   ⚠ AGPL-3.0 — see warning below
+    pymupdf            — AGPL-3.0
+                         https://github.com/pymupdf/PyMuPDF
+
+  [ocr]   ⚠ AGPL-3.0 via pymupdf — see warning below
+    pytesseract        — Apache-2.0
+                         https://github.com/madmaze/pytesseract
+    Pillow             — MIT-CMU (a.k.a. HPND)
+                         https://python-pillow.org/
+    pymupdf            — AGPL-3.0 (as above)
+
+  [faiss]
+    faiss-cpu          — MIT
+                         https://github.com/facebookresearch/faiss
+
+  [metrics]
+    prometheus-client  — Apache-2.0
+                         https://github.com/prometheus/client_python
+
+  [embeddings]
+    sentence-transformers — Apache-2.0
+                            https://github.com/UKPLab/sentence-transformers
+    torch                 — BSD-3-Clause (PyTorch license)
+                            https://pytorch.org/
+
+  [dev]
+    pytest             — MIT
+                         https://github.com/pytest-dev/pytest
+    pytest-cov         — MIT
+                         https://github.com/pytest-dev/pytest-cov
+
+System packages (not redistributed by us)
+-----------------------------------------
+
+These are installed by `scripts/install_server_native.sh` and the
+bundled Docker image, but they are not part of the Python package and
+have their own upstream licenses:
+
+  tesseract-ocr       — Apache-2.0
+                        https://github.com/tesseract-ocr/tesseract
+  antiword            — GPL-2.0
+                        https://www.winfield.demon.nl/
+
+================================================================================
+License compatibility notes
+================================================================================
+
+`doc-rag` is licensed under AGPL-3.0-or-later, which is compatible with
+all of the runtime dependencies and most optional extras listed above.
+
+The default `pip install -e .` (with no extras) pulls only MIT, BSD,
+MPL-2.0, and Apache-2.0 code, which would also be compatible with a more
+permissive project license, should you fork doc-rag under different
+terms — at which point you must keep the original AGPL notice for the
+portions you re-use, per the AGPL itself.
+
+The `[pdf]` and `[ocr]` extras include PyMuPDF, which is **AGPL-3.0**.
+This is intentional and matches doc-rag's own license; no additional
+constraints are introduced over what AGPL-3.0 already requires.
