@@ -13,6 +13,9 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 | `GET  /ui` | Web UI |
 | `GET  /ui/mcp/cursor.json` | drop-in MCP config for Cursor |
 | `GET  /ui/mcp/vscode.json` | drop-in MCP config for VS Code |
+| `GET  /health/live` | liveness probe — always 200 |
+| `GET  /health/ready` | readiness probe — 503 if no manifest or job in flight |
+| `GET  /metrics` | Prometheus text exposition (requires `[metrics]` extra) |
 
 ## Tools exposed
 

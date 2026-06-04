@@ -6,6 +6,44 @@ the project does not yet ship versioned tags, so entries are grouped by date.
 
 ## Unreleased — toward v1.1.0 (first public release)
 
+### Added (Sprint 3: production observability and operability)
+- `/health/live` (always 200 while the process answers) and
+  `/health/ready` (503 if no manifest or a background ingest/rebuild is
+  in flight). The legacy `/health` keeps returning 200 and now carries
+  `ready` and `reasons` fields for clients that want to migrate.
+- `/metrics` endpoint in Prometheus exposition format. Counters:
+  `doc_rag_mcp_requests_total{tool,status}`, `doc_rag_ingest_documents_total`,
+  `doc_rag_ingest_errors_total`. Gauge: `doc_rag_faiss_index_size`.
+  Histogram: `doc_rag_mcp_request_duration_seconds`. Requires the new
+  `[metrics]` extra (`pip install -e .[metrics]`); without it the
+  endpoint returns 503 with an informative body.
+- `manifest.schema_version` (currently `1`) stamped on every write.
+  Reads refuse manifests with a higher schema version than the running
+  build supports, with an actionable error pointing at `doc-rag migrate`.
+  `ManifestSchemaTooNew` is raised at the boundary so callers can react.
+- `doc-rag migrate` subcommand stub. Prints the supported and detected
+  schema version and exits cleanly when no migrations are defined; the
+  surface exists so future migrations have a stable place to land.
+- `build/audit.log` — append-only JSONL of destructive operations
+  (`delete`, `wipe`, `clean_orphans`, `clear_incoming`). Schema version
+  pinned at `1`; the file is best-effort (I/O errors do not propagate).
+- `scripts/backup.sh` and `scripts/restore.sh`. Backups carry an
+  embedded `MANIFEST.sha256` and `restore.sh` refuses to overwrite a
+  populated `build/` without `--force`. Verified end-to-end on a
+  synthetic corpus.
+- Graceful-shutdown configuration: `scripts/run_mcp_http.sh` now passes
+  `--timeout-graceful-shutdown` to uvicorn (default 30 s, override via
+  `DOC_RAG_SHUTDOWN_TIMEOUT`). The systemd unit declares matching
+  `KillSignal=SIGTERM` and `TimeoutStopSec=60`.
+
+### Added — tests (Sprint 3)
+- `tests/test_health_metrics.py` — live/ready/legacy/metrics endpoint
+  contract.
+- `tests/test_audit_log.py` — one record per destructive op, JSONL
+  parseability, `read_recent` tail.
+- `tests/test_schema_version.py` — guard accepts current/legacy,
+  refuses future, `doc-rag migrate` CLI smoke test.
+
 ### Added (Sprint 2: test coverage)
 - Reusable test fixtures in `tests/conftest.py`: `tmp_corpus_root`,
   `synthetic_chunks`, `synthetic_embeddings`, `built_corpus`,

@@ -118,11 +118,57 @@ Rebuild only if the chunk schema or embedding model changes.
 
 The interesting state is:
 
-- `build/manifest.json`
+- `build/manifest.json` (with `schema_version`)
 - `build/chunks_jsonl/chunks.jsonl`
-- `build/index/faiss.index` + `meta.json`
+- `build/index/faiss.index` + `index_meta.json`
+- `build/embeddings/`
+- `build/audit.log` (append-only history of destructive operations)
 - `sources/archived/` (originals, if you care about retaining them)
 
-Everything under `build/` can be regenerated from `sources/archived/` via `doc-rag rebuild`
-(or full `ingest` if the markdown is gone too), so the original PDFs are the only
-truly irreplaceable artefact.
+Everything under `build/` can be regenerated from `sources/archived/`
+via `doc-rag rebuild` (or full `ingest` if the markdown is gone too),
+so the original source documents are the only truly irreplaceable
+artefact.
+
+### Bundled backup and restore scripts
+
+```bash
+# Back up everything but sources/archived (the cheap, fast option):
+scripts/backup.sh                              # → ./doc-rag-backup-YYYYMMDD-HHMMSS.tar.gz
+
+# Include the original archived sources (large, may be hundreds of MB):
+scripts/backup.sh --with-archived
+
+# Back up a non-default install root:
+scripts/backup.sh --root /opt/doc-rag-mcp --output /var/backups/doc-rag
+
+# Restore. Refuses to overwrite a populated build/ without --force:
+scripts/restore.sh doc-rag-backup-YYYYMMDD-HHMMSS.tar.gz --root /opt/doc-rag-mcp
+```
+
+Both scripts use only `tar` and `sha256sum`. The backup embeds a
+`MANIFEST.sha256` so `restore.sh` can verify the archive before
+touching the live tree.
+
+### Observability
+
+- Liveness probe: `GET /health/live` — always 200 while the process is up.
+- Readiness probe: `GET /health/ready` — 503 if no manifest exists or
+  an ingest/rebuild is in flight.
+- Prometheus scrape: `GET /metrics`. Requires the `[metrics]` extra
+  (`pip install -e .[metrics]`); otherwise the endpoint returns 503
+  with a hint.
+- Destructive operations are recorded line-by-line in
+  `build/audit.log` (append-only JSONL).
+- Logs: `journalctl -u doc-rag-mcp -f`. Set `DOC_RAG_LOG_FORMAT=json`
+  in `/etc/default/doc-rag` for structured output ingestible by a log
+  shipper. Every line carries a `request_id` when emitted during a
+  request.
+
+### Graceful shutdown
+
+`scripts/run_mcp_http.sh` passes `--timeout-graceful-shutdown` to
+uvicorn (default 30 s, override via `DOC_RAG_SHUTDOWN_TIMEOUT`).
+The bundled systemd unit declares `KillSignal=SIGTERM` and
+`TimeoutStopSec=60`. On `systemctl stop doc-rag-mcp`, in-flight
+requests have up to 30 s to finish before connections are force-closed.

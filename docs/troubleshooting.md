@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## "manifest schema_version=N is newer than this build supports"
+
+You are running an older `doc-rag` against a `build/manifest.json` that
+was written by a newer version. Two options:
+
+1. **Upgrade.** Pull the latest `doc-rag`, run `doc-rag migrate`, then
+   retry the failing command.
+2. **Restore.** If you cannot upgrade, restore a backup produced by an
+   older `doc-rag` (see `scripts/restore.sh`).
+
+Manifests without a `schema_version` key are treated as legacy and read
+without complaint; only explicitly higher versions are refused.
+
 ## Search returns no results
 
 1. **Empty index?** `doc-rag ingest` was never run, or the corpus was wiped. Drop files

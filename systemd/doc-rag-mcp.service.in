@@ -16,6 +16,12 @@ ExecStart=@INSTALL_ROOT@/scripts/run_mcp_http.sh
 Restart=on-failure
 RestartSec=10
 
+# Graceful shutdown: systemd sends SIGTERM, uvicorn drains in-flight
+# requests up to DOC_RAG_SHUTDOWN_TIMEOUT (default 30s, set in
+# run_mcp_http.sh). Give systemd a bit more headroom than that.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
 LimitNOFILE=65535
 
 [Install]
