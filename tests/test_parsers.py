@@ -89,14 +89,19 @@ def test_parse_unsupported_extension_raises(tmp_path: Path):
 # --------------------------------------------------------------------------
 # Bundled rich-document fixture
 #
-# tests/fixtures/sample.docx is a committed, real .docx produced by
-# tests/fixtures/_build_sample_docx.py — it contains headings, plain
-# paragraphs, bold/italic runs, bulleted and numbered lists, a real 4x3
-# table, and an embedded PNG schematic.
+# tests/fixtures/sample.docx is a committed, real .docx file. The .doc
+# counterpart is the same content re-saved as legacy Word 97-2003.
+# Both are maintained by hand — to edit, open in Word or LibreOffice
+# Writer, make the change, and re-export. Keep the markers below intact.
 #
-# Contributors with `antiword` on PATH can save the same content as
-# legacy Word (`Save As → Word 97-2003`) into tests/fixtures/sample.doc
-# to enable the .doc parser test. The marker is the same in both.
+# Required content invariants (the tests assert these):
+#   - several Heading 1 / Heading 2 levels
+#   - plain paragraphs, with at least one bold and one italic run
+#   - a bulleted list and a numbered list
+#   - a real 4×3 table; cell value "АС-22А" and "230 В" must be present
+#   - one embedded image (not asserted on, but documents the test scope)
+#   - the string "АВ-12" appears at least once
+#   - the registration code "РК-22.04-2024" appears at least once
 # --------------------------------------------------------------------------
 
 
