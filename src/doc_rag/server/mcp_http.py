@@ -29,6 +29,12 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response, UploadFile, Fil
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
+from doc_rag.server.logging_setup import (
+  configure_logging,
+  get_logger,
+  new_request_id,
+  set_request_id,
+)
 
 from doc_rag.raglib.pipeline import (
   clean_orphans as _pipeline_clean_orphans,
@@ -36,6 +42,11 @@ from doc_rag.raglib.pipeline import (
   delete_documents as _pipeline_delete_documents,
   wipe_index as _pipeline_wipe_index,
 )
+
+# Configure structured logging on import. Idempotent; honours
+# DOC_RAG_LOG_LEVEL and DOC_RAG_LOG_FORMAT env vars.
+configure_logging()
+log = get_logger("doc_rag.server.mcp_http")
 
 Json = Union[Dict[str, Any], List[Any]]
 
@@ -594,16 +605,22 @@ def _err(req_id: Any, code: int, message: str) -> Dict[str, Any]:
 
 
 def _log_line(line: str) -> None:
-  """Write a single log line to stderr, optional file, and UI ring buffer."""
+  """Emit one structured log record and mirror it into UI/file sinks.
+
+  The structured logger handles stderr (and JSON when configured); the
+  UI ring buffer and the optional DOC_RAG_HTTP_LOG file are kept on the
+  legacy text format for backwards compatibility with the UI widget and
+  the existing operator habits.
+  """
+  log.info(line)
   ts = time.strftime("%Y-%m-%d %H:%M:%S")
-  msg = f"[doc-rag][http] {ts} {line}"
-  print(msg, file=sys.stderr, flush=True)
-  _append_server_http_ui_line(msg)
+  legacy = f"[doc-rag][http] {ts} {line}"
+  _append_server_http_ui_line(legacy)
   log_path = os.environ.get("DOC_RAG_HTTP_LOG", "").strip()
   if log_path:
     try:
       with open(log_path, "a", encoding="utf-8") as log_file:
-        log_file.write(msg + "\n")
+        log_file.write(legacy + "\n")
     except Exception:
       # Don't crash on logging issues
       pass
@@ -743,6 +760,13 @@ app = FastAPI(title="doc-rag MCP HTTP", version="1.0")
 
 @app.middleware("http")
 async def _http_log_mw(request: Request, call_next):
+  # Honour an inbound request id if the client supplies one; otherwise
+  # mint a fresh one. The id is propagated into every log record emitted
+  # during this request via a ContextVar.
+  inbound_rid = request.headers.get("x-request-id") or request.headers.get("X-Request-ID")
+  rid = (inbound_rid or "").strip() or new_request_id()
+  set_request_id(rid)
+
   start = time.time()
   response: Optional[Response] = None
   try:
@@ -751,8 +775,11 @@ async def _http_log_mw(request: Request, call_next):
     if request.url.path != "/health":
       if not await _rate_limit_allow(client_host):
         response = PlainTextResponse("Too Many Requests", status_code=429)
+        response.headers["X-Request-ID"] = rid
         return response
     response = await call_next(request)
+    if response is not None:
+      response.headers["X-Request-ID"] = rid
     return response
   finally:
     dur_ms = int((time.time() - start) * 1000)
@@ -769,6 +796,7 @@ async def _http_log_mw(request: Request, call_next):
       "/ui/restart",
     ):
       _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
+    set_request_id(None)
 
 
 @app.get("/health")
