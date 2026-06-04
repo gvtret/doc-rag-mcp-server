@@ -98,10 +98,12 @@ def test_ui_multi_upload_writes_incoming(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     (tmp_path / "sources" / "incoming").mkdir(parents=True)
 
-    pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\n"
+    # Two distinct payloads — same prefix, different sha256.
+    pdf_a = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\n" + b"file-a\n"
+    pdf_b = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\n" + b"file-b\n"
     multi = [
-        ("files", ("batch_a.pdf", pdf, "application/pdf")),
-        ("files", ("batch_b.pdf", pdf, "application/pdf")),
+        ("files", ("batch_a.pdf", pdf_a, "application/pdf")),
+        ("files", ("batch_b.pdf", pdf_b, "application/pdf")),
     ]
 
     c = TestClient(app)
