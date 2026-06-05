@@ -249,6 +249,21 @@ def test_parse_pdf_docling_uses_monkeypatched_converter(monkeypatch):
     reset_converter_cache()
 
 
+def test_docling_stats_finalise_without_chars_per_page():
+    """Regression: `_finalize_pdf_stats` used to crash with KeyError on
+    Docling stats because `chars_per_page` is PyMuPDF/PyPDF2-specific.
+    `.pop(..., None)` keeps the function defensive across backends."""
+    from doc_rag.raglib.parsers import _finalize_pdf_stats
+
+    docling_stats = {"pages": 12, "blocks_by_type": {"paragraph": 4}}
+    out = _finalize_pdf_stats(docling_stats, min_chars=20)
+
+    assert out["pages"] == 12
+    assert out["blocks_by_type"] == {"paragraph": 4}
+    assert out["min_chars_per_page_threshold"] == 20
+    assert "chars_per_page" not in out
+
+
 def test_missing_docling_raises_actionable_error(monkeypatch):
     """When the [docling] extra is not installed, the user must see a
     concrete `pip install` hint."""

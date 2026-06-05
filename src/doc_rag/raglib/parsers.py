@@ -505,7 +505,10 @@ def _finalize_pdf_stats(raw: dict[str, Any], *, min_chars: int) -> dict[str, Any
     min_c = min(ints) if ints else 0
     max_c = max(ints) if ints else 0
     out = dict(raw)
-    del out["chars_per_page"]
+    # `chars_per_page` is a PyMuPDF/PyPDF2-specific raw field. Other
+    # backends (Docling) do not populate it; `.pop(..., None)` makes
+    # the finalisation defensive across backends.
+    out.pop("chars_per_page", None)
     out["min_chars_per_page_threshold"] = min_chars
     out["pages_below_min_chars"] = below
     out["min_chars_on_extracted_page"] = min_c
