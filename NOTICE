@@ -1,10 +1,10 @@
 doc-rag — Local-first RAG over engineering documents
-Copyright (C) 2025-2026 doc-rag contributors
+Copyright (c) 2025-2026 doc-rag contributors
 
-This program is free software: you can redistribute it and/or modify it
-under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or (at
-your option) any later version. See the LICENSE file for the full text.
+This software is released under the MIT License — see the LICENSE file
+for the full text. From v2.0 onwards doc-rag carries no copyleft
+obligations: forks may relicense, redistribute, or embed it under any
+compatible terms.
 
 ================================================================================
 Third-party dependencies
@@ -26,15 +26,32 @@ Required runtime dependencies
                         https://numpy.org/
   PyYAML              — MIT
                         https://pyyaml.org/
-  PyPDF2              — BSD-3-Clause
-                        https://github.com/py-pdf/PyPDF2
-                        (Successor: pypdf, same license)
   filetype            — MIT
                         https://github.com/h2non/filetype.py
   python-docx         — MIT
                         https://github.com/python-openxml/python-docx
   tqdm                — MPL-2.0 AND MIT
                         https://github.com/tqdm/tqdm
+  docling             — MIT
+                        https://github.com/docling-project/docling
+                        (IBM Research; the sole PDF backend since v2.0)
+
+Docling — bundled ML model weights
+----------------------------------
+
+`docling` downloads ML model weights on first parse. Each upstream
+distributes the weights under its own license; doc-rag does not
+redistribute them. Reproduce them locally and consult the upstream
+project for the authoritative terms:
+
+  TableFormer        — IBM Research; see
+                       https://github.com/docling-project/docling-ibm-models
+                       (table-structure recognition)
+  DocLayout-YOLO     — see https://github.com/opendatalab/DocLayout-YOLO
+                       (page-layout detection)
+  RapidOCR           — Apache-2.0; see
+                       https://github.com/RapidAI/RapidOCR
+                       (OCR for scanned/embedded-image pages)
 
 Optional extras
 ---------------
@@ -47,26 +64,9 @@ Optional extras
     python-multipart   — Apache-2.0
                          https://github.com/Kludex/python-multipart
 
-  [pdf]   ⚠ AGPL-3.0 — see warning below
-    pymupdf            — AGPL-3.0
-                         https://github.com/pymupdf/PyMuPDF
-
-  [ocr]   ⚠ AGPL-3.0 via pymupdf — see warning below
-    pytesseract        — Apache-2.0
-                         https://github.com/madmaze/pytesseract
-    Pillow             — MIT-CMU (a.k.a. HPND)
-                         https://python-pillow.org/
-    pymupdf            — AGPL-3.0 (as above)
-
   [faiss]
     faiss-cpu          — MIT
                          https://github.com/facebookresearch/faiss
-
-  [docling]
-    docling            — MIT
-                         https://github.com/DS4SD/docling
-                         (IBM Research; bundles TableFormer, DocLayout-YOLO,
-                          RapidOCR — see upstream for full dependency tree)
 
   [metrics]
     prometheus-client  — Apache-2.0
@@ -83,6 +83,8 @@ Optional extras
                          https://github.com/pytest-dev/pytest
     pytest-cov         — MIT
                          https://github.com/pytest-dev/pytest-cov
+    httpx              — BSD-3-Clause
+                         https://github.com/encode/httpx
 
 System packages (not redistributed by us)
 -----------------------------------------
@@ -91,24 +93,27 @@ These are installed by `scripts/install_server_native.sh` and the
 bundled Docker image, but they are not part of the Python package and
 have their own upstream licenses:
 
-  tesseract-ocr       — Apache-2.0
-                        https://github.com/tesseract-ocr/tesseract
   antiword            — GPL-2.0
                         https://www.winfield.demon.nl/
+                        (used only for legacy binary .doc files)
 
 ================================================================================
 License compatibility notes
 ================================================================================
 
-`doc-rag` is licensed under AGPL-3.0-or-later, which is compatible with
-all of the runtime dependencies and most optional extras listed above.
+`doc-rag` is licensed under MIT. All declared runtime dependencies are
+under MIT, BSD, Apache-2.0, or MPL-2.0 licenses — fully compatible.
 
-The default `pip install -e .` (with no extras) pulls only MIT, BSD,
-MPL-2.0, and Apache-2.0 code, which would also be compatible with a more
-permissive project license, should you fork doc-rag under different
-terms — at which point you must keep the original AGPL notice for the
-portions you re-use, per the AGPL itself.
+The legacy `.doc` parser path shells out to `antiword` (GPL-2.0) as a
+separate subprocess. Calling a GPL binary as an external process does
+not impose GPL obligations on doc-rag's own code, but redistributors
+should respect antiword's terms when shipping the binary alongside.
 
-The `[pdf]` and `[ocr]` extras include PyMuPDF, which is **AGPL-3.0**.
-This is intentional and matches doc-rag's own license; no additional
-constraints are introduced over what AGPL-3.0 already requires.
+History
+-------
+
+doc-rag versions before 2.0.0 were licensed under AGPL-3.0-or-later
+because the default PDF backend at the time was PyMuPDF (AGPL-3.0).
+PyMuPDF was removed in v2.0 in favour of Docling (MIT), and the project
+relicensed to MIT in the same release. Old releases keep their AGPL
+notice; v2.0 onwards is MIT.

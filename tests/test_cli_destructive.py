@@ -41,13 +41,13 @@ def test_delete_documents_also_removes_blocks_file(built_corpus):
     target = blocks_dir / f"{doc_ids[0]}.jsonl"
     target.write_text(
         '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
-        '"text":"y","source_backend":"pymupdf"}\n',
+        '"text":"y","source_backend":"docling"}\n',
         encoding="utf-8",
     )
     survivor = blocks_dir / f"{doc_ids[1]}.jsonl"
     survivor.write_text(
         '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
-        '"text":"z","source_backend":"pymupdf"}\n',
+        '"text":"z","source_backend":"docling"}\n',
         encoding="utf-8",
     )
 
@@ -69,7 +69,7 @@ def test_clean_orphans_removes_orphan_blocks(built_corpus):
     orphan = blocks_dir / "ghost-doc.jsonl"
     orphan.write_text(
         '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
-        '"text":"y","source_backend":"pymupdf"}\n',
+        '"text":"y","source_backend":"docling"}\n',
         encoding="utf-8",
     )
 

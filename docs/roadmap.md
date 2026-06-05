@@ -1,12 +1,15 @@
-# Roadmap to public v1.x.y
+# Roadmap
 
 This document is the master plan for taking `doc-rag` from its initial
 internal state (a working local RAG, private code, internal version
 `1.0.0`) to a production-ready, publicly published release line whose
-first published tag is `v1.4.0` — the cumulative result of Sprints 1
-through 4. It is organised around
-four sprints. Each sprint has an acceptance gate; the gate decides
-whether the next sprint can start.
+first published tag was `v1.4.0` — the cumulative result of Sprints 1
+through 4. **v2.0.0** then collapsed the post-v1.4 plan: instead of a
+gradual `v1.5 (Docling opt-in) → v1.6 (cascade) → v1.7 (QA) → … → v2.0
+(vector store)` cadence, the Docling-only switch was accelerated as a
+single SemVer-major release that also relicensed the project from
+AGPL-3.0-or-later to MIT (PyMuPDF was the only AGPL-load-bearing
+dependency).
 
 The document itself is normative — if the code and this roadmap disagree,
 update one of them deliberately, do not let them drift.
@@ -238,46 +241,38 @@ improve retrieval quality on the project's primary corpus (СТО / ГОСТы
 / specifications), where tables, formulas, multi-column layouts, and
 explicit section hierarchies are the rule rather than the exception.
 
-### v1.5 — Docling-based parsing backend (opt-in)
+### v1.5 → v2.0 (released) — Docling-only parsing, MIT license
 
-Introduce [Docling](https://github.com/DS4SD/docling) (IBM Research,
-MIT-licensed) as a new optional parser backend. PyMuPDF remains the
-default; users who opt in get state-of-the-art table extraction
-(TableFormer), formula recognition with LaTeX output, and robust
-multi-column layout analysis.
+Originally planned as an opt-in Docling backend alongside PyMuPDF.
+After a comparative test on СТО 34.01-5.1-006 (including the
+multi-page table in Приложение И) the asymmetry was decisive: Docling
+yielded 17 structured tables and 12 headings where PyMuPDF returned
+zero structure (one paragraph). The pivot:
 
-Concrete deliverables:
+- **PyMuPDF and PyPDF2 removed entirely.** Docling is the only PDF
+  backend, shipped as a base dependency (no `[docling]` extra).
+- **License pivoted to MIT** in the same release — PyMuPDF was the
+  sole AGPL-load-bearing dep.
+- **`build/blocks/<doc_id>.jsonl`** intermediate layer (schema v1) and
+  **filetype magic-bytes routing** were absorbed into v2.0.
 
-- New config: `pdf_backend: docling`, alongside existing `auto` /
-  `pymupdf` / `pypdf2`.
-- New optional extra: `pip install -e .[docling]`.
-- File-type detection via magic bytes, not extension.
-- A new typed-blocks intermediate layer: `build/blocks/<doc_id>.jsonl`.
-  Each line is a `{type: heading|paragraph|table|formula|figure|list,
-  text, level, page, bbox, source_backend, confidence}` record. This
-  layer is the **load-bearing new artifact** — every later release
-  here consumes it.
-- Markdown and `chunks.jsonl` are derived from blocks, not from raw
-  parser output, so the same source-of-truth feeds both.
+Wall-time cost: ~10-20 s/page on CPU (vs. PyMuPDF's ~0.3 s/page),
+which moves "full corpus ingest" from "nightly cron" to "weekend
+cron" territory. Acceptable in exchange for the structural fidelity
+shown by the comparison.
 
-Acceptance:
+Quality-checks, recursive chunker, cascade, and Unstructured fallback
+keep their slots below.
 
-- Retrieval@k benchmark on a fixed test corpus shows no regression
-  vs. the PyMuPDF backend.
-- Schema for `blocks.jsonl` documented and SemVer-protected like
-  `manifest.json` already is.
-- `build/quality/<doc_id>.json` placeholder file emitted (filled in
-  v1.7).
-
-### v1.6 — Cascading parser fallback
+### v2.1 — Cascading parser fallback
 
 Add [Unstructured](https://unstructured.io/) (`hi_res` strategy) as
 a second-tier fallback for PDFs that Docling cannot handle (broken
 layout, exotic fonts, OCR-only scans where Docling's preprocessing
-fails). Cascade order:
+fails). Cascade order (no AGPL backends — they were removed in v2.0):
 
 ```
-Docling → Unstructured (hi_res) → PyMuPDF → pypdf
+Docling → Unstructured (hi_res)
 ```
 
 The cascade triggers on (a) parser exception, or (b) quality score
@@ -296,7 +291,7 @@ Acceptance:
   formula-rich), cascade extracts non-empty text from ≥ 90 % of them
   vs. ≤ 60 % for any single backend alone.
 
-### v1.7 — Document quality checks + per-doc reports
+### v2.2 — Document quality checks + per-doc reports
 
 Mandatory pre-indexing QA on the typed blocks. The pipeline emits
 `build/quality/<doc_id>.json` for every document and a roll-up under
@@ -347,7 +342,7 @@ Acceptance:
 - A document with a known broken table is correctly flagged.
 - UI shows the badge.
 
-### v1.8 — Unified DOC / DOCX ingest path
+### v2.3 — Unified DOC / DOCX ingest path
 
 Replace the current `antiword` shell-out for `.doc` with a
 LibreOffice-headless DOC→DOCX conversion in the pipeline, then let
@@ -368,9 +363,9 @@ Acceptance:
   new path.
 - Existing `sample.doc` fixture remains the regression target.
 
-### v1.9 — Structure-aware (recursive) chunker
+### v2.4 — Structure-aware (recursive) chunker
 
-Now trivial because `blocks.jsonl` from v1.5 supplies the structure.
+Now trivial because `blocks.jsonl` from v2.0 supplies the structure.
 A recursive splitter walks the typed blocks, grouping siblings into
 chunks while respecting headings as hard boundaries and tables as
 atomic units.
@@ -397,7 +392,7 @@ Acceptance:
 - Section headings appear in 95 % of returned chunks when the source
   document has any heading structure at all.
 
-### v2.0 — Vector-store backends and namespaces
+### v3.0 — Vector-store backends and namespaces
 
 Pluggable vector store with FAISS as the default. Opt-in backends:
 [Qdrant](https://qdrant.tech/) (hybrid search, payload filters,
@@ -443,7 +438,7 @@ are supported across all v1.x and beyond:
   `docs/deploy.md` § "Scheduled ingest") so the long wall-clock time
   is absorbed off-hours.
 
-The Docling/Unstructured pipeline introduced in v1.5+ inherits this
+The Docling/Unstructured pipeline introduced in v2.0+ inherits this
 matrix automatically because both libraries route their inference
 through PyTorch.
 
@@ -461,7 +456,7 @@ not blockers for any v1.x.y tag.
 - A first-party hosted variant.
 
 Multi-collection / namespaces was previously here and is now scoped
-into v2.0 instead.
+into v3.0 instead.
 
 ## 9. How to update this roadmap
 

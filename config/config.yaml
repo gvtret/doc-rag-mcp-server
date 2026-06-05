@@ -11,35 +11,25 @@ paths:
   manifest_path: "build/manifest.json"
 
 parsing:
-  pdf_backend: "auto"
+  # С v2.0 единственный backend для PDF — Docling. Ключ оставлен для
+  # совместимости со старыми конфигами; допустимые значения "docling" / "auto".
+  pdf_backend: "docling"
+  # Backend для DOCX. python-docx — быстрый (по умолчанию), docling —
+  # структурный, дороже по времени и памяти.
+  docx_backend: "python-docx"
   normalize_whitespace: true
-  # Порог «почти пустой страницы» для метрик покрытия (не OCR; извлечённый текст).
+  # Порог «почти пустой страницы» для метрик покрытия (извлечённый текст).
   min_chars_per_page: 20
-  # Год редакции в manifest: ручные карты и эвристики (метаданные PDF / имя файла).
+  # Год редакции в manifest: ручные карты и эвристика по имени файла.
+  # До v2.0 автоматически читалось из PDF-метадаты (PyMuPDF/PyPDF2);
+  # после удаления этих зависимостей нужно либо указать год явно через
+  # by_basename / by_source_rel_path / by_sha256, либо настроить
+  # filename_regex.
   edition_year:
-    from_pdf_metadata: true
     filename_regex: null
     by_basename: {}
     by_source_rel_path: {}
     by_sha256: {}
-
-  # OCR (Tesseract): только для PDF; нужны pymupdf + apt: tesseract-ocr-rus, -eng, -equ (или свой tessdata).
-  ocr:
-    enabled: false
-    # Ниже порога символов на странице страница считается «почти без текста» (для эвристики скана).
-    page_native_chars_threshold: 30
-    # Доля таких страниц ≥ этого значения → весь PDF считается сканом, OCR по всем страницам.
-    scan_sparse_page_fraction: 0.72
-    # Если суммарно символов нативного текста ≤ этого (0 = не использовать), тоже считаем сканом.
-    scan_max_total_native_chars: 0
-    # Вручную: OCR на каждой странице (игнорирует эвристику скана/картинок).
-    force_all_pages: false
-    # rus+eng — русский и английский; +equ — модуль формул (интегралы, дроби и т.п., см. tesseract-ocr-equ).
-    tesseract_lang: "rus+eng+equ"
-    # Доп. аргументы Tesseract, например "--oem 1 --psm 6" (единый блок текста; часто лучше для плотных формул в строке).
-    tesseract_config: "--oem 1"
-    # tesseract_cmd: null
-    render_scale: 2.2
 
 sectioning:
   enable_numbered_headings: true

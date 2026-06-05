@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Universal bootstrap for doc-rag on Linux/WSL.
 # - Creates venv if missing
-# - Installs base deps (Cursor-safe)
-# - Optionally installs FAISS + PyMuPDF
+# - Installs base deps (incl. Docling, the only PDF backend since v2.0)
+# - Optionally installs FAISS
 # - Optionally installs embeddings stack (torch + sentence-transformers)
 # - Optionally runs ingest
 
@@ -57,32 +57,9 @@ if [[ "${ans_faiss}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   ${PIP} install "faiss-cpu>=1.8.0"
 fi
 
-# Optional: PyMuPDF
-if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_pdf="${DOC_RAG_BOOTSTRAP_PDF:-Y}"
-else
-  read -r -p "[doc-rag] Install PyMuPDF (better PDF parsing)? [Y/n] " ans_pdf || true
-  ans_pdf="${ans_pdf:-Y}"
-fi
-if [[ "${ans_pdf}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Installing pymupdf..."
-  ${PIP} install "pymupdf>=1.24.0"
-fi
-
-# Optional: OCR (pytesseract + Pillow; requires system `tesseract-ocr` + lang packs)
-if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_ocr="${DOC_RAG_BOOTSTRAP_OCR:-N}"
-  echo "[doc-rag] NONINTERACTIVE: DOC_RAG_BOOTSTRAP_OCR=${ans_ocr} (Y = pytesseract + Pillow)"
-else
-  read -r -p "[doc-rag] Install OCR deps (pytesseract, Pillow)? Needs apt tesseract-ocr. [y/N] " ans_ocr || true
-  ans_ocr="${ans_ocr:-N}"
-fi
-if [[ "${ans_ocr}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Installing OCR extras (pytesseract, Pillow)…"
-  ${PIP} install "pytesseract>=0.3.10" "Pillow>=10.0"
-else
-  echo "[doc-rag] OCR Python extras skipped. Для сервера: в install_server_native.sh задано DOC_RAG_BOOTSTRAP_OCR=Y"
-fi
+# Docling ships as a base dep since v2.0 — `pip install -e .` above
+# already pulled it in. OCR for scanned PDFs is handled internally by
+# Docling via RapidOCR; no separate Tesseract install is required.
 
 # Optional: Embeddings stack
 if [[ "${NONINTERACTIVE}" == "1" ]]; then

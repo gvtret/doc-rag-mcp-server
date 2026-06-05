@@ -5,15 +5,24 @@ Add `--config <path>` to point at a non-default config; defaults to `config/conf
 
 ## Supported file formats
 
-| Extension | Parser | Notes |
-| --- | --- | --- |
-| `.pdf` | PyMuPDF (with PyPDF2 fallback) | OCR for scanned pages when Tesseract is available |
-| `.docx` | `python-docx` | tables and headings preserved |
-| `.doc` | `antiword` (preferred) or `catdoc` | requires the system tool on PATH |
-| `.md` | direct read | blank lines kept (semantic) |
-| `.txt` | direct read | blank lines kept |
+| Extension | Default parser | Optional alternative | Notes |
+| --- | --- | --- | --- |
+| `.pdf` | Docling | — | structure-aware (tables, headings, formulas, multi-column); OCR via RapidOCR built in |
+| `.docx` | `python-docx` | Docling (`docx_backend: docling`) | python-docx is fast; Docling is structure-aware but much slower |
+| `.doc` | `antiword` (preferred) or `catdoc` | — | requires the system tool on PATH |
+| `.md` | direct read | — | blank lines kept (semantic) |
+| `.txt` | direct read | — | blank lines kept |
 
-Drop files into `sources/incoming/` (subfolders are preserved).
+Drop files into `sources/incoming/` (subfolders are preserved). v1.5+
+routes parsers by file **content** (magic bytes via `filetype`), not by
+the filename extension — so a misnamed `report.pdf` that is really a
+DOCX is parsed correctly.
+
+Since v2.0 PDF parsing always goes through Docling — PyMuPDF and PyPDF2
+have been removed. The first PDF parse downloads ~300 MB of ML model
+weights into `~/.cache/docling/`; later parses are offline. Per-document
+wall time is ~10–20 s/page on a modern CPU, so schedule large ingests
+as cron jobs rather than as synchronous user operations.
 
 ---
 

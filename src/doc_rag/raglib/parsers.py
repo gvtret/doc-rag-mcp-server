@@ -7,24 +7,24 @@ from doc_rag.raglib.blocks import Block, blocks_to_markdown
 from doc_rag.raglib.filetype_detect import detect_supported_extension
 
 _BACKEND_BY_EXT: dict[str, str] = {
-    ".pdf": "pymupdf",  # may be overridden to "pypdf2" by the pdf_backend branch
+    ".pdf": "docling",
     ".docx": "python-docx",
     ".doc": "antiword",
     ".md": "direct",
     ".txt": "direct",
 }
 
+_VALID_PDF_BACKENDS: frozenset[str] = frozenset({"docling", "auto"})
+_VALID_DOCX_BACKENDS: frozenset[str] = frozenset({"python-docx", "docling"})
+
 
 def _baseline_blocks(text: str, source_backend: str) -> list[Block]:
-    """Emit one paragraph block containing the document's full text.
+    """One paragraph block carrying the full document text.
 
-    This is the v1.5 baseline. Block IDs are sequence-numbered without
+    Used by backends without structural awareness (python-docx, antiword,
+    direct read for .md/.txt). Block IDs are sequence-numbered without
     the doc_id prefix (`tmp:0000`); the pipeline rewrites them at save
-    time. Backends that can produce structured blocks (Docling, future
-    structure-aware PyMuPDF path) replace this with multiple typed
-    blocks; consumers see no behavioural difference at the markdown /
-    chunks layer until v1.7 / v1.9 start consuming structure.
-    """
+    time."""
     if not text.strip():
         return []
     return [
@@ -75,70 +75,23 @@ def _min_chars_per_page(cfg: dict[str, Any]) -> int:
     return max(0, v)
 
 
-def _ocr_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    o = (cfg.get("parsing", {}) or {}).get("ocr")
-    return o if isinstance(o, dict) else {}
-
-
-def _ocr_enabled(cfg: dict[str, Any]) -> bool:
-    return bool(_ocr_config(cfg).get("enabled"))
-
-
-def _ocr_runtime_imports() -> tuple[Any, Any]:
-    try:
-        import pytesseract  # type: ignore
-        from PIL import Image  # type: ignore
-    except ImportError as e:
+def _validate_pdf_backend(cfg: dict[str, Any]) -> None:
+    backend = (cfg.get("parsing", {}) or {}).get("pdf_backend", "docling")
+    if backend not in _VALID_PDF_BACKENDS:
         raise RuntimeError(
-            "parsing.ocr.enabled requires pytesseract and Pillow. "
-            "Install: pip install 'doc-rag[ocr]' or pytesseract Pillow."
-        ) from e
-    return pytesseract, Image
+            f"parsing.pdf_backend={backend!r} is no longer supported. "
+            f"Since v2.0 the only PDF backend is Docling. "
+            f"Set parsing.pdf_backend to 'docling' (or remove the key)."
+        )
 
 
-def _ocr_page_text(
-    page: Any, fitz_mod: Any, pytesseract: Any, Image: Any, ocr_cfg: dict[str, Any]
-) -> str:
-    scale = float(ocr_cfg.get("render_scale", 2.0))
-    scale = max(0.5, min(4.0, scale))
-    mat = fitz_mod.Matrix(scale, scale)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    lang = str(ocr_cfg.get("tesseract_lang", "rus+eng+equ"))
-    cmd = ocr_cfg.get("tesseract_cmd")
-    if isinstance(cmd, str) and cmd.strip():
-        pytesseract.pytesseract.tesseract_cmd = cmd.strip()
-    cfg_extra = ocr_cfg.get("tesseract_config")
-    extra = cfg_extra.strip() if isinstance(cfg_extra, str) else ""
-
-    def _run(lang_arg: str) -> str:
-        if extra:
-            return str(pytesseract.image_to_string(img, lang=lang_arg, config=extra) or "")
-        return str(pytesseract.image_to_string(img, lang=lang_arg) or "")
-
-    try:
-        return _run(lang)
-    except Exception as e:
-        err = str(e).lower()
-        if (
-            "equ" in lang.lower()
-            and "+equ" in lang.lower()
-            and ("traineddata" in err or "could not load" in err or "failed loading" in err)
-        ):
-            # Часто на минимальных образах нет tesseract-ocr-equ — откатываемся на rus+eng.
-            fallback = "+".join(p for p in lang.split("+") if p.strip().lower() != "equ")
-            if fallback and fallback != lang:
-                try:
-                    return _run(fallback)
-                except Exception:
-                    pass
-        if "tesseract" in err or "not installed" in err:
-            raise RuntimeError(
-                "Tesseract OCR engine or language data missing. "
-                "Install: apt install tesseract-ocr-rus tesseract-ocr-eng tesseract-ocr-equ "
-                "(or adjust parsing.ocr.tesseract_lang) and set parsing.ocr.tesseract_cmd if needed."
-            ) from e
-        raise
+def _validate_docx_backend(cfg: dict[str, Any]) -> None:
+    backend = (cfg.get("parsing", {}) or {}).get("docx_backend", "python-docx")
+    if backend not in _VALID_DOCX_BACKENDS:
+        raise RuntimeError(
+            f"parsing.docx_backend={backend!r} is unknown. "
+            f"Valid choices: 'python-docx' (default, fast) or 'docling' (structure-aware)."
+        )
 
 
 def _empty_ocr_summary() -> dict[str, Any]:
@@ -155,253 +108,6 @@ def _empty_ocr_summary() -> dict[str, Any]:
     }
 
 
-def _page_has_embedded_images(page: Any) -> bool:
-    """Страница с растровыми вложениями (не вектор-only)."""
-    try:
-        ims = page.get_images(full=True)
-        return len(ims) > 0
-    except Exception:
-        try:
-            return len(page.get_images()) > 0
-        except Exception:
-            return False
-
-
-def _extract_page_text_structured(page: Any, fitz_mod: Any) -> str:
-    """Extract page text, replacing table regions with pipe-separated row text.
-
-    Uses page.find_tables() (PyMuPDF >= 1.23) when tables are present so that
-    14-column tables like Приложение И produce lines like:
-        1 | 3 | 1.0.12.7.0.255 | Напряжение U | - | G | G | - |  |  |  |  |  | Да
-    instead of one value per line, preserving row context for RAG chunking.
-    Falls back to get_text("text") if find_tables is unavailable or finds nothing.
-    """
-    try:
-        finder = page.find_tables()
-        tables = finder.tables if finder and hasattr(finder, "tables") else []
-    except Exception:
-        return page.get_text("text") or ""
-
-    if not tables:
-        return page.get_text("text") or ""
-
-    # Build (Rect, formatted_text) for each detected table
-    table_entries: list[tuple[Any, str]] = []
-    for tab in tables:
-        try:
-            trect = fitz_mod.Rect(tab.bbox)
-        except Exception:
-            continue
-        rows_out: list[str] = []
-        try:
-            for row in tab.extract() or []:
-                if not row:
-                    continue
-                cells = [(c or "").strip() if c is not None else "" for c in row]
-                if any(cells):
-                    rows_out.append(" | ".join(cells))
-        except Exception:
-            pass
-        if rows_out:
-            table_entries.append((trect, "\n".join(rows_out)))
-
-    if not table_entries:
-        return page.get_text("text") or ""
-
-    # Walk text blocks top-to-bottom; replace blocks that fall inside a table rect
-    # with the formatted table text (emitted once per table).
-    try:
-        blocks = page.get_text("blocks", sort=True)
-    except Exception:
-        return page.get_text("text") or ""
-
-    output: list[str] = []
-    emitted: set = set()
-
-    for b in blocks:
-        if len(b) < 5:
-            continue
-        bx0, by0, bx1, by1, btext = b[0], b[1], b[2], b[3], b[4]
-        if len(b) >= 7 and b[6] != 0:  # skip image blocks
-            continue
-        block_rect = fitz_mod.Rect(bx0, by0, bx1, by1)
-
-        matched = None
-        for i, (trect, _) in enumerate(table_entries):
-            inter = trect & block_rect
-            if inter.is_empty:
-                continue
-            block_area = block_rect.get_area()
-            if block_area > 0 and inter.get_area() / block_area > 0.4:
-                matched = i
-                break
-
-        if matched is not None:
-            if matched not in emitted:
-                emitted.add(matched)
-                output.append(table_entries[matched][1])
-        else:
-            text = (btext or "").strip()
-            if text:
-                output.append(text)
-
-    # Emit any tables not reached via blocks (safety net)
-    for i, (_, ttext) in enumerate(table_entries):
-        if i not in emitted:
-            output.append(ttext)
-
-    return "\n\n".join(output)
-
-
-def _detect_pdf_is_scan(
-    parts: list[str], *, threshold: int, n_pages: int, ocr_cfg: dict[str, Any]
-) -> bool:
-    """Эвристика «весь документ — скан»: почти все страницы без нативного текста."""
-    if n_pages <= 0:
-        return False
-    sparse = sum(1 for p in parts if len((p or "").strip()) < threshold)
-    frac = sparse / float(n_pages)
-    try:
-        need_frac = float(ocr_cfg.get("scan_sparse_page_fraction", 0.72))
-    except Exception:
-        need_frac = 0.72
-    need_frac = min(1.0, max(0.0, need_frac))
-
-    try:
-        max_total = int(ocr_cfg.get("scan_max_total_native_chars", 0))
-    except Exception:
-        max_total = 0
-    total_native = sum(len((p or "").strip()) for p in parts)
-
-    if max_total > 0 and total_native <= max_total:
-        return True
-    return frac >= need_frac
-
-
-def _pdf_fitz_extract_with_ocr(
-    cfg: dict[str, Any], path: str, *, max_pages: int
-) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    """PyMuPDF native text + optional Tesseract per page. Returns text, raw_stats, ocr_summary."""
-    try:
-        import fitz  # pymupdf
-    except ImportError as e:
-        raise RuntimeError(
-            "PDF processing requires pymupdf when using the PyMuPDF code path. Install: pip install pymupdf"
-        ) from e
-
-    ocr_cfg = _ocr_config(cfg)
-    ocr_on = bool(ocr_cfg.get("enabled"))
-    pytesseract = None
-    Image = None
-    if ocr_on:
-        pytesseract, Image = _ocr_runtime_imports()
-
-    doc = fitz.open(path)
-    try:
-        total_pages = len(doc)
-        n_read = min(total_pages, max_pages)
-        parts: list[str] = []
-        for i in range(n_read):
-            parts.append(_extract_page_text_structured(doc[i], fitz) or "")
-
-        ocr_summary: dict[str, Any] = {
-            "applied": False,
-            "pages_recognized": 0,
-            "native_chars_total": sum(len((p or "").strip()) for p in parts),
-            "after_merge_chars_total": 0,
-            "before_ocr_chars": None,
-            "after_ocr_chars": None,
-        }
-
-        if ocr_on and pytesseract is not None and Image is not None:
-            threshold = int(ocr_cfg.get("page_native_chars_threshold", 30))
-            threshold = max(0, threshold)
-            force_manual = bool(ocr_cfg.get("force_all_pages", False))
-
-            page_has_img = [_page_has_embedded_images(doc[i]) for i in range(n_read)]
-            is_scan = _detect_pdf_is_scan(
-                parts, threshold=threshold, n_pages=n_read, ocr_cfg=ocr_cfg
-            )
-
-            if force_manual:
-                routing = "force_all_pages"
-            elif is_scan:
-                routing = "scan_all_pages"
-            else:
-                routing = "embedded_images_only"
-
-            before_chars = sum(len((p or "").strip()) for p in parts)
-            pages_hit = 0
-            for i in range(n_read):
-                if force_manual:
-                    need = True
-                elif is_scan:
-                    need = True
-                else:
-                    need = page_has_img[i]
-
-                if not need:
-                    continue
-                try:
-                    ocr_txt = _ocr_page_text(doc[i], fitz, pytesseract, Image, ocr_cfg)
-                except RuntimeError:
-                    raise
-                except Exception:
-                    continue
-                if (ocr_txt or "").strip():
-                    parts[i] = ocr_txt
-                    pages_hit += 1
-            after_chars = sum(len((p or "").strip()) for p in parts)
-            ocr_summary["applied"] = pages_hit > 0
-            ocr_summary["pages_recognized"] = pages_hit
-            ocr_summary["native_chars_total"] = before_chars
-            ocr_summary["after_merge_chars_total"] = after_chars
-            ocr_summary["before_ocr_chars"] = before_chars
-            ocr_summary["after_ocr_chars"] = after_chars
-            ocr_summary["routing"] = routing
-            ocr_summary["detected_scan"] = bool(is_scan)
-            ocr_summary["pages_with_embedded_images"] = int(sum(page_has_img))
-
-        text = "\n\n".join(parts)
-        chars_per = [len((p or "").strip()) for p in parts]
-        raw_stats: dict[str, Any] = {
-            "format": "pdf",
-            "pdf_backend": "pymupdf+ocr" if ocr_summary.get("applied") else "pymupdf",
-            "source_page_count": total_pages,
-            "pages_extracted": n_read,
-            "chars_per_page": chars_per,
-            "text_chars_extracted": len(text),
-        }
-        return text, raw_stats, ocr_summary
-    finally:
-        doc.close()
-
-
-def _parse_pdf_pypdf2(path: str, *, max_pages: int) -> tuple[str, dict[str, Any]]:
-    from PyPDF2 import PdfReader
-
-    r = PdfReader(path)
-    total_pages = len(r.pages)
-    n_read = min(total_pages, max_pages)
-    parts: list[str] = []
-    for page in r.pages[:max_pages]:
-        try:
-            parts.append(page.extract_text() or "")
-        except Exception:
-            parts.append("")
-    text = "\n\n".join(parts)
-    chars_per = [len((p or "").strip()) for p in parts]
-    stats: dict[str, Any] = {
-        "format": "pdf",
-        "pdf_backend": "pypdf2",
-        "source_page_count": total_pages,
-        "pages_extracted": n_read,
-        "chars_per_page": chars_per,
-        "text_chars_extracted": len(text),
-    }
-    return text, stats
-
-
 def _parse_docx(path: str, *, max_paragraphs: int) -> tuple[str, dict[str, Any]]:
     from docx import Document
     from docx.oxml.ns import qn  # type: ignore
@@ -412,7 +118,6 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> tuple[str, dict[str, Any]]
     para_count = 0
     tables_count = 0
 
-    # Iterate body in document order so tables appear at their correct position
     body = d.element.body
     for child in body:
         tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -432,7 +137,6 @@ def _parse_docx(path: str, *, max_paragraphs: int) -> tuple[str, dict[str, Any]]
                 prev_cell_text = None
                 for tc in tr.iter(qn("w:tc")):
                     cell_text = "".join(r.text for r in tc.iter(qn("w:t")) if r.text).strip()
-                    # Skip merged-cell duplicates (python-docx repeats merged cells)
                     if cell_text != prev_cell_text:
                         cells.append(cell_text)
                     prev_cell_text = cell_text
@@ -505,9 +209,8 @@ def _finalize_pdf_stats(raw: dict[str, Any], *, min_chars: int) -> dict[str, Any
     min_c = min(ints) if ints else 0
     max_c = max(ints) if ints else 0
     out = dict(raw)
-    # `chars_per_page` is a PyMuPDF/PyPDF2-specific raw field. Other
-    # backends (Docling) do not populate it; `.pop(..., None)` makes
-    # the finalisation defensive across backends.
+    # `chars_per_page` was a PyMuPDF/PyPDF2-specific raw field. Docling
+    # does not populate it; `.pop(..., None)` keeps this defensive.
     out.pop("chars_per_page", None)
     out["min_chars_per_page_threshold"] = min_chars
     out["pages_below_min_chars"] = below
@@ -516,89 +219,49 @@ def _finalize_pdf_stats(raw: dict[str, Any], *, min_chars: int) -> dict[str, Any
     return out
 
 
-def _build_ocr_stats_block(cfg: dict[str, Any], ocr_summary: dict[str, Any]) -> dict[str, Any]:
-    oc = _ocr_config(cfg)
-    lang = oc.get("tesseract_lang")
-    block: dict[str, Any] = {
-        "applied": bool(ocr_summary.get("applied")),
-        "before_ocr": {"chars": ocr_summary.get("before_ocr_chars")},
-        "after_ocr": {"chars": ocr_summary.get("after_ocr_chars")},
-        "pages_recognized": int(ocr_summary.get("pages_recognized") or 0),
+def _build_ocr_stats_block() -> dict[str, Any]:
+    """Stats shape kept for downstream consumers.
+
+    Docling handles OCR internally via RapidOCR; the old per-page Tesseract
+    routing is gone. Fields stay so that manifest schema v1 readers do not
+    break; values reflect "we did not run the old OCR loop"."""
+    return {
+        "applied": False,
+        "before_ocr": {"chars": None},
+        "after_ocr": {"chars": None},
+        "pages_recognized": 0,
     }
-    if _ocr_enabled(cfg):
-        block["tesseract_lang"] = str(lang) if lang is not None else "rus+eng+equ"
-    for key in ("routing", "detected_scan", "pages_with_embedded_images"):
-        v = ocr_summary.get(key)
-        if v is not None:
-            block[key] = v
-    return block
 
 
 def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     _enforce_size_limit(cfg, path)
+    _validate_pdf_backend(cfg)
+    _validate_docx_backend(cfg)
+
     text = ""
     tables: list[Any] = []
     min_thr = _min_chars_per_page(cfg)
     extract_stats: dict[str, Any] = {}
-    ocr_summary: dict[str, Any] = _empty_ocr_summary()
 
-    # v1.5: route by magic bytes, not by filename extension. Falls back
-    # to the filename extension for plain-text formats (`.md`, `.txt`)
-    # that have no magic bytes; raises if the file is neither a
-    # recognised format nor extension-named as one.
+    # Route by magic bytes, falling back to filename extension only for
+    # plain-text formats (`.md`, `.txt`) that have no magic bytes.
     effective_ext = detect_supported_extension(path)
     if effective_ext is None:
         raise RuntimeError(f"Unsupported file type: {path}")
 
     source_backend = ""
-    # v1.5: backends that produce structured blocks (Docling) provide them
-    # directly instead of going through `_baseline_blocks`. Leaving this
-    # `None` means the legacy text→one-paragraph path applies.
+    # Backends that emit typed blocks (Docling) supply them directly;
+    # baseline backends go through `_baseline_blocks` (one paragraph).
     backend_blocks: list[Block] | None = None
+
     if effective_ext == ".pdf":
-        backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
-        max_pages = _max_int(cfg, "max_pdf_pages", 2000)
-        if _ocr_enabled(cfg) and backend == "pypdf2":
-            raise RuntimeError(
-                "parsing.ocr.enabled requires pdf_backend 'auto' or 'pymupdf' (PyMuPDF), not 'pypdf2'."
-            )
+        from doc_rag.raglib.docling_backend import parse_pdf_docling
 
-        raw_stats: dict[str, Any] = {}
-        if backend == "docling":
-            from doc_rag.raglib.docling_backend import parse_pdf_docling
-
-            text, backend_blocks, raw_stats = parse_pdf_docling(path)
-            ocr_summary = _empty_ocr_summary()
-            source_backend = "docling"
-        elif backend == "pypdf2":
-            text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
-            ocr_summary = _empty_ocr_summary()
-            source_backend = "pypdf2"
-        elif backend in ("pymupdf", "auto"):
-            try:
-                import fitz  # noqa: F401
-            except ImportError:
-                if backend == "pymupdf":
-                    raise RuntimeError(
-                        "pdf_backend is 'pymupdf' but pymupdf is not installed. pip install pymupdf"
-                    ) from None
-                if _ocr_enabled(cfg):
-                    raise RuntimeError(
-                        "parsing.ocr.enabled requires pymupdf. Install: pip install pymupdf"
-                    ) from None
-                text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
-                ocr_summary = _empty_ocr_summary()
-                source_backend = "pypdf2"
-            else:
-                text, raw_stats, ocr_summary = _pdf_fitz_extract_with_ocr(
-                    cfg, path, max_pages=max_pages
-                )
-                source_backend = "pymupdf"
-        else:
-            raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
+        text, backend_blocks, raw_stats = parse_pdf_docling(path)
+        source_backend = "docling"
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif effective_ext == ".docx":
-        docx_backend = cfg.get("parsing", {}).get("docx_backend", "python-docx")
+        docx_backend = (cfg.get("parsing", {}) or {}).get("docx_backend", "python-docx")
         if docx_backend == "docling":
             from doc_rag.raglib.docling_backend import parse_pdf_docling
 
@@ -610,9 +273,6 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
             source_backend = "python-docx"
     elif effective_ext == ".doc":
         text, extract_stats = _parse_doc(path)
-        # antiword is the preferred backend; _parse_doc itself falls back
-        # to catdoc when antiword is unavailable. The distinction is not
-        # propagated up here; the doc-only label is good enough.
         source_backend = "antiword"
     elif effective_ext == ".md":
         text, extract_stats = _parse_md(path)
@@ -622,25 +282,19 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         source_backend = "direct"
     else:
         # Defensive: detect_supported_extension only returns one of the
-        # five we already handle above, but keep an explicit failure
-        # message in case the supported list ever drifts.
+        # five we already handle above.
         raise RuntimeError(f"Unsupported file type: {path}")
 
     text_before_norm = text
     # Minimal normalization. Skip blank-line removal for .md/.txt where
-    # blank lines are semantic (paragraph separators) rather than
-    # extraction artifacts. Use the content-resolved extension, not the
-    # filename, so a misnamed `.txt` that is really a PDF still gets the
-    # blank-line stripping that PDF text extraction needs.
+    # blank lines are semantic. Use the content-resolved extension, not
+    # the filename, so a misnamed `.txt` that is really a PDF still gets
+    # the blank-line stripping that PDF text extraction needs.
     if cfg.get("parsing", {}).get("normalize_whitespace", True):
         text = "\n".join([line.rstrip() for line in text.splitlines()])
         if effective_ext not in (".md", ".txt"):
             text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
 
-    # v1.5: blocks are the source of truth. Structured backends (Docling)
-    # supply their own typed blocks; baseline backends fall back to a
-    # single paragraph block, which keeps the legacy markdown byte-
-    # identical (`f"# {basename}\n\n{text}\n"`).
     if backend_blocks is not None:
         blocks = backend_blocks
     else:
@@ -655,16 +309,16 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     native["markdown"] = {"chars": len(md)}
 
     is_pdf = effective_ext == ".pdf"
-    ocr_block: dict[str, Any]
-    if is_pdf:
-        ocr_block = _build_ocr_stats_block(cfg, ocr_summary)
-    else:
-        ocr_block = {
+    ocr_block = (
+        _build_ocr_stats_block()
+        if is_pdf
+        else {
             "applied": False,
             "before_ocr": {"chars": None},
             "after_ocr": {"chars": None},
             "pages_recognized": 0,
         }
+    )
 
     stats: dict[str, Any] = {
         "ocr": ocr_block,

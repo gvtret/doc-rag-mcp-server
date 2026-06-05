@@ -24,7 +24,7 @@ def _para(text: str, idx: int = 0) -> Block:
         doc_id="tmp",
         type="paragraph",
         text=text,
-        source_backend="pymupdf",
+        source_backend="docling",
     )
 
 
@@ -39,7 +39,7 @@ def test_block_minimal_fields():
         doc_id="doc-a",
         type="paragraph",
         text="hello",
-        source_backend="pymupdf",
+        source_backend="docling",
     )
     assert b.block_id == "doc-a:0000"
     assert b.type == "paragraph"
@@ -54,15 +54,15 @@ def test_block_rejects_unknown_type():
             doc_id="doc-a",
             type="nonsense",  # type: ignore[arg-type]
             text="x",
-            source_backend="pymupdf",
+            source_backend="docling",
         )
 
 
 def test_block_rejects_empty_ids():
     with pytest.raises(ValueError, match="block_id"):
-        Block(block_id="", doc_id="d", type="paragraph", text="x", source_backend="pymupdf")
+        Block(block_id="", doc_id="d", type="paragraph", text="x", source_backend="docling")
     with pytest.raises(ValueError, match="doc_id"):
-        Block(block_id="b", doc_id="", type="paragraph", text="x", source_backend="pymupdf")
+        Block(block_id="b", doc_id="", type="paragraph", text="x", source_backend="docling")
     with pytest.raises(ValueError, match="source_backend"):
         Block(block_id="b", doc_id="d", type="paragraph", text="x", source_backend="")
 
@@ -86,7 +86,7 @@ def test_block_validates_negative_level():
             doc_id="d",
             type="heading",
             text="x",
-            source_backend="pymupdf",
+            source_backend="docling",
             level=-1,
         )
 
@@ -98,7 +98,7 @@ def test_block_validates_bbox_length():
             doc_id="d",
             type="paragraph",
             text="x",
-            source_backend="pymupdf",
+            source_backend="docling",
             bbox=(1.0, 2.0, 3.0),  # type: ignore[arg-type]
         )
 
@@ -109,7 +109,7 @@ def test_block_coerces_bbox_to_floats():
         doc_id="d",
         type="paragraph",
         text="x",
-        source_backend="pymupdf",
+        source_backend="docling",
         bbox=(1, 2, 3, 4),  # type: ignore[arg-type]
     )
     assert b.bbox == (1.0, 2.0, 3.0, 4.0)
@@ -126,7 +126,7 @@ def test_to_jsonl_dict_omits_none_and_empty_metadata():
         doc_id="d",
         type="paragraph",
         text="x",
-        source_backend="pymupdf",
+        source_backend="docling",
     )
     out = b.to_jsonl_dict()
     assert out == {
@@ -134,7 +134,7 @@ def test_to_jsonl_dict_omits_none_and_empty_metadata():
         "doc_id": "d",
         "type": "paragraph",
         "text": "x",
-        "source_backend": "pymupdf",
+        "source_backend": "docling",
     }
     assert "level" not in out
     assert "page" not in out
@@ -235,7 +235,7 @@ def test_iter_blocks_skips_blank_lines(tmp_path: Path):
             "doc_id": "d",
             "type": "paragraph",
             "text": "x",
-            "source_backend": "pymupdf",
+            "source_backend": "docling",
         }
     )
     p.write_text(f"\n{rec}\n\n{rec}\n", encoding="utf-8")
@@ -254,7 +254,7 @@ def test_dump_creates_parent_directory(tmp_path: Path):
                 doc_id="d",
                 type="paragraph",
                 text="x",
-                source_backend="pymupdf",
+                source_backend="docling",
             )
         ],
     )
@@ -277,7 +277,7 @@ def test_load_blocks_accepts_current_version(tmp_path: Path):
                 doc_id="d",
                 type="paragraph",
                 text="x",
-                source_backend="pymupdf",
+                source_backend="docling",
             )
         ],
     )
@@ -375,7 +375,7 @@ def test_load_blocks_refuses_future_version(tmp_path: Path):
                 doc_id="d",
                 type="paragraph",
                 text="x",
-                source_backend="pymupdf",
+                source_backend="docling",
             )
         ],
     )
