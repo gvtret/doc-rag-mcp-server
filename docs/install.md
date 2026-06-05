@@ -16,13 +16,12 @@ For a deeper deploy walkthrough see [deploy.md](deploy.md).
 bash scripts/bootstrap.sh
 ```
 
-Creates `.venv`, installs base deps, then prompts (with sensible defaults) for:
+Creates `.venv`, installs base deps (Docling included — it is the only
+PDF backend since v2.0), then prompts (with sensible defaults) for:
 
 - FAISS (`faiss-cpu`) — needed for semantic search
-- PyMuPDF — better PDF parsing + table extraction
-- OCR stack (`pytesseract`, `Pillow`, `pymupdf`) — only needed for scanned PDFs
 - Server extras (`fastapi`, `uvicorn`, `python-multipart`)
-- torch + sentence-transformers (CPU or GPU)
+- torch + sentence-transformers (CPU)
 - Initial `doc-rag ingest`
 
 Non-interactive mode (for CI / scripts):
@@ -30,8 +29,6 @@ Non-interactive mode (for CI / scripts):
 ```bash
 DOC_RAG_BOOTSTRAP_NONINTERACTIVE=1 \
 DOC_RAG_BOOTSTRAP_FAISS=Y \
-DOC_RAG_BOOTSTRAP_PDF=Y \
-DOC_RAG_BOOTSTRAP_OCR=Y \
 DOC_RAG_BOOTSTRAP_SERVER=Y \
 DOC_RAG_BOOTSTRAP_TORCH=2 \
 bash scripts/bootstrap.sh
@@ -45,7 +42,7 @@ bash scripts/bootstrap.sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e ".[server,faiss,pdf]"
+pip install -e ".[server,faiss]"
 bash scripts/install_torch_cpu.sh        # or install_torch_gpu.sh
 pip install sentence-transformers
 ```
@@ -82,7 +79,7 @@ because CPU becomes the bottleneck quickly.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e ".[server,faiss,pdf]"
+pip install -e ".[server,faiss]"
 bash scripts/install_torch_gpu.sh        # pulls torch from the CUDA 12.4 wheel index
 pip install sentence-transformers
 ```
@@ -155,7 +152,7 @@ returns `True` against a ROCm-built `torch`, and `device="cuda"` in
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e ".[server,faiss,pdf]"
+pip install -e ".[server,faiss]"
 
 # Pick the ROCm version matching your installed runtime.
 # Example for ROCm 6.2:
@@ -245,11 +242,21 @@ Required at runtime depending on what you parse:
 
 | Feature | Package | Notes |
 | --- | --- | --- |
-| Scanned PDFs (OCR) | `tesseract-ocr` + `tesseract-ocr-{eng,rus,equ}` | `equ` may be missing on some distros |
 | Legacy `.doc` | `antiword` (preferred) or `catdoc` | required for binary Word format |
-| PDF tables | none (pure Python via PyMuPDF) | |
+| Scanned PDFs (OCR) | none | Docling runs RapidOCR internally — no separate Tesseract install |
+| PDF tables / structure | none | Docling extracts grids, headings, formulas by default |
 
-`scripts/install_server_native.sh` installs all of these. For Docker, see `docker/Dockerfile`.
+`scripts/install_server_native.sh` installs `antiword`. For Docker, see `docker/Dockerfile`.
+
+### Docling models on first parse
+
+Docling downloads ~300 MB of ML model weights (TableFormer, DocLayout
+detection, RapidOCR) on the first PDF parse. The download is cached
+under `~/.cache/docling/` (or `$HOME/.cache/...` for the service user)
+and survives restarts. Subsequent parses are offline.
+
+If your install is air-gapped, copy the populated cache directory from
+a connected box; the path is the same on all Linux hosts.
 
 ---
 

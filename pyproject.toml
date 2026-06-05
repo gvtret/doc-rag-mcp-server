@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-rag"
-version = "1.4.0"
+version = "2.0.0"
 description = "Local-first RAG over your engineering documents, with an MCP server for Cursor and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "AGPL-3.0-or-later"
+license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "doc-rag contributors"}]
 classifiers = [
@@ -28,26 +28,20 @@ dependencies = [
   "python-docx>=1.1.0",
   "numpy>=1.26",
   "tqdm>=4.66",
-  "PyPDF2>=3.0.1",
+  "filetype>=1.2",
+  # Docling — IBM Research's structure-aware document parser.
+  # In v2.0 this is the only PDF backend; PyMuPDF and PyPDF2 are gone.
+  # Brings ~600 MB of deps plus ~300 MB of ML models downloaded on
+  # first parse. See docs/install.md and NOTICE for details.
+  "docling>=2.0",
 ]
+
 [project.optional-dependencies]
 # For remote MCP server over HTTP (FastAPI/Uvicorn)
 server = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "python-multipart",
-]
-
-# Better PDF extraction (optional)
-pdf = [
-  "pymupdf>=1.24.0",
-]
-
-# OCR for scanned PDFs (requires Tesseract on PATH or parsing.ocr.tesseract_cmd)
-ocr = [
-  "pytesseract>=0.3.10",
-  "Pillow>=10.0",
-  "pymupdf>=1.24.0",
 ]
 
 # Vector index (optional)
@@ -109,4 +103,3 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-

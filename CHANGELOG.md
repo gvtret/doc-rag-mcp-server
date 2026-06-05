@@ -4,6 +4,90 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.0.0 — 2026-06-05
+
+**Breaking release.** Two coupled changes ship together:
+PyMuPDF and PyPDF2 are removed from the project, leaving Docling as
+the single PDF backend; with PyMuPDF gone, the AGPL load-bearing dep
+is also gone and the project relicenses from AGPL-3.0-or-later to MIT.
+
+### Why
+
+A comparative parse of a real СТО (СТО 34.01-5.1-006, 12 pages, with
+Приложение И — a multi-page table) on the production server:
+
+| | PyMuPDF (auto) | Docling |
+| --- | --- | --- |
+| Wall time | 4.16 s | 216.69 s |
+| Blocks total | 1 paragraph | 82 (paragraph 32 / heading 12 / table 17 / list_item 21) |
+| Headings | 0 | 12 |
+| Tables (structured grid) | 0 | 17 |
+
+PyMuPDF collapsed the document into one paragraph; Docling reproduced
+the heading hierarchy and reconstructed Приложение И as a 7-row
+labelled grid. The wall-time penalty (~50×) is real but acceptable
+for an offline-ingest workflow where ingest already runs out-of-band.
+
+### Removed
+- `pymupdf` (AGPL-3.0). Removed from base deps; the `[pdf]` extra is
+  gone. All `fitz`-using code paths in `parsers.py` are deleted —
+  `_pdf_fitz_extract_with_ocr`, `_extract_page_text_structured`,
+  `_ocr_page_text`, `_page_has_embedded_images`,
+  `_detect_pdf_is_scan`.
+- `PyPDF2` (BSD-3, but only ever a fallback for the PyMuPDF path).
+  Removed from base deps; `_parse_pdf_pypdf2` deleted.
+- `pytesseract` + `Pillow`. The Tesseract-based OCR loop is gone; OCR
+  for scanned PDFs is now handled inside Docling by RapidOCR. The
+  `[ocr]` extra is removed. The Tesseract apt packages
+  (`tesseract-ocr*`) are no longer installed by
+  `scripts/install_server_native.sh` or the Docker image.
+- `[docling]` extra. Docling is now a base dep — no opt-in flag.
+- `parsing.ocr.*` config block. Keys are silently ignored; the
+  `stats.ocr` shape in `parse_document` output is preserved for
+  manifest schema v1 compatibility but always reports
+  `applied: false`.
+- `parsing.edition_year.from_pdf_metadata`. The auto-read of PDF
+  `/CreationDate` / `/ModDate` is gone (it required PyMuPDF or
+  PyPDF2). The remaining `by_basename` / `by_source_rel_path` /
+  `by_sha256` / `filename_regex` cascade is unchanged.
+
+### Changed
+- **License: AGPL-3.0-or-later → MIT.** All AGPL load-bearing deps
+  removed in the same release; relicensing was the whole point.
+  `LICENSE` rewritten, `NOTICE` rewritten, `pyproject.toml` carries
+  `license = "MIT"`, README badge updated.
+- `parsing.pdf_backend` config key kept for migration compatibility,
+  but only `"docling"` and `"auto"` (alias) are accepted. Anything
+  else raises `RuntimeError` at `parse_document` time with an
+  actionable message. `parsing.docx_backend` still accepts both
+  `"python-docx"` (default, fast) and `"docling"` (structure-aware,
+  slow).
+- `docs/install.md`, `docs/cli.md`, `docs/troubleshooting.md`,
+  `docs/roadmap.md`, `README.md` updated for the new world.
+- `scripts/bootstrap.sh` no longer prompts for PyMuPDF or OCR install
+  paths; Docling is pulled in by the base `pip install -e .`.
+
+### Migration
+
+For an existing v1.4.x install:
+
+1. Wipe the venv and reinstall — Docling brings ~5 GB of deps.
+2. Edit `config/config.yaml`: set `parsing.pdf_backend: docling` (or
+   delete the key — `docling` is the default). Remove the
+   `parsing.ocr` block; it has no effect.
+3. If you relied on automatic edition-year extraction from PDF
+   metadata, add explicit entries under
+   `parsing.edition_year.by_basename` (or `by_sha256`).
+4. First PDF parse will download ~300 MB of ML weights into
+   `~/.cache/docling/` — one-time cost; subsequent parses are
+   offline. Plan the first ingest accordingly.
+5. Per-doc wall time is ~10-20 s/page on CPU. A ~4500-chunk corpus
+   that used to rebuild in ~36 min may take 25-30 hours; move
+   full-corpus ingest from a nightly cron to a weekly one.
+
+Manifest schema and FAISS index layout are unchanged (still
+`schema_version: 1`); no `doc-rag migrate` step required.
+
 ## v1.4.0 — 2026-06-04 (first public release)
 
 This release is the cumulative result of internal Sprints 1 through 4
