@@ -3,7 +3,7 @@
 [![tests](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/tests.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/tests.yml)
 [![lint](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/lint.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/lint.yml)
 [![build](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/build.yml/badge.svg)](https://github.com/gvtret/doc-rag-mcp-server/actions/workflows/build.yml)
-[![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 `doc-rag` is a local, offline-first knowledge base for engineering documentation:
 
@@ -19,9 +19,9 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 ## Requirements
 
 - Linux or WSL2 (Python ≥ 3.10)
-- ~2 GB RAM for embeddings (CPU); GPU optional
-- Tesseract is optional (only needed for scanned PDFs)
+- ~2 GB RAM for embeddings; ~1 GB extra for Docling models on first parse
 - `antiword` is optional (only needed for legacy `.doc` files)
+- OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install required
 
 ## Quickstart
 
@@ -78,16 +78,12 @@ Designed for standards, specs, manuals, and research documents.
 
 ## License
 
-`doc-rag` is licensed under **GNU Affero General Public License v3.0
-or later (AGPL-3.0-or-later)** — see [LICENSE](LICENSE).
-
-If you run a modified copy of `doc-rag` as a network service, the AGPL
-requires you to make the modified source available to your users. If
-that conflicts with your intended use, please reach out before forking.
+`doc-rag` is licensed under the **MIT License** — see [LICENSE](LICENSE).
 
 Third-party dependency licenses are summarised in [NOTICE](NOTICE).
-The Docker image and the native installer pull in `PyMuPDF` (also
-AGPL-3.0), which is consistent with the project's own license.
+Releases before v2.0.0 were AGPL-3.0-or-later (because the default PDF
+backend was PyMuPDF); v2.0 switched to Docling, which is MIT, and
+relicensed the project to match.
 
 ## Contributing
 

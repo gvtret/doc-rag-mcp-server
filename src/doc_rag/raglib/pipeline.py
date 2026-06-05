@@ -12,6 +12,7 @@ import numpy as np
 import yaml
 
 from doc_rag.raglib.audit_log import record_event as _audit
+from doc_rag.raglib.blocks import BLOCKS_SCHEMA_VERSION, Block, dump_blocks
 from doc_rag.raglib.edition_year import resolve_edition_year
 from doc_rag.raglib.indexer import ensure_faiss_index
 from doc_rag.raglib.parsers import parse_document
@@ -163,11 +164,39 @@ def _manifest_shell(cfg: dict[str, Any], documents: list[dict]) -> dict[str, Any
         pv = "1.4.0"
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
+        "blocks_schema_version": BLOCKS_SCHEMA_VERSION,
         "generated_at_utc": _utc_now_iso(),
         "pipeline_version": pv.strip(),
         "corpus_content_sha256": compute_corpus_fingerprint(documents),
         "documents": documents,
     }
+
+
+def _blocks_dir(cfg: dict[str, Any]) -> str:
+    """Absolute path to `build/blocks/` (default), where one
+    `<doc_id>.jsonl` is written per document.
+    """
+    root = cfg["_root"]
+    rel = cfg.get("paths", {}).get("blocks_dir", "build/blocks")
+    return os.path.join(root, rel)
+
+
+def _persist_blocks(blocks_dir: str, root: str, doc_id: str, blocks: list[Block]) -> str:
+    """Save blocks for one document and return the manifest-style relative
+    path (`build/blocks/<doc_id>.jsonl`).
+
+    Block IDs coming from `parse_document` use the placeholder `tmp:NNNN`
+    prefix because the parser does not yet know the eventual `doc_id`.
+    Here we rewrite them in place to the canonical `<doc_id>:NNNN` form
+    so the saved file is self-consistent.
+    """
+    os.makedirs(blocks_dir, exist_ok=True)
+    out_path = os.path.join(blocks_dir, f"{doc_id}.jsonl")
+    for i, b in enumerate(blocks):
+        b.block_id = f"{doc_id}:{i:04d}"
+        b.doc_id = doc_id
+    dump_blocks(out_path, blocks)
+    return os.path.relpath(out_path, root)
 
 
 class ManifestSchemaTooNew(RuntimeError):
@@ -307,10 +336,13 @@ def _ingest_sources(
 
             parsed = parse_document(cfg, src)
             md_text = parsed["markdown"]
+            blocks = parsed.get("blocks") or []
 
             md_path = os.path.join(docs_md, f"{doc_id}.md")
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(md_text)
+
+            blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
             chunks = _chunk_text(md_text, chunk_target, chunk_overlap)
             for idx, c in enumerate(chunks):
@@ -329,6 +361,7 @@ def _ingest_sources(
                     "doc_id": doc_id,
                     "source_file": rel_src,
                     "md_path": os.path.relpath(md_path, root),
+                    "blocks_path": blocks_rel,
                     "sha256": file_hash,
                     "chunk_count": len(chunks),
                     "title_hint": os.path.splitext(base)[0],
@@ -470,10 +503,13 @@ def ingest(config_path: str) -> None:
 
                     parsed = parse_document(cfg, src)
                     md_text = parsed["markdown"]
+                    blocks = parsed.get("blocks") or []
 
                     md_path = os.path.join(docs_md, f"{doc_id}.md")
                     with open(md_path, "w", encoding="utf-8") as f:
                         f.write(md_text)
+
+                    blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
                     chunks = _chunk_text(md_text, target, overlap)
                     for idx, c in enumerate(chunks):
@@ -498,6 +534,7 @@ def ingest(config_path: str) -> None:
                         "doc_id": doc_id,
                         "source_file": rel_src,
                         "md_path": os.path.relpath(md_path, root),
+                        "blocks_path": blocks_rel,
                         "sha256": file_hash,
                         "chunk_count": len(chunks),
                         "title_hint": os.path.splitext(base)[0],
@@ -778,6 +815,25 @@ def delete_documents(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
                     os.remove(md_abs)
                 except OSError as e:
                     _log("WARN", f"failed to remove md '{md_rel}': {e}")
+        # v1.5: also drop the per-document blocks file. Both the
+        # manifest-recorded path and the conventional
+        # `build/blocks/<doc_id>.jsonl` are tried so older manifests
+        # without `blocks_path` still get their stragglers cleaned.
+        candidates = set()
+        bl_rel = d.get("blocks_path") or ""
+        if bl_rel:
+            candidates.add(bl_rel)
+        did = d.get("doc_id") or ""
+        if did:
+            blocks_dir_rel = cfg.get("paths", {}).get("blocks_dir", "build/blocks")
+            candidates.add(os.path.join(blocks_dir_rel, f"{did}.jsonl"))
+        for cand in candidates:
+            cand_abs = os.path.join(root, cand)
+            if os.path.isfile(cand_abs):
+                try:
+                    os.remove(cand_abs)
+                except OSError as e:
+                    _log("WARN", f"failed to remove blocks '{cand}': {e}")
 
     removed_chunks = 0
     if os.path.exists(chunks_path):
@@ -848,6 +904,7 @@ def wipe_index(config_path: str) -> dict[str, Any]:
         os.path.join(root, paths["docs_md_dir"]),
         os.path.join(root, paths["chunks_dir"]),
         os.path.join(root, paths["index_dir"]),
+        os.path.join(root, paths.get("blocks_dir", "build/blocks")),
     ]
     removed = 0
     for d in targets:
@@ -915,6 +972,20 @@ def clean_orphans(config_path: str) -> dict[str, Any]:
                 except OSError as e:
                     _log("WARN", f"clean_orphans: cannot remove {fn}: {e}")
 
+    orphan_blocks = 0
+    blocks_dir = os.path.join(root, paths.get("blocks_dir", "build/blocks"))
+    if os.path.isdir(blocks_dir):
+        for fn in os.listdir(blocks_dir):
+            if not fn.endswith(".jsonl"):
+                continue
+            doc_id = fn[:-6]
+            if doc_id not in known_ids:
+                try:
+                    os.remove(os.path.join(blocks_dir, fn))
+                    orphan_blocks += 1
+                except OSError as e:
+                    _log("WARN", f"clean_orphans: cannot remove blocks {fn}: {e}")
+
     chunks_path = os.path.join(root, paths["chunks_dir"], "chunks.jsonl")
     orphan_chunks = 0
     orphan_doc_ids: set = set()
@@ -946,7 +1017,8 @@ def clean_orphans(config_path: str) -> dict[str, Any]:
 
     _log(
         "INFO",
-        f"clean_orphans: removed {orphan_md} md, {orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)",
+        f"clean_orphans: removed {orphan_md} md, {orphan_blocks} blocks, "
+        f"{orphan_chunks} chunk(s), {index_stats['removed_vectors']} vector(s)",
     )
     _audit(
         root,
@@ -954,12 +1026,14 @@ def clean_orphans(config_path: str) -> dict[str, Any]:
         doc_ids=sorted(orphan_doc_ids) if orphan_doc_ids else None,
         counts={
             "orphan_md_removed": orphan_md,
+            "orphan_blocks_removed": orphan_blocks,
             "orphan_chunks_removed": orphan_chunks,
             "removed_vectors": index_stats.get("removed_vectors", 0),
         },
     )
     return {
         "orphan_md_removed": orphan_md,
+        "orphan_blocks_removed": orphan_blocks,
         "orphan_chunks_removed": orphan_chunks,
         "orphan_doc_ids": sorted(orphan_doc_ids),
         "index": index_stats,

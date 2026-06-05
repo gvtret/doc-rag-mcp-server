@@ -86,25 +86,30 @@ Both `docker/Dockerfile` and `scripts/install_server_native.sh` install `antiwor
 automatically. If the file is very small, antiword may complain about "text stream
 too small to handle" — that's a parser quirk, not a system issue.
 
-## OCR not working
+## OCR not working on scanned PDFs
 
-Required system packages:
+Since v2.0 OCR is handled by Docling internally via RapidOCR — there is
+no Tesseract install to maintain. If a scanned PDF comes back with no
+text:
 
-```bash
-sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus
-# optional, for formulas (may be missing on some distros):
-sudo apt install tesseract-ocr-equ
-```
+1. **First-run download.** Docling fetches RapidOCR weights on first
+   parse. Check `~/.cache/docling/` exists and is writable by the
+   service user; tail `journalctl -u doc-rag-mcp` for download errors.
+2. **Empty cache after offline restore.** Re-run a PDF parse from a
+   connected host to repopulate `~/.cache/docling/`, then rsync it
+   back.
+3. **Truly empty pages.** RapidOCR returns nothing if a page is blank
+   or all-graphics-no-text. Verify by exporting a page to PNG and
+   running RapidOCR by hand.
 
-Python side: `pip install pytesseract Pillow pymupdf` (the bootstrap installs these when
-`DOC_RAG_BOOTSTRAP_OCR=Y`).
+## "pdf_backend is no longer supported"
 
-Verify:
+You hit `RuntimeError: parsing.pdf_backend='pymupdf' is no longer
+supported.` (or `'pypdf2'`, or `'auto'`-without-Docling). This is the
+v2.0 hard gate: Docling is the only PDF backend.
 
-```bash
-.venv/bin/python -c "import pytesseract, PIL; print('ok')"
-tesseract --version
-```
+Fix: in `config/config.yaml` set `parsing.pdf_backend: docling` (or
+remove the key entirely — `docling` is the default).
 
 ## Duplicate uploads aren't detected
 

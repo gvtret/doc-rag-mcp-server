@@ -23,77 +23,6 @@ def _norm_rel(rel: str) -> str:
     return rel.replace("\\", "/")
 
 
-def _year_from_pdf_date_string(s: Any) -> int | None:
-    if not isinstance(s, str):
-        return None
-    t = s.strip()
-    if not t:
-        return None
-    if t.startswith("D:") and len(t) >= 6:
-        try:
-            return int(t[2:6])
-        except ValueError:
-            pass
-    m = re.search(r"(19|20)\d{2}", t)
-    if m:
-        try:
-            y = int(m.group(0))
-            if 1000 <= y <= 9999:
-                return y
-        except ValueError:
-            pass
-    return None
-
-
-def _year_from_pypdf2_metadata(path: str) -> int | None:
-    try:
-        from PyPDF2 import PdfReader
-    except Exception:
-        return None
-    try:
-        r = PdfReader(path)
-        meta = getattr(r, "metadata", None)
-        if meta is None:
-            return None
-        for key in ("/ModDate", "/CreationDate"):
-            raw = None
-            if hasattr(meta, "get"):
-                raw = meta.get(key)
-            if raw is None and hasattr(meta, key):
-                raw = getattr(meta, key, None)
-            y = _year_from_pdf_date_string(str(raw) if raw is not None else None)
-            if y is not None:
-                return y
-    except Exception:
-        return None
-    return None
-
-
-def _year_from_pymupdf_metadata(path: str) -> int | None:
-    try:
-        import fitz  # pymupdf
-    except Exception:
-        return None
-    try:
-        doc = fitz.open(path)
-        meta = doc.metadata or {}
-        doc.close()
-        for k in ("modDate", "creationDate", "date"):
-            y = _year_from_pdf_date_string(meta.get(k))
-            if y is not None:
-                return y
-    except Exception:
-        return None
-    return None
-
-
-def _year_from_pdf_file(path: str) -> int | None:
-    y = _year_from_pymupdf_metadata(path)
-    if y is not None:
-        return y
-    return _year_from_pypdf2_metadata(path)
-
-
 def _year_from_filename(basename: str, pattern: str | None) -> int | None:
     if not pattern or not isinstance(pattern, str) or not pattern.strip():
         return None
@@ -117,7 +46,13 @@ def resolve_edition_year(
     rel_path: str,
     sha256_hex: str,
 ) -> int | None:
-    """Приоритет: by_basename → by_source_rel_path → by_sha256 → PDF metadata → filename_regex."""
+    """Приоритет: by_basename → by_source_rel_path → by_sha256 → filename_regex.
+
+    Note: до v2.0 был ещё уровень «авточтение PDF metadata через PyMuPDF/PyPDF2».
+    В v2.0 PyMuPDF и PyPDF2 убраны из зависимостей. Если нужен автогод
+    для PDF — задайте его явно в `parsing.edition_year.by_basename` /
+    `by_sha256` / `by_source_rel_path` или используйте `filename_regex`.
+    """
     ey = (cfg.get("parsing", {}) or {}).get("edition_year")
     if not isinstance(ey, dict):
         ey = {}
@@ -147,14 +82,6 @@ def resolve_edition_year(
                 y = _coerce_year(v)
                 if y is not None:
                     return y
-
-    use_meta = ey.get("from_pdf_metadata")
-    if use_meta is None:
-        use_meta = True
-    if use_meta and abs_path.lower().endswith(".pdf"):
-        y = _year_from_pdf_file(abs_path)
-        if y is not None:
-            return y
 
     pat = ey.get("filename_regex")
     if isinstance(pat, str) and pat.strip():
