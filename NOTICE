@@ -29,6 +29,8 @@ Required runtime dependencies
   PyPDF2              — BSD-3-Clause
                         https://github.com/py-pdf/PyPDF2
                         (Successor: pypdf, same license)
+  filetype            — MIT
+                        https://github.com/h2non/filetype.py
   python-docx         — MIT
                         https://github.com/python-openxml/python-docx
   tqdm                — MPL-2.0 AND MIT

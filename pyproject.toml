@@ -29,6 +29,7 @@ dependencies = [
   "numpy>=1.26",
   "tqdm>=4.66",
   "PyPDF2>=3.0.1",
+  "filetype>=1.2",  # magic-bytes content sniffing (v1.5+)
 ]
 [project.optional-dependencies]
 # For remote MCP server over HTTP (FastAPI/Uvicorn)

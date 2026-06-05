@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from doc_rag.raglib.blocks import Block, blocks_to_markdown
+from doc_rag.raglib.filetype_detect import detect_supported_extension
 
 _BACKEND_BY_EXT: dict[str, str] = {
     ".pdf": "pymupdf",  # may be overridden to "pypdf2" by the pdf_backend branch
@@ -538,8 +539,16 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     extract_stats: dict[str, Any] = {}
     ocr_summary: dict[str, Any] = _empty_ocr_summary()
 
+    # v1.5: route by magic bytes, not by filename extension. Falls back
+    # to the filename extension for plain-text formats (`.md`, `.txt`)
+    # that have no magic bytes; raises if the file is neither a
+    # recognised format nor extension-named as one.
+    effective_ext = detect_supported_extension(path)
+    if effective_ext is None:
+        raise RuntimeError(f"Unsupported file type: {path}")
+
     source_backend = ""
-    if path.lower().endswith(".pdf"):
+    if effective_ext == ".pdf":
         backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
         max_pages = _max_int(cfg, "max_pdf_pages", 2000)
         if _ocr_enabled(cfg) and backend == "pypdf2":
@@ -575,32 +584,37 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         else:
             raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
-    elif path.lower().endswith(".docx"):
+    elif effective_ext == ".docx":
         max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
         text, extract_stats = _parse_docx(path, max_paragraphs=max_paragraphs)
         source_backend = "python-docx"
-    elif path.lower().endswith(".doc"):
+    elif effective_ext == ".doc":
         text, extract_stats = _parse_doc(path)
         # antiword is the preferred backend; _parse_doc itself falls back
         # to catdoc when antiword is unavailable. The distinction is not
         # propagated up here; the doc-only label is good enough.
         source_backend = "antiword"
-    elif path.lower().endswith(".md"):
+    elif effective_ext == ".md":
         text, extract_stats = _parse_md(path)
         source_backend = "direct"
-    elif path.lower().endswith(".txt"):
+    elif effective_ext == ".txt":
         text, extract_stats = _parse_txt(path)
         source_backend = "direct"
     else:
+        # Defensive: detect_supported_extension only returns one of the
+        # five we already handle above, but keep an explicit failure
+        # message in case the supported list ever drifts.
         raise RuntimeError(f"Unsupported file type: {path}")
 
     text_before_norm = text
     # Minimal normalization. Skip blank-line removal for .md/.txt where
-    # blank lines are semantic (paragraph separators) rather than extraction artifacts.
-    ext_lower = os.path.splitext(path.lower())[1]
+    # blank lines are semantic (paragraph separators) rather than
+    # extraction artifacts. Use the content-resolved extension, not the
+    # filename, so a misnamed `.txt` that is really a PDF still gets the
+    # blank-line stripping that PDF text extraction needs.
     if cfg.get("parsing", {}).get("normalize_whitespace", True):
         text = "\n".join([line.rstrip() for line in text.splitlines()])
-        if ext_lower not in (".md", ".txt"):
+        if effective_ext not in (".md", ".txt"):
             text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
 
     # v1.5: blocks are now the source of truth; markdown is derived from
@@ -617,7 +631,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     native["after_normalize"] = {"chars": text_chars_after_norm}
     native["markdown"] = {"chars": len(md)}
 
-    is_pdf = path.lower().endswith(".pdf")
+    is_pdf = effective_ext == ".pdf"
     ocr_block: dict[str, Any]
     if is_pdf:
         ocr_block = _build_ocr_stats_block(cfg, ocr_summary)

@@ -169,6 +169,27 @@ def test_parse_document_empty_input_yields_zero_blocks(make_txt):
     assert result["blocks"] == []
 
 
+def test_parse_document_routes_misnamed_docx_by_content(tmp_path: Path):
+    """v1.5: a .docx renamed to .pdf must be parsed via python-docx,
+    not by the PDF parser. This is the canonical magic-bytes case."""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "sample.docx"
+    if not fixture.exists():
+        pytest.skip("sample.docx fixture missing")
+
+    # Drop a DOCX into tmp_path under a misleading `.pdf` filename.
+    misnamed = tmp_path / "report.pdf"
+    misnamed.write_bytes(fixture.read_bytes())
+
+    result = parse_document(_MIN_CFG, str(misnamed))
+
+    # The sample.docx is a known fixture containing "АВ-12" and a
+    # registration code (see fixture invariants block below). If we had
+    # routed this through the PDF parser, we'd get noise or an error
+    # rather than the document's real text.
+    assert "АВ-12" in result["markdown"]
+    assert result["blocks"][0].source_backend == "python-docx"
+
+
 # --------------------------------------------------------------------------
 # Bundled rich-document fixture
 #
