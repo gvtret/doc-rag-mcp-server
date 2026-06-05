@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from doc_rag.raglib.blocks import Block
 from doc_rag.raglib.parsers import parse_document
 
 _MIN_CFG: dict[str, Any] = {
@@ -84,6 +85,88 @@ def test_parse_unsupported_extension_raises(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="Unsupported"):
         parse_document(_MIN_CFG, str(bad))
+
+
+# --------------------------------------------------------------------------
+# v1.5 — parse_document also returns a `blocks` list
+# --------------------------------------------------------------------------
+
+
+def _expected_backend(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".pdf": "pymupdf",  # default in tests via _MIN_CFG: pdf_backend=auto + fitz present
+        ".docx": "python-docx",
+        ".doc": "antiword",
+        ".md": "direct",
+        ".txt": "direct",
+    }[suffix]
+
+
+def test_parse_document_includes_blocks_for_md(make_md):
+    src = make_md("notes.md", "alpha\n\nbeta\n")
+    result = parse_document(_MIN_CFG, str(src))
+
+    assert "blocks" in result, "parse_document must expose a blocks key (v1.5)"
+    blocks: list[Block] = result["blocks"]
+    assert all(isinstance(b, Block) for b in blocks)
+    assert len(blocks) == 1
+    only = blocks[0]
+    assert only.type == "paragraph"
+    assert only.source_backend == _expected_backend(src)
+    # The baseline block carries the same text the markdown derivation uses,
+    # so structure-aware downstream code in v1.9 can be migrated incrementally.
+    assert "alpha" in only.text
+    assert "beta" in only.text
+
+
+def test_parse_document_includes_blocks_for_txt(make_txt):
+    src = make_txt("notes.txt", "first\n\nsecond\n")
+    result = parse_document(_MIN_CFG, str(src))
+
+    blocks: list[Block] = result["blocks"]
+    assert len(blocks) == 1
+    assert blocks[0].source_backend == "direct"
+    assert "first" in blocks[0].text
+    assert "second" in blocks[0].text
+
+
+def test_parse_document_includes_blocks_for_docx(make_docx):
+    src = make_docx("note.docx", ["Lead paragraph.", "Follow-up paragraph."])
+    result = parse_document(_MIN_CFG, str(src))
+
+    blocks: list[Block] = result["blocks"]
+    assert len(blocks) == 1
+    assert blocks[0].source_backend == "python-docx"
+    assert "Lead paragraph." in blocks[0].text
+
+
+def test_parse_document_blocks_use_tmp_block_id_prefix(make_md):
+    """Until the pipeline assigns a real doc_id, parsers emit `tmp:NNNN`."""
+    src = make_md("any.md", "content\n")
+    result = parse_document(_MIN_CFG, str(src))
+
+    blocks: list[Block] = result["blocks"]
+    assert blocks[0].block_id.startswith("tmp:")
+    assert blocks[0].doc_id == "tmp"
+
+
+def test_parse_document_blocks_text_matches_markdown_body(make_md):
+    """Markdown derivation in #54 will route via blocks; assert today's
+    raw equivalence so the future refactor cannot silently drift."""
+    body = "alpha line\n\nbeta line"
+    src = make_md("eq.md", body)
+    result = parse_document(_MIN_CFG, str(src))
+
+    md_body = result["markdown"].split("\n\n", 1)[1].rstrip("\n")
+    blocks_text = result["blocks"][0].text
+    assert blocks_text == md_body
+
+
+def test_parse_document_empty_input_yields_zero_blocks(make_txt):
+    src = make_txt("blank.txt", "")
+    result = parse_document(_MIN_CFG, str(src))
+    assert result["blocks"] == []
 
 
 # --------------------------------------------------------------------------

@@ -3,6 +3,39 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from doc_rag.raglib.blocks import Block
+
+_BACKEND_BY_EXT: dict[str, str] = {
+    ".pdf": "pymupdf",  # may be overridden to "pypdf2" by the pdf_backend branch
+    ".docx": "python-docx",
+    ".doc": "antiword",
+    ".md": "direct",
+    ".txt": "direct",
+}
+
+
+def _baseline_blocks(text: str, source_backend: str) -> list[Block]:
+    """Emit one paragraph block containing the document's full text.
+
+    This is the v1.5 baseline. Block IDs are sequence-numbered without
+    the doc_id prefix (`tmp:0000`); the pipeline rewrites them at save
+    time. Backends that can produce structured blocks (Docling, future
+    structure-aware PyMuPDF path) replace this with multiple typed
+    blocks; consumers see no behavioural difference at the markdown /
+    chunks layer until v1.7 / v1.9 start consuming structure.
+    """
+    if not text.strip():
+        return []
+    return [
+        Block(
+            block_id="tmp:0000",
+            doc_id="tmp",
+            type="paragraph",
+            text=text,
+            source_backend=source_backend,
+        )
+    ]
+
 
 def _max_int(cfg: dict[str, Any], key: str, default: int) -> int:
     try:
@@ -505,6 +538,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     extract_stats: dict[str, Any] = {}
     ocr_summary: dict[str, Any] = _empty_ocr_summary()
 
+    source_backend = ""
     if path.lower().endswith(".pdf"):
         backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
         max_pages = _max_int(cfg, "max_pdf_pages", 2000)
@@ -517,6 +551,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         if backend == "pypdf2":
             text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
             ocr_summary = _empty_ocr_summary()
+            source_backend = "pypdf2"
         elif backend in ("pymupdf", "auto"):
             try:
                 import fitz  # noqa: F401
@@ -531,22 +566,31 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
                     ) from None
                 text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
                 ocr_summary = _empty_ocr_summary()
+                source_backend = "pypdf2"
             else:
                 text, raw_stats, ocr_summary = _pdf_fitz_extract_with_ocr(
                     cfg, path, max_pages=max_pages
                 )
+                source_backend = "pymupdf"
         else:
             raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif path.lower().endswith(".docx"):
         max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
         text, extract_stats = _parse_docx(path, max_paragraphs=max_paragraphs)
+        source_backend = "python-docx"
     elif path.lower().endswith(".doc"):
         text, extract_stats = _parse_doc(path)
+        # antiword is the preferred backend; _parse_doc itself falls back
+        # to catdoc when antiword is unavailable. The distinction is not
+        # propagated up here; the doc-only label is good enough.
+        source_backend = "antiword"
     elif path.lower().endswith(".md"):
         text, extract_stats = _parse_md(path)
+        source_backend = "direct"
     elif path.lower().endswith(".txt"):
         text, extract_stats = _parse_txt(path)
+        source_backend = "direct"
     else:
         raise RuntimeError(f"Unsupported file type: {path}")
 
@@ -584,4 +628,12 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         "ocr": ocr_block,
         "native_text_extraction": native,
     }
-    return {"markdown": md, "tables": tables, "stats": stats}
+
+    # v1.5: emit blocks alongside the existing markdown. Block IDs use a
+    # `tmp:` prefix; the pipeline rewrites them with the real doc_id when
+    # it saves `build/blocks/<doc_id>.jsonl`. Until task #54 wires
+    # downstream consumers to read blocks, the markdown / chunks paths are
+    # unchanged byte-for-byte.
+    blocks = _baseline_blocks(text.strip(), source_backend)
+
+    return {"markdown": md, "tables": tables, "stats": stats, "blocks": blocks}
