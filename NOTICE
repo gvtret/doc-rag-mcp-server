@@ -62,6 +62,12 @@ Optional extras
     faiss-cpu          — MIT
                          https://github.com/facebookresearch/faiss
 
+  [docling]
+    docling            — MIT
+                         https://github.com/DS4SD/docling
+                         (IBM Research; bundles TableFormer, DocLayout-YOLO,
+                          RapidOCR — see upstream for full dependency tree)
+
   [metrics]
     prometheus-client  — Apache-2.0
                          https://github.com/prometheus/client_python

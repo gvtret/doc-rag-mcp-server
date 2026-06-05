@@ -56,6 +56,15 @@ faiss = [
   "faiss-cpu>=1.8.0",
 ]
 
+# Docling — IBM Research's structure-aware document parser (v1.5+).
+# Optional second PDF/DOCX backend with TableFormer-based table
+# extraction, formula recognition, and multi-column layout analysis.
+# Adds ~600 MB of dependencies plus ~300 MB of ML models on first use.
+# Activate with `pdf_backend: docling` in config/config.yaml.
+docling = [
+  "docling>=2.0",
+]
+
 # Embeddings (optional) - CPU-safe default. GPU is installed manually by the user.
 embeddings = [
   "sentence-transformers>=2.7.0",

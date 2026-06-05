@@ -548,6 +548,10 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         raise RuntimeError(f"Unsupported file type: {path}")
 
     source_backend = ""
+    # v1.5: backends that produce structured blocks (Docling) provide them
+    # directly instead of going through `_baseline_blocks`. Leaving this
+    # `None` means the legacy text→one-paragraph path applies.
+    backend_blocks: list[Block] | None = None
     if effective_ext == ".pdf":
         backend = cfg.get("parsing", {}).get("pdf_backend", "auto")
         max_pages = _max_int(cfg, "max_pdf_pages", 2000)
@@ -557,7 +561,13 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
             )
 
         raw_stats: dict[str, Any] = {}
-        if backend == "pypdf2":
+        if backend == "docling":
+            from doc_rag.raglib.docling_backend import parse_pdf_docling
+
+            text, backend_blocks, raw_stats = parse_pdf_docling(path)
+            ocr_summary = _empty_ocr_summary()
+            source_backend = "docling"
+        elif backend == "pypdf2":
             text, raw_stats = _parse_pdf_pypdf2(path, max_pages=max_pages)
             ocr_summary = _empty_ocr_summary()
             source_backend = "pypdf2"
@@ -585,9 +595,16 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
             raise RuntimeError(f"Unknown pdf_backend: {backend!r}")
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif effective_ext == ".docx":
-        max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
-        text, extract_stats = _parse_docx(path, max_paragraphs=max_paragraphs)
-        source_backend = "python-docx"
+        docx_backend = cfg.get("parsing", {}).get("docx_backend", "python-docx")
+        if docx_backend == "docling":
+            from doc_rag.raglib.docling_backend import parse_pdf_docling
+
+            text, backend_blocks, extract_stats = parse_pdf_docling(path)
+            source_backend = "docling"
+        else:
+            max_paragraphs = _max_int(cfg, "max_docx_paragraphs", 20000)
+            text, extract_stats = _parse_docx(path, max_paragraphs=max_paragraphs)
+            source_backend = "python-docx"
     elif effective_ext == ".doc":
         text, extract_stats = _parse_doc(path)
         # antiword is the preferred backend; _parse_doc itself falls back
@@ -617,11 +634,14 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         if effective_ext not in (".md", ".txt"):
             text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
 
-    # v1.5: blocks are now the source of truth; markdown is derived from
-    # them. For the v1.5 baseline (each parser emits one paragraph block)
-    # the result is byte-identical to the legacy
-    # `f"# {basename}\n\n{text.strip()}\n"`.
-    blocks = _baseline_blocks(text.strip(), source_backend)
+    # v1.5: blocks are the source of truth. Structured backends (Docling)
+    # supply their own typed blocks; baseline backends fall back to a
+    # single paragraph block, which keeps the legacy markdown byte-
+    # identical (`f"# {basename}\n\n{text}\n"`).
+    if backend_blocks is not None:
+        blocks = backend_blocks
+    else:
+        blocks = _baseline_blocks(text.strip(), source_backend)
     md = blocks_to_markdown(blocks, os.path.basename(path))
     text_chars_after_norm = len(text.strip())
     before_norm_chars = len(text_before_norm.strip()) if text_before_norm else 0
