@@ -231,3 +231,71 @@ def iter_blocks(path: Path | str) -> Iterator[Block]:
                 continue
             data = json.loads(line)
             yield Block.from_jsonl_dict(data)
+
+
+def blocks_to_markdown(blocks: Iterable[Block], title: str) -> str:
+    """Derive a Markdown rendering from a Block list.
+
+    Output shape:
+
+        # {title}
+        ⏎
+        {block-1 text}
+        ⏎
+        {block-2 text}
+        ...
+
+    Mapping by block type:
+
+      - `heading`  → `## ` / `### ` / ... according to `level` (offset by
+                     1 because the document title already occupies H1).
+      - `paragraph`, `quote`, `code`, `formula`, `other` → text as-is.
+      - `list_item` → prefixed with `- ` (we cannot reliably tell ordered
+                      vs. unordered without more metadata; v1.7+ may
+                      refine this).
+      - `table` → the block's `text` field is already a human-readable
+                  rendering produced by the parser; we keep it verbatim.
+      - `figure` → caption (the block's text), if any.
+
+    For the v1.5 baseline where every parser emits a single
+    `paragraph` block carrying the full document body, the result is
+    `f"# {title}\\n\\n{text}\\n"` — byte-identical to the markdown the
+    pre-v1.5 path produced.
+    """
+    lines: list[str] = [f"# {title}", ""]
+    blocks = list(blocks)
+    for i, b in enumerate(blocks):
+        rendered = _render_block(b)
+        if rendered is None:
+            continue
+        lines.append(rendered)
+        # Blank line between blocks, but not after the very last one
+        # (the trailing newline is added when joining).
+        if i < len(blocks) - 1:
+            lines.append("")
+    body = "\n".join(lines).rstrip("\n")
+    return body + "\n"
+
+
+def _render_block(b: Block) -> str | None:
+    """Render a single block into its Markdown form, or None to skip.
+
+    Centralised here so the policy is easy to evolve as the type set
+    grows. Tested via `blocks_to_markdown` round-trip tests.
+    """
+    if b.type == "heading":
+        level = max(1, b.level or 1)
+        hashes = "#" * min(6, level + 1)  # +1 because doc title is H1
+        return f"{hashes} {b.text}"
+    if b.type == "list_item":
+        depth = b.level or 0
+        indent = "  " * max(0, depth)
+        return f"{indent}- {b.text}"
+    if b.type == "table":
+        return b.text  # parser already rendered to human-readable form
+    if b.type in ("paragraph", "quote", "code", "formula", "other"):
+        return b.text
+    if b.type == "figure":
+        caption = b.text.strip()
+        return f"![{caption}]()" if caption else None
+    return b.text  # forward-compat: unknown type → pass through

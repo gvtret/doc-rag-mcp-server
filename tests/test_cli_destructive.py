@@ -27,6 +27,58 @@ from doc_rag.raglib.pipeline import (
 # --------------------------------------------------------------------------
 
 
+def test_delete_documents_also_removes_blocks_file(built_corpus):
+    """v1.5: delete must clean up build/blocks/<doc_id>.jsonl as well."""
+    from doc_rag.raglib.pipeline import delete_documents
+
+    root, doc_ids = built_corpus
+    config_path = str(root / "config" / "config.yaml")
+
+    # Plant a blocks file for one of the docs (the built_corpus fixture
+    # predates v1.5 and does not write blocks).
+    blocks_dir = root / "build" / "blocks"
+    blocks_dir.mkdir(parents=True, exist_ok=True)
+    target = blocks_dir / f"{doc_ids[0]}.jsonl"
+    target.write_text(
+        '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
+        '"text":"y","source_backend":"pymupdf"}\n',
+        encoding="utf-8",
+    )
+    survivor = blocks_dir / f"{doc_ids[1]}.jsonl"
+    survivor.write_text(
+        '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
+        '"text":"z","source_backend":"pymupdf"}\n',
+        encoding="utf-8",
+    )
+
+    delete_documents(config_path, [doc_ids[0]])
+
+    assert not target.exists(), "deleted doc's blocks file should be gone"
+    assert survivor.exists(), "untouched doc's blocks file must survive"
+
+
+def test_clean_orphans_removes_orphan_blocks(built_corpus):
+    """clean_orphans should sweep build/blocks/<unknown>.jsonl too."""
+    from doc_rag.raglib.pipeline import clean_orphans
+
+    root, _ = built_corpus
+    config_path = str(root / "config" / "config.yaml")
+
+    blocks_dir = root / "build" / "blocks"
+    blocks_dir.mkdir(parents=True, exist_ok=True)
+    orphan = blocks_dir / "ghost-doc.jsonl"
+    orphan.write_text(
+        '{"block_id":"x:0","doc_id":"x","type":"paragraph",'
+        '"text":"y","source_backend":"pymupdf"}\n',
+        encoding="utf-8",
+    )
+
+    result = clean_orphans(config_path)
+
+    assert result["orphan_blocks_removed"] == 1
+    assert not orphan.exists()
+
+
 def test_delete_documents_removes_manifest_and_prunes_index(built_corpus):
     root, doc_ids = built_corpus
     config_path = str(root / "config" / "config.yaml")

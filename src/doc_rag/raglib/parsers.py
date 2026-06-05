@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from doc_rag.raglib.blocks import Block
+from doc_rag.raglib.blocks import Block, blocks_to_markdown
 
 _BACKEND_BY_EXT: dict[str, str] = {
     ".pdf": "pymupdf",  # may be overridden to "pypdf2" by the pdf_backend branch
@@ -603,7 +603,12 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         if ext_lower not in (".md", ".txt"):
             text = "\n".join([line for line in text.splitlines() if line.strip() != ""])
 
-    md = f"# {os.path.basename(path)}\n\n" + (text.strip() + "\n")
+    # v1.5: blocks are now the source of truth; markdown is derived from
+    # them. For the v1.5 baseline (each parser emits one paragraph block)
+    # the result is byte-identical to the legacy
+    # `f"# {basename}\n\n{text.strip()}\n"`.
+    blocks = _baseline_blocks(text.strip(), source_backend)
+    md = blocks_to_markdown(blocks, os.path.basename(path))
     text_chars_after_norm = len(text.strip())
     before_norm_chars = len(text_before_norm.strip()) if text_before_norm else 0
 
@@ -628,12 +633,5 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         "ocr": ocr_block,
         "native_text_extraction": native,
     }
-
-    # v1.5: emit blocks alongside the existing markdown. Block IDs use a
-    # `tmp:` prefix; the pipeline rewrites them with the real doc_id when
-    # it saves `build/blocks/<doc_id>.jsonl`. Until task #54 wires
-    # downstream consumers to read blocks, the markdown / chunks paths are
-    # unchanged byte-for-byte.
-    blocks = _baseline_blocks(text.strip(), source_backend)
 
     return {"markdown": md, "tables": tables, "stats": stats, "blocks": blocks}

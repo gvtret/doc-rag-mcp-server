@@ -11,10 +11,22 @@ from doc_rag.raglib.blocks import (
     BLOCKS_SCHEMA_VERSION,
     Block,
     BlocksSchemaTooNew,
+    blocks_to_markdown,
     dump_blocks,
     iter_blocks,
     load_blocks,
 )
+
+
+def _para(text: str, idx: int = 0) -> Block:
+    return Block(
+        block_id=f"tmp:{idx:04d}",
+        doc_id="tmp",
+        type="paragraph",
+        text=text,
+        source_backend="pymupdf",
+    )
+
 
 # --------------------------------------------------------------------------
 # Block construction / validation
@@ -271,6 +283,86 @@ def test_load_blocks_accepts_current_version(tmp_path: Path):
     )
     out = load_blocks(p, schema_version=BLOCKS_SCHEMA_VERSION)
     assert len(out) == 1
+
+
+# --------------------------------------------------------------------------
+# Markdown derivation
+# --------------------------------------------------------------------------
+
+
+def test_blocks_to_markdown_baseline_single_paragraph():
+    """The v1.5 baseline (one paragraph for the whole document) must
+    produce byte-identical markdown to what the legacy parser did:
+        `# {title}\n\n{body}\n`
+    """
+    md = blocks_to_markdown([_para("hello world")], "doc.pdf")
+    assert md == "# doc.pdf\n\nhello world\n"
+
+
+def test_blocks_to_markdown_baseline_multiline_paragraph_preserved():
+    body = "line one\nline two\nline three"
+    md = blocks_to_markdown([_para(body)], "x.txt")
+    assert md == "# x.txt\n\nline one\nline two\nline three\n"
+
+
+def test_blocks_to_markdown_no_blocks_yields_title_only():
+    md = blocks_to_markdown([], "empty.txt")
+    assert md == "# empty.txt\n"
+
+
+def test_blocks_to_markdown_headings_offset_by_one():
+    """A v1.5 parser may emit a `heading` block at level 1; the document
+    title already occupies H1, so headings shift by one level down."""
+    blocks = [
+        Block(
+            block_id="tmp:0000",
+            doc_id="tmp",
+            type="heading",
+            text="Section 1",
+            source_backend="python-docx",
+            level=1,
+        ),
+        _para("body of section 1", idx=1),
+    ]
+    md = blocks_to_markdown(blocks, "report.docx")
+    assert md == "# report.docx\n\n## Section 1\n\nbody of section 1\n"
+
+
+def test_blocks_to_markdown_list_items_indented_by_level():
+    blocks = [
+        Block(
+            block_id="tmp:0000",
+            doc_id="tmp",
+            type="list_item",
+            text="top",
+            source_backend="python-docx",
+            level=0,
+        ),
+        Block(
+            block_id="tmp:0001",
+            doc_id="tmp",
+            type="list_item",
+            text="nested",
+            source_backend="python-docx",
+            level=1,
+        ),
+    ]
+    md = blocks_to_markdown(blocks, "list.docx")
+    assert md == "# list.docx\n\n- top\n\n  - nested\n"
+
+
+def test_blocks_to_markdown_table_text_used_verbatim():
+    blocks = [
+        Block(
+            block_id="tmp:0000",
+            doc_id="tmp",
+            type="table",
+            text="A | B\nC | D",
+            source_backend="python-docx",
+        )
+    ]
+    md = blocks_to_markdown(blocks, "t.docx")
+    assert md == "# t.docx\n\nA | B\nC | D\n"
 
 
 def test_load_blocks_refuses_future_version(tmp_path: Path):
