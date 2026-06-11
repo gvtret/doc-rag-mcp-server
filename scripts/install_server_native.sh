@@ -86,13 +86,20 @@ if ! id "${SERVICE_USER}" &>/dev/null; then
 fi
 
 echo "[install] sync project -> ${INSTALL_ROOT} ..."
-# Не пересылаем build/ из репозитория и не удаляем существующий build/ на сервере при --delete
-# (manifest, chunks.jsonl, FAISS остаются между обновлениями кода).
+# `build/` (manifest, chunks.jsonl, FAISS, blocks/) and `sources/`
+# (incoming + archived documents) are data the operator owns — must
+# survive a re-run of this script. We:
+#   - `--exclude` both at the source side so they are never sent;
+#   - `--filter 'protect …/'` so `--delete` cannot remove them on the
+#     destination even if a future rsync version stops respecting
+#     `--exclude` for deletion (belt + suspenders).
 rsync -a --delete \
   --filter 'protect build/' \
+  --filter 'protect sources/' \
   --exclude '.git' \
   --exclude '.venv' \
   --exclude 'build' \
+  --exclude 'sources' \
   "${SRC_ROOT}/" "${INSTALL_ROOT}/"
 
 mkdir -p "${INSTALL_ROOT}/build" "${INSTALL_ROOT}/sources/incoming" "${INSTALL_ROOT}/sources/archived"
