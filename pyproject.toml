@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-rag"
-version = "2.1.0"
+version = "2.1.1"
 description = "Local-first RAG over your engineering documents, with an MCP server for Cursor and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,9 +44,12 @@ server = [
   "python-multipart",
 ]
 
-# Vector index (optional)
+# Vector index (optional). Upper-bound at <1.14 because 1.14.x wheels
+# require AVX/AVX2 and SIGILL on QEMU-virtualised hosts that only
+# expose SSE4.2 (which is exactly the project's deployment target —
+# misc-server is QEMU Virtual CPU). 1.13.x stays compatible.
 faiss = [
-  "faiss-cpu>=1.8.0",
+  "faiss-cpu>=1.8.0,<1.14",
 ]
 
 # Embeddings (optional) - CPU-safe default. GPU is installed manually by the user.
@@ -77,6 +80,20 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "doc_rag" = ["server/mcp_http.json", "server/mcp_cursor_http.json"]
+
+[tool.uv]
+# CPU-only is the project's deployment policy (server is CPU-only;
+# Docker image must not carry CUDA libs). Force torch off the PyTorch
+# CPU index across all platforms; saves ~5 GB of nvidia-* transitives
+# in the lockfile and the runtime image.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
 
 [tool.ruff]
 line-length = 100

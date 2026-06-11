@@ -4,6 +4,32 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.1.1 — 2026-06-11
+
+CI + lockfile patch on top of v2.1.0. Behavioural surface (parsing,
+manifest schema, MCP) unchanged.
+
+### Changed
+- **CI runs on a self-hosted runner.** All three workflows
+  (`tests`, `lint`, `build`) swap `runs-on: ubuntu-latest` →
+  `runs-on: self-hosted`. The `jlumbroso/free-disk-space@main` step
+  in `build.yml` becomes a no-op on a clean self-hosted runner;
+  leaving it in is harmless and defensive.
+- **Torch is locked to the CPU index.** `pyproject.toml` adds a
+  `[tool.uv]` source override pointing `torch` and `torchvision`
+  at `https://download.pytorch.org/whl/cpu`. `uv.lock` regenerated:
+  0 `nvidia-*` packages (down from 10), `torch` resolves to
+  `2.12.0+cpu`, fresh venv drops from ~5 GB to **1.6 GB**. Aligns
+  with the project's CPU-only deployment policy.
+- **`faiss-cpu` capped at `<1.14`.** 1.14.x wheels emit AVX/AVX2
+  ops unconditionally and SIGILL on hosts that only expose SSE4.2
+  (the QEMU-virtualised production server). 1.13.x stays
+  compatible.
+
+### Internal version label
+- `pyproject.version` + the three hardcoded strings in
+  `src/doc_rag/server/mcp_http.py` bump to `2.1.1`.
+
 ## v2.1.0 — 2026-06-11
 
 uv migration. `uv` is now the only officially supported installer for
