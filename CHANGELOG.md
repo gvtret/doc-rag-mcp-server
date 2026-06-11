@@ -4,6 +4,40 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.1.3 — 2026-06-11
+
+Two regression fixes uncovered during the post-uv-migration server
+re-bootstrap. Behavioural surface unchanged (parsing, manifest, MCP).
+
+### Fixed
+- **Semantic search silently degraded to lexical after a fresh uv
+  sync.** `[tool.uv.sources]`'s CPU index override redirected
+  `torch` to the PyTorch CPU index, but `torchvision` — being a
+  transitive dep of `docling-ibm-models` / `rapidocr` — kept resolving
+  from default PyPI. The resulting ABI mismatch
+  (`torch+cpu` vs. `torchvision` default) made
+  `from sentence_transformers import SentenceTransformer` raise
+  `RuntimeError: operator torchvision::nms does not exist`, which
+  `semantic_search`'s catch-all swallowed; `doc_search` fell back to
+  lexical without any visible signal beyond integer-shaped scores
+  in the response. Fix: list `torchvision` directly in the
+  `[embeddings]` extra so the source override applies.
+- **`sentence-transformers` + `transformers` resolution.** uv lock
+  picked `sentence-transformers 5.5.1` + `transformers 5.8.1`; ST
+  5.5.x imports `PreTrainedModel` from a transformers module
+  surface that 5.8 no longer exposes. Pinned to
+  `sentence-transformers<5.5` and `transformers<5.8`.
+- **`scripts/install_server_native.sh` would wipe `sources/`.**
+  The rsync step protected `build/` but not `sources/`; running the
+  script as an upgrade on an existing install (with archived
+  documents) would have deleted them via `--delete`. Fix: add
+  `--exclude 'sources'` + `--filter 'protect sources/'` (mirrors the
+  existing `build/` defence).
+
+### Internal version label
+- `pyproject.version` + the three hardcoded strings in
+  `src/doc_rag/server/mcp_http.py` bump to `2.1.3`.
+
 ## v2.1.2 — 2026-06-11
 
 CI tooling patch on top of v2.1.1. No code, deps, or behavioural

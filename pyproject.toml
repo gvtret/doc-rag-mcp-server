@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-rag"
-version = "2.1.2"
+version = "2.1.3"
 description = "Local-first RAG over your engineering documents, with an MCP server for Cursor and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -52,10 +52,26 @@ faiss = [
   "faiss-cpu>=1.8.0,<1.14",
 ]
 
-# Embeddings (optional) - CPU-safe default. GPU is installed manually by the user.
+# Embeddings (optional).
+#
+# Upper bounds on `sentence-transformers` and `transformers` are
+# load-bearing: ST 5.5.x assumes a `PreTrainedModel` import surface
+# that `transformers>=5.8` no longer provides — the resulting
+# ModuleNotFoundError is swallowed by `semantic_search`'s catch-all
+# and silently degrades doc_search to lexical-only. Pin the pair to
+# the last combination that pip resolved cleanly during the v2.0.x
+# era; raise when a verified-working newer combo is available.
 embeddings = [
-  "sentence-transformers>=2.7.0",
+  "sentence-transformers>=2.7.0,<5.5",
+  "transformers>=4.0,<5.8",
   "torch>=2.0.0",
+  # `torchvision` is a transitive of docling-ibm-models/rapidocr, but
+  # listing it here makes it a direct dep so the CPU-only source
+  # override in `[tool.uv.sources]` applies. Without this, uv pulls
+  # the default-PyPI torchvision wheel whose compiled extensions are
+  # ABI-incompatible with `torch+cpu` — sentence-transformers import
+  # then dies on `RuntimeError: operator torchvision::nms does not exist`.
+  "torchvision>=0.20",
 ]
 
 dev = [
