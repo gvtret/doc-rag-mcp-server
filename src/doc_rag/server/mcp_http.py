@@ -386,7 +386,77 @@ _INGEST_STATE: dict[str, Any] = {
     "last_finished": None,
     "last_ok": None,
     "last_error": None,
+    # Per-document progress derived from pipeline log lines. `current_doc`
+    # is the basename being parsed right now; `docs_done` counts files
+    # finished in this run (ok + skip + failed); `docs_total` is the size
+    # of the input queue once known. `current_doc_started_at` is used by
+    # the ETA calculator in `_ui_status_payload`.
+    "current_doc": None,
+    "docs_done": 0,
+    "docs_total": None,
+    "current_doc_started_at": None,
 }
+
+
+def _reset_progress_state() -> None:
+    _INGEST_STATE["current_doc"] = None
+    _INGEST_STATE["docs_done"] = 0
+    _INGEST_STATE["docs_total"] = None
+    _INGEST_STATE["current_doc_started_at"] = None
+
+
+# Markers from pipeline._log lines we use to derive per-doc progress.
+# Keep these in sync with src/doc_rag/raglib/pipeline.py.
+_RX_FOUND = re.compile(r"\bfound\s+(\d+)\s+file\(s\)")
+_RX_REBUILD_PASS = re.compile(
+    r"\brebuild:\s+(?:archived|incoming(?:\s+ingest)?)\s+pass\s+\((\d+)\s+file\(s\)\)"
+)
+_RX_PARSE = re.compile(r"\bparse:\s+(.+?)\s*$")
+_RX_DONE = re.compile(r"\b(?:ok|skip|failed):\s+(.+?)(?::|\s|$)")
+
+
+def _apply_progress_from_line(line: str) -> None:
+    """Update `_INGEST_STATE` progress fields from a single log line.
+
+    Best-effort: a malformed or unfamiliar line is silently ignored. The
+    parser only ever updates `current_doc` / `docs_done` / `docs_total`
+    / `current_doc_started_at` — never the lifecycle fields owned by
+    `_run_index_job_background`."""
+    if not line:
+        return
+
+    m = _RX_FOUND.search(line)
+    if m:
+        try:
+            n = int(m.group(1))
+        except ValueError:
+            n = None
+        if n is not None:
+            cur = _INGEST_STATE.get("docs_total")
+            # ingest() emits one "found N" line. rebuild() emits one per
+            # pass (archived, incoming); the totals accumulate.
+            if isinstance(cur, int):
+                _INGEST_STATE["docs_total"] = cur + n
+            else:
+                _INGEST_STATE["docs_total"] = n
+        return
+
+    m = _RX_PARSE.search(line)
+    if m:
+        path = m.group(1).strip()
+        _INGEST_STATE["current_doc"] = os.path.basename(path) if path else None
+        _INGEST_STATE["current_doc_started_at"] = time.time()
+        return
+
+    m = _RX_DONE.search(line)
+    if m:
+        try:
+            cur = int(_INGEST_STATE.get("docs_done") or 0)
+        except (TypeError, ValueError):
+            cur = 0
+        _INGEST_STATE["docs_done"] = cur + 1
+        _INGEST_STATE["current_doc"] = None
+        _INGEST_STATE["current_doc_started_at"] = None
 
 
 def _reset_ingest_ui_log_lines() -> None:
@@ -407,6 +477,9 @@ def _append_ingest_ui_line(line: str, *, ansi_strip: bool = True) -> None:
         raw = raw[: lm - 35] + f" … (trimmed from {raw_len} chars)"
     with _INGEST_LOG_LOCK:
         _INGEST_UI_LOG_LINES.append(raw)
+    # Update per-doc progress on the way through. Kept outside the log
+    # lock so a slow regex (it isn't) cannot block log writers.
+    _apply_progress_from_line(raw)
 
 
 def _snapshot_ingest_ui_log_tail() -> list[str]:
@@ -544,6 +617,7 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         if _INGEST_STATE.get("running"):
             return
         _reset_ingest_ui_log_lines()
+        _reset_progress_state()
         _INGEST_STATE["running"] = True
         _INGEST_STATE["job"] = job
         _INGEST_STATE["last_started"] = time.time()
@@ -570,6 +644,7 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         _INGEST_STATE["last_finished"] = time.time()
         _INGEST_STATE["last_ok"] = ok
         _INGEST_STATE["last_error"] = err
+        _reset_progress_state()
         if ok:
             _append_ingest_ui_line(f"[doc-rag][INFO] {job} завершился успешно.", ansi_strip=False)
         elif err:
@@ -706,7 +781,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "2.0.0"},
+            "serverInfo": {"name": "doc-rag", "version": "2.0.1"},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -792,7 +867,7 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="2.0.0")
+app = FastAPI(title="doc-rag MCP HTTP", version="2.0.1")
 
 
 @app.middleware("http")
@@ -915,7 +990,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "2.0.0",
+            "version": "2.0.1",
             "ready": state["ready"],
             "reasons": state["reasons"],
         }
@@ -997,17 +1072,76 @@ async def ui_restart_service(
     return JSONResponse({"ok": True, "message": "Команда перезапуска запущена в фоне."})
 
 
+def _format_eta_seconds(seconds: float) -> str:
+    """Compact human reading of an ETA. Round to keep noise out of the UI."""
+    s = max(0, int(round(seconds)))
+    if s < 60:
+        return f"{s} с"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m} мин {s:02d} с" if s else f"{m} мин"
+    h, m = divmod(m, 60)
+    return f"{h} ч {m:02d} мин" if m else f"{h} ч"
+
+
+def _compute_eta() -> tuple[float | None, str | None]:
+    """Return (eta_seconds, eta_human) for the running job, if estimable."""
+    if not _INGEST_STATE.get("running"):
+        return None, None
+    total = _INGEST_STATE.get("docs_total")
+    done = int(_INGEST_STATE.get("docs_done") or 0)
+    started = _INGEST_STATE.get("last_started")
+    if not isinstance(total, int) or total <= 0 or not isinstance(started, (int, float)):
+        return None, None
+    remaining = total - done
+    if remaining <= 0:
+        return 0.0, _format_eta_seconds(0)
+    # Need at least one completed doc to extrapolate. While the first
+    # doc is parsing we leave ETA unknown rather than guess.
+    if done <= 0:
+        return None, None
+    elapsed = max(0.0, time.time() - float(started))
+    avg = elapsed / float(done)
+    eta = avg * float(remaining)
+    return eta, _format_eta_seconds(eta)
+
+
 def _ui_status_payload() -> dict[str, Any]:
     out = dict(_INGEST_STATE)
     out["log_tail"] = _snapshot_ingest_ui_log_tail()
     out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
     log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
     out["http_log_file"] = log_path if log_path else None
+    eta_s, eta_h = _compute_eta()
+    out["eta_seconds"] = eta_s
+    out["eta_human"] = eta_h
     try:
         out["indexed"] = indexed_catalog()
     except Exception as exc:
         out["indexed"] = {"error": str(exc), "documents": [], "document_count": 0}
     return out
+
+
+def _ocr_badge_html(coverage: Any) -> str:
+    """Inline OCR badge for the document table.
+
+    Returns empty string when OCR did not fire on the document. When it
+    did, returns a small `<span>` with a tooltip listing pages and the
+    mean RapidOCR confidence."""
+    if not isinstance(coverage, dict):
+        return ""
+    ocr = coverage.get("ocr")
+    if not isinstance(ocr, dict) or not ocr.get("applied"):
+        return ""
+    pages_recognized = ocr.get("pages_recognized")
+    confidence = ocr.get("confidence")
+    title_parts: list[str] = ["OCR применился (RapidOCR через Docling)"]
+    if isinstance(pages_recognized, int) and pages_recognized > 0:
+        title_parts.append(f"страниц: {pages_recognized}")
+    if isinstance(confidence, (int, float)):
+        title_parts.append(f"средняя уверенность: {confidence:.2f}")
+    title = " · ".join(title_parts)
+    return f'<span class="ocr-badge" title="{html.escape(title, quote=True)}">OCR</span>'
 
 
 def _indexed_documents_table_rows_html(
@@ -1037,11 +1171,12 @@ def _indexed_documents_table_rows_html(
             str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"),
             quote=False,
         )
+        ocr_badge = _ocr_badge_html(d.get("coverage"))
         rows.append(
             f'<tr data-doc-id="{did_attr}">'
             f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
             f"<td>{i}</td>"
-            f'<td title="{sf}"><button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
+            f'<td title="{sf}">{ocr_badge}<button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
             f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
             f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
             f"</tr>"
@@ -1193,6 +1328,12 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           text-decoration: underline; font: inherit; text-align: left;
         }}
         button.doc-preview-btn:hover {{ color: #1d4ed8; }}
+        .ocr-badge {{
+          display: inline-block; margin-right: 6px; padding: 1px 6px;
+          font-size: 11px; font-weight: 600; line-height: 1.3;
+          color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
+          border-radius: 6px; vertical-align: middle; cursor: help;
+        }}
         .modal-root {{ display: none; position: fixed; inset: 0; z-index: 50; align-items: center; justify-content: center; }}
         .modal-root.is-open {{ display: flex; }}
         .modal-backdrop {{ position: absolute; inset: 0; background: rgba(15, 23, 42, 0.45); }}
@@ -1279,6 +1420,11 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             <button type="submit" id="ui-btn-rebuild" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
           </form>
           <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get("job") or ("busy")) if state.get("running") else "idle"}</code></p>
+          <p class="muted" id="ingest-progress-line" style="display:none">
+            Сейчас: <code id="ingest-current-doc">—</code>
+            <span id="ingest-progress-counts" class="muted"></span>
+            <span id="ingest-eta" class="muted"></span>
+          </p>
           <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get("last_ok")}</code></p>
           <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get("last_error") or "-")}</code></p>
           <p><a href="/ui/status{key_q}">/ui/status</a></p>
@@ -1424,6 +1570,15 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           if (capEl) {{
             capEl.innerHTML = docs.length > maxR ? '<p class="muted">Показаны первые ' + maxR + ' из ' + docs.length + ' документов.</p>' : '';
           }}
+          function ocrBadge(cov) {{
+            if (!cov || !cov.ocr || !cov.ocr.applied) return '';
+            var parts = ['OCR применился (RapidOCR через Docling)'];
+            var pr = cov.ocr.pages_recognized;
+            if (typeof pr === 'number' && pr > 0) parts.push('страниц: ' + pr);
+            var conf = cov.ocr.confidence;
+            if (typeof conf === 'number') parts.push('средняя уверенность: ' + conf.toFixed(2));
+            return '<span class="ocr-badge" title="' + esc(parts.join(' · ')) + '">OCR</span>';
+          }}
           tbEl.innerHTML = slice.map(function (d, i) {{
             var bn = esc(d.basename || '—');
             var sf = esc(d.source_file || '');
@@ -1439,7 +1594,8 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
             var shDisp = sh.length > 16 ? esc(sh.slice(0, 16)) + '…' : esc(sh || '—');
             var chk = didRaw ? '<input type="checkbox" class="row-check" data-doc-id="' + didAttr + '" />' : '';
             var del = didRaw ? '<button type="button" class="row-delete-btn" data-doc-id="' + didAttr + '" data-name="' + esc(d.basename || '') + '" title="Удалить документ">✕</button>' : '';
-            return '<tr data-doc-id="' + didAttr + '"><td>' + chk + '</td><td>' + (i + 1) + '</td><td title="' + sf + '">' + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td><td>' + del + '</td></tr>';
+            var badge = ocrBadge(d.coverage);
+            return '<tr data-doc-id="' + didAttr + '"><td>' + chk + '</td><td>' + (i + 1) + '</td><td title="' + sf + '">' + badge + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td><td>' + del + '</td></tr>';
           }}).join('');
           updateBulkDeleteState();
         }}
@@ -1460,6 +1616,26 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
               var job = j.job || "";
               if (b) b.textContent = j.running ? (job || "busy") : "idle";
               var busy = !!j.running;
+              var prog = document.getElementById("ingest-progress-line");
+              var progCur = document.getElementById("ingest-current-doc");
+              var progCnt = document.getElementById("ingest-progress-counts");
+              var progEta = document.getElementById("ingest-eta");
+              if (prog) {{
+                if (busy) {{
+                  prog.style.display = "";
+                  if (progCur) progCur.textContent = j.current_doc || "(ожидание…)";
+                  if (progCnt) {{
+                    var d = (j.docs_done != null) ? j.docs_done : 0;
+                    var t = (j.docs_total != null) ? j.docs_total : "?";
+                    progCnt.textContent = " · " + d + "/" + t;
+                  }}
+                  if (progEta) {{
+                    progEta.textContent = j.eta_human ? (" · осталось ~" + j.eta_human) : "";
+                  }}
+                }} else {{
+                  prog.style.display = "none";
+                }}
+              }}
               var bu = document.getElementById("ui-btn-upload");
               var bi = document.getElementById("ui-btn-ingest");
               var br = document.getElementById("ui-btn-rebuild");

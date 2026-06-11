@@ -4,6 +4,38 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.0.1 — 2026-06-11
+
+UI quality-of-life patch on top of v2.0.0. No behavioural changes to
+parsing, the manifest schema, or the MCP surface.
+
+### Added
+- **Per-document progress in the Web UI during ingest/rebuild.** While
+  a job runs, the Status panel shows `Сейчас: <basename> · X/Y ·
+  осталось ~<eta>`. ETA is extrapolated from elapsed time after the
+  first document finishes; before that the line stays at the current
+  basename and counter only. Derived from existing pipeline log
+  markers (`parse:`/`ok:`/`skip:`/`failed:`/`found N file(s)`), no
+  new instrumentation in `pipeline.py`.
+- **Per-document OCR-applied indicator.** Each row in the indexed
+  documents table now carries a small `OCR` badge when RapidOCR fired
+  on at least one page; tooltip shows pages count and mean
+  confidence. The signal is read from Docling's
+  `ConversionResult.confidence.pages[i].ocr_score` (non-NaN positive
+  = OCR ran) and propagated through `stats.ocr.applied` /
+  `pages_recognized` / `confidence` into the manifest. New
+  documents ingested under v2.0.1+ are tagged correctly; old entries
+  ingested under v2.0.0 (or earlier) keep showing `applied: False`
+  until they are re-parsed.
+
+### Fixed
+- `stats.ocr` shape was a stub in v2.0.0 — `applied` always reported
+  `false`. v2.0.1 fills it with the real Docling signal.
+
+### Server label
+- `serverInfo.version` in the MCP `initialize` response and the
+  FastAPI app title bump to `2.0.1`.
+
 ## v2.0.0 — 2026-06-05
 
 **Breaking release.** Two coupled changes ship together:
