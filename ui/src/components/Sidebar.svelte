@@ -53,6 +53,10 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    /* Independent scroll so the global footer never gets pushed off
+       by a hypothetical long sidebar. */
+    overflow-y: auto;
+    border-right: 1px solid var(--border-subtle);
   }
   .brand {
     padding: 0 18px 12px;
