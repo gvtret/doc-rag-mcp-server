@@ -781,7 +781,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "2.1.3"},
+            "serverInfo": {"name": "doc-rag", "version": "2.2.0"},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -867,7 +867,39 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="2.1.3")
+app = FastAPI(title="doc-rag MCP HTTP", version="2.2.0")
+
+
+def _mount_ui_next(app: FastAPI) -> None:
+    """Serve the Svelte UI bundle at `/ui-next/` when it's been built.
+
+    v2.2.0 introduces a Svelte + Vite frontend under `ui/`. The build
+    output lives at `ui/dist/`. If that directory exists we mount it;
+    if not (e.g. minimal dev install that skipped `npm run build`),
+    `/ui-next/` returns 404 and the legacy inline `/ui` keeps serving
+    everyone.
+    """
+    from fastapi.staticfiles import StaticFiles
+
+    candidates: list[str] = []
+    # Editable install / dev: walk up from this file to find a sibling `ui/dist`.
+    here = os.path.dirname(os.path.abspath(__file__))
+    for n in range(1, 5):
+        cand = os.path.join(os.path.abspath(os.path.join(here, *([".."] * n))), "ui", "dist")
+        candidates.append(cand)
+    # Production override.
+    env_dir = (os.environ.get("DOC_RAG_UI_DIST") or "").strip()
+    if env_dir:
+        candidates.insert(0, env_dir)
+    for d in candidates:
+        if os.path.isdir(d) and os.path.isfile(os.path.join(d, "index.html")):
+            # `html=True` makes StaticFiles fall back to index.html for
+            # unknown paths, which is what SPAs want for client-side routing.
+            app.mount("/ui-next", StaticFiles(directory=d, html=True), name="ui_next")
+            return
+
+
+_mount_ui_next(app)
 
 
 @app.middleware("http")
@@ -990,7 +1022,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "2.1.3",
+            "version": "2.2.0",
             "ready": state["ready"],
             "reasons": state["reasons"],
         }

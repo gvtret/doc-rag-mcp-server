@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.vite/
+
+# Vite cache
+.cache/
+
+# Local environment overrides
+.env.local
+.env.*.local
+
+# Optional editor scratch
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

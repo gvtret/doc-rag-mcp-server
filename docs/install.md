@@ -22,6 +22,7 @@ For a deeper deploy walkthrough see [deploy.md](deploy.md).
 - ~2 GB RAM for embeddings; ~1 GB extra cache for Docling models on first parse
 - `antiword` (optional, only for legacy `.doc` files)
 - OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install
+- Node ≥ 20 (optional, v2.2+ — only needed to build the Svelte `/ui-next/` page; the legacy inline `/ui` works without it)
 
 ### Installing uv
 
