@@ -4,6 +4,50 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.2.2 — 2026-06-11
+
+Configuration page in the Svelte UI. Part 3 of the v2.2 series. The
+"Конфигурация" sidebar entry now reads, edits, and saves
+`config/config.yaml` directly through the existing
+`/ui/config/raw` + `/ui/config/save` endpoints. Other pages
+(Управление, Логи) keep their stubs from v2.2.1.
+
+### Added
+- `ui/src/pages/Config.svelte`: full editor.
+  - Loads current YAML on mount; shows the on-disk path.
+  - Plain `<textarea>` (monospace, tab-size 2). YAML highlighting
+    is out of scope for this release; the server validates on save
+    and returns a readable error.
+  - **Dirty indicator** (amber LED + label) when the buffer
+    diverges from disk.
+  - **Save** button (disabled while clean or in flight). Confirms
+    before writing. Server-side validation errors land in a red
+    banner; on success the buffer becomes the new baseline so the
+    dirty indicator clears immediately.
+  - **Reload from disk** button — confirms first when there are
+    unsaved changes.
+  - **Restart service** button — uses `POST /ui/restart` (only
+    works when the server has `DOC_RAG_UI_RESTART_ENABLED=1` +
+    `DOC_RAG_UI_RESTART_CMD` set). Confirms first because it
+    interrupts running ingest/rebuild jobs.
+- `ui/src/lib/api.ts`: `fetchConfigRaw`, `saveConfig`,
+  `restartService`. New `postForm` helper (form-encoded POST,
+  parses JSON body even on non-2xx so server validation messages
+  reach the UI).
+- `ui/src/lib/types.ts`: `ConfigRaw`, `ConfigRawError`,
+  `ConfigSaveResponse`, `RestartResponse`.
+
+### Changed
+- `pyproject.version` + `ui/package.json` + the three hardcoded
+  strings in `mcp_http.py` bump to `2.2.2`.
+
+### Notes
+- The `Restart` button targets the legacy `/ui/restart` endpoint
+  (no change). If the server admin hasn't enabled it, the UI
+  surfaces the server's 403 message verbatim.
+- No new backend code shipped — the page consumes the v1.x
+  `/ui/config/*` endpoints that have always been there.
+
 ## v2.2.1 — 2026-06-11
 
 Svelte UI shell + Documents page. Part 2 of the v2.2 series. The new

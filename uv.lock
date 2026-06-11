@@ -379,7 +379,7 @@ wheels = [
 
 [[package]]
 name = "doc-rag"
-version = "2.2.1"
+version = "2.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "docling" },

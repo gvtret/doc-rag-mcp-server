@@ -64,3 +64,26 @@ export type HealthReady = {
 };
 
 export type PageKey = "documents" | "config" | "manage" | "logs";
+
+export type ConfigRaw = {
+  ok: true;
+  path: string;
+  yaml: string;
+};
+
+export type ConfigRawError = {
+  ok: false;
+  error: string;
+};
+
+export type ConfigSaveResponse = {
+  ok: boolean;
+  path?: string;
+  error?: string;
+};
+
+export type RestartResponse = {
+  ok: boolean;
+  message?: string;
+  error?: string;
+};
