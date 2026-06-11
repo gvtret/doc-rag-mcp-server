@@ -43,8 +43,10 @@
     grid-template-areas:
       "sidebar header"
       "sidebar content"
-      "sidebar footer";
-    min-height: 100vh;
+      "footer  footer";
+    /* Exact viewport height so the footer stays glued to the bottom
+       of the window. Internal scrolling lives on `.content` only. */
+    height: 100vh;
   }
   .content {
     grid-area: content;
