@@ -231,8 +231,8 @@ public release announced.
 Each version below is a coherent slice of the broader **production
 ingest pipeline overhaul** that the project is moving towards. They
 land in order — later items depend on earlier ones (most obviously
-v1.9's recursive chunker depends on the typed blocks layer introduced
-in v1.5). Each is its own MINOR release with its own acceptance gate.
+v2.6's recursive chunker depends on the typed blocks layer introduced
+in v2.0). Each is its own MINOR release with its own acceptance gate.
 
 The motivation for this overhaul, in one sentence: the current pipeline
 turns documents into unstructured Markdown and then into fixed-size
@@ -264,7 +264,79 @@ shown by the comparison.
 Quality-checks, recursive chunker, cascade, and Unstructured fallback
 keep their slots below.
 
-### v2.1 — Cascading parser fallback
+### v2.1 (released) — uv migration + CI hardening
+
+Tooling-only line. Three patch releases (`v2.1.0`–`v2.1.2`) collapsed
+the install pipeline onto [uv](https://docs.astral.sh/uv/) as the only
+supported package manager and moved CI off `ubuntu-latest` onto a
+self-hosted runner with local on-disk caches. Highlights:
+
+- `uv.lock` committed (148 packages locked across the 3.10-3.14 /
+  Linux+macOS+Windows resolution matrix); `requirements.txt` removed.
+- `torch` + `torchvision` pinned to the PyTorch CPU index — fresh
+  venv drops from ~5 GB to ~1.6 GB; `nvidia-*` transitives gone.
+- `faiss-cpu` capped at `<1.14` so the wheel imports on SSE4.2-only
+  QEMU hosts (matches the production server).
+- All 3 GitHub Actions workflows on `runs-on: self-hosted` with
+  `cache-from/to: type=local`; warm-cache docker build drops from
+  ~14 min to ~3.5 min.
+
+No behavioural change to parsing, manifest, or MCP surface. Documented
+here so the version line stays continuous; the originally-planned
+v2.1 (Cascading parser fallback) slides to v2.3 below.
+
+### v2.2 — Svelte-based UI (incremental, part 1)
+
+Single-file inline HTML/JS in `src/doc_rag/server/mcp_http.py` has
+grown past the point where another inline feature stops being
+readable. Introduce a real frontend toolchain — [Svelte](https://svelte.dev/)
++ [Vite](https://vitejs.dev/) — and migrate the busiest page first.
+Other pages stay on the server-rendered inline path; they migrate in
+later versions.
+
+Concrete deliverables:
+
+- New top-level `ui/` directory:
+  ```
+  ui/
+  ├── src/                    # Svelte components, state stores, API client
+  ├── package.json
+  ├── vite.config.ts
+  └── dist/                   # build output, served by FastAPI
+  ```
+- `app.mount("/ui", StaticFiles(directory="ui/dist"))` in
+  `mcp_http.py` replacing the inline `_render_ui` handler for the
+  main page.
+- Vite dev server (port 5173) with proxy `/api/*` → 3333 for hot
+  reload during development; production is a static bundle.
+- API contract is the existing JSON `/ui/status` + `/ui/document-preview`
+  + the upload/delete POST endpoints — no server-side refactor.
+- Migrated page: the main `/ui` (status panel, document table,
+  ingest/rebuild buttons, progress line, OCR badge, semantic-search
+  banner, danger zone). Doc-preview modal migrates with it because
+  it's the same page.
+- Not migrated in v2.2: `/ui/logs`-style log tails, `/ui/status` raw
+  JSON view, MCP-config download endpoints. These stay on the inline
+  path; migration of the remaining pages is scheduled across follow-up
+  MINOR releases (exact version pinning happens when each page lands).
+- Build pipeline: `npm run build` inside `ui/`; `scripts/bootstrap.sh`
+  installs Node via `npm install` if a `package.json` is detected;
+  `docker/Dockerfile` runs the build as a multi-stage layer; CI
+  builds the bundle and runs `npm run lint` / `npm run check`.
+
+Acceptance:
+
+- Visiting `/ui` after deploy serves the Svelte bundle — same
+  visual surface, same functionality (verified by manually walking
+  through ingest → search → delete on the staging server).
+- `_render_ui` and the dependent JS-string helpers for the migrated
+  page removed from `mcp_http.py`.
+- CI gains an `npm-build` job; bundle is cached on the runner host
+  alongside the existing `uv` and `buildx` caches.
+- README + `docs/install.md` updated with `Node >= 20` prerequisite
+  and the new `ui/` build step.
+
+### v2.3 — Cascading parser fallback
 
 Add [Unstructured](https://unstructured.io/) (`hi_res` strategy) as
 a second-tier fallback for PDFs that Docling cannot handle (broken
@@ -276,7 +348,12 @@ Docling → Unstructured (hi_res)
 ```
 
 The cascade triggers on (a) parser exception, or (b) quality score
-below a configurable threshold (see v1.7 for the quality module).
+below a configurable threshold (see v2.4 for the quality module).
+**Note:** cascade depends on the quality scoring introduced in v2.4 —
+either we ship cascade first with only the "parser exception" trigger
+and bolt on the score-based trigger in v2.4, or we swap the order and
+ship v2.4 first. Both options are open; sequence pinned at sprint
+start.
 
 Concrete deliverables:
 
@@ -291,7 +368,7 @@ Acceptance:
   formula-rich), cascade extracts non-empty text from ≥ 90 % of them
   vs. ≤ 60 % for any single backend alone.
 
-### v2.2 — Document quality checks + per-doc reports
+### v2.4 — Document quality checks + per-doc reports
 
 Mandatory pre-indexing QA on the typed blocks. The pipeline emits
 `build/quality/<doc_id>.json` for every document and a roll-up under
@@ -342,7 +419,7 @@ Acceptance:
 - A document with a known broken table is correctly flagged.
 - UI shows the badge.
 
-### v2.3 — Unified DOC / DOCX ingest path
+### v2.5 — Unified DOC / DOCX ingest path
 
 Replace the current `antiword` shell-out for `.doc` with a
 LibreOffice-headless DOC→DOCX conversion in the pipeline, then let
@@ -363,7 +440,7 @@ Acceptance:
   new path.
 - Existing `sample.doc` fixture remains the regression target.
 
-### v2.4 — Structure-aware (recursive) chunker
+### v2.6 — Structure-aware (recursive) chunker
 
 Now trivial because `blocks.jsonl` from v2.0 supplies the structure.
 A recursive splitter walks the typed blocks, grouping siblings into
