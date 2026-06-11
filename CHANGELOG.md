@@ -4,6 +4,50 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.2.1 — 2026-06-11
+
+Svelte UI shell + Documents page. Part 2 of the v2.2 series. The new
+`/ui-next/` now has a real layout (sidebar + header + main + footer)
+and shows the indexed-document table directly. Three pages remain
+stubs to be filled in v2.2.2-v2.2.4. The legacy inline `/ui` keeps
+serving without change.
+
+### Added
+- **App shell** with four-section grid layout:
+  - **Sidebar**: four nav items — Документы, Конфигурация,
+    Управление, Логи — terminal-style with active-row caret.
+  - **Header**: page title + reserved submenu slot for v2.2.2+.
+  - **Main**: the active page.
+  - **Footer**: live readout — Health (LED-style dot + ready /
+    degraded / down), Search (semantic / lexical / none), current
+    Job (name + current doc basename + N/M progress), ETA, last
+    operation (name + ok/err + duration), document count, live
+    date/time.
+- **Documents page** (full implementation): summary line
+  (counts + lex/sem readiness + pipeline version) and a table of
+  indexed documents with OCR badge per row. Renders directly from
+  the `/ui/status` payload — no new endpoint needed.
+- **Config / Manage / Logs** pages: stubs that announce when they
+  will be filled (v2.2.2 / v2.2.3 / v2.2.4).
+- Central reactive state via Svelte 5 runes (`ui/src/lib/state.svelte.ts`).
+  Single 5-second polling loop owned by App; child components read
+  via `$derived` — no prop drilling, no re-fetching.
+- Typed API client (`ui/src/lib/api.ts`) — wraps `/ui/status` and
+  `/health/ready` with strict types.
+- **Engineering Dark theme**: deep slate background
+  (`#0f172a` / `#1e293b`), terminal-style monospace accents,
+  status indicator LEDs with glow (green/amber/red). Inter for
+  text, ui-monospace for headers/codes/footer.
+
+### Changed
+- `pyproject.version` + the 3 hardcoded strings in `mcp_http.py`
+  bump to `2.2.1`.
+- `ui/package.json` version follows the project to `2.2.1`.
+
+### Bundle size
+- 52.25 KB JS / **~20 KB gzipped** (up from ~13 KB stub).
+- 6.29 KB CSS / **~1.65 KB gzipped**.
+
 ## v2.2.0 — 2026-06-11
 
 Svelte UI toolchain bootstrap. Part 1 of the v2.2 series planned in
