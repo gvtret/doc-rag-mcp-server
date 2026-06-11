@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-rag"
-version = "2.0.1"
+version = "2.1.0"
 description = "Local-first RAG over your engineering documents, with an MCP server for Cursor and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,6 +59,7 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=4.1",
   "httpx>=0.27",  # required by starlette.testclient for FastAPI TestClient
+  "ruff>=0.6",    # lint + format; pinned via uv.lock for reproducibility
 ]
 
 # Prometheus /metrics endpoint (optional). Without this extra the

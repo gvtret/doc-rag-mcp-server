@@ -4,6 +4,49 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.1.0 — 2026-06-11
+
+uv migration. `uv` is now the only officially supported installer for
+`doc-rag`; pip is no longer documented or scripted. Behavioural surface
+(parsing, manifest schema, MCP) unchanged.
+
+### Added
+- `uv.lock` (committed). Every transitive dependency pinned across
+  Python 3.10-3.14 and Linux/macOS/Windows resolution markers. CI's
+  `uv sync --frozen` and a local dev `bash scripts/bootstrap.sh` now
+  hit the exact same dependency graph.
+- `ruff` added to the `[dev]` extra so it lands in the lockfile (it
+  was previously installed ad-hoc outside the venv).
+
+### Changed
+- `scripts/bootstrap.sh` rewritten around `uv sync`. Installs uv via
+  Astral's official installer (`curl … | sh`) if missing; prompts for
+  the same extras as before (FAISS / embeddings / dev / metrics).
+  Always installs the `server` extra. `DOC_RAG_BOOTSTRAP_FROZEN=0`
+  relaxes `--frozen` when iterating on `pyproject.toml`.
+- `scripts/install_server_native.sh`: `--gpu` / `--cpu` flags removed
+  (GPU was never on the deployment matrix). `--minimal` retained
+  (skip embeddings extra → MCP only, no semantic search).
+- `docker/Dockerfile`: `pip install -e .` → `COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv` + `uv sync --frozen`. Layer cache splits dependency install from project install for fast rebuilds.
+- `.github/workflows/tests.yml`, `lint.yml`: use `astral-sh/setup-uv@v3`
+  with cache enabled; `uv sync --frozen --extra …` replaces
+  `pip install -e ".[…]"`; lint uses `uvx ruff` for zero-venv lint.
+  Stale `[pdf,ocr]` extras in tests.yml (left over from v1.x) removed
+  in the same pass.
+- `docs/install.md` rewritten around uv. `docs/troubleshooting.md`
+  drops the torch-helper and PEP-668 entries (no longer relevant);
+  adds two uv-specific FAQ entries. README quickstart updated.
+
+### Removed
+- `requirements.txt`. The single source of dependency truth is now
+  `pyproject.toml` + `uv.lock`. `scripts/install_torch_cpu.sh` and
+  `install_torch_gpu.sh` stay in the tree for advanced manual use but
+  are no longer referenced from docs or bootstrap.
+
+### Internal version label
+- `pyproject.version` + the three hardcoded strings in
+  `src/doc_rag/server/mcp_http.py` bump to `2.1.0`.
+
 ## v2.0.1 — 2026-06-11
 
 UI quality-of-life patch on top of v2.0.0. No behavioural changes to

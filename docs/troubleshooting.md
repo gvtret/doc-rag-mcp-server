@@ -55,24 +55,27 @@ with a clear degraded-mode warning.
 5. Verify the server itself works: `bash scripts/verify_mcp.sh` should print `doc_search`
    in `tools/list`.
 
-## Torch / CUDA issues
+## uv install fails / `uv: command not found`
 
-Reinstall torch via the helper scripts (they pin to a compatible wheel and use the
-project's `.venv/bin/python` directly to avoid system-Python confusion):
+Since v2.1 the only supported installer is [uv](https://docs.astral.sh/uv/).
+`bash scripts/bootstrap.sh` installs it via the Astral one-liner if it
+is missing on PATH. To install manually:
 
 ```bash
-pip uninstall torch -y
-bash scripts/install_torch_gpu.sh    # or install_torch_cpu.sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## PEP 668 / `externally-managed-environment`
+If after install the shell still cannot find `uv`, source the rc
+snippet printed by the installer, or restart the shell.
 
-Means pip tried to install into system Python. This project installs into `.venv`.
+## `uv sync --frozen` complains about lockfile drift
 
-- Run `bash scripts/bootstrap.sh` (handles venv creation), **or**
-- Run pip via `.venv/bin/python -m pip ...`
+`pyproject.toml` was edited locally without updating `uv.lock`. Either:
 
-The torch install scripts already use `.venv/bin/python` directly.
+- run `uv lock` to regenerate the lockfile (commit it alongside the
+  `pyproject.toml` change), or
+- set `DOC_RAG_BOOTSTRAP_FROZEN=0` to let bootstrap run `uv sync`
+  without `--frozen` (one-off; not for production).
 
 ## `.doc` parsing fails
 

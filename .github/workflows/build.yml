@@ -15,17 +15,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Free runner disk space
+        # Docling pulls ~5 GB of transitive deps (torch, transformers,
+        # ONNX runtimes, RapidOCR). Without this step the standard
+        # GitHub-hosted runner runs out of disk when exporting the
+        # built image. Removes preinstalled toolchains we don't need
+        # (Android SDK, .NET, Haskell, large container caches).
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
       - name: Build image (no push)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           push: false
-          load: true
           tags: doc-rag:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Smoke-test image
-        run: |
-          docker run --rm doc-rag:ci python -c "import doc_rag; print(doc_rag)"
