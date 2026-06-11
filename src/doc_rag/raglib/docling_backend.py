@@ -25,6 +25,7 @@ with an actionable message instead of importing-on-every-call.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from doc_rag.raglib.blocks import Block
@@ -332,7 +333,50 @@ def _docling_doc_to_blocks(doc: Any) -> list[Block]:
     return blocks
 
 
-def _docling_stats(doc: Any, blocks: list[Block]) -> dict[str, Any]:
+def _ocr_signal_from_confidence(confidence: Any) -> dict[str, Any]:
+    """Read per-page ocr_score from a Docling ConfidenceReport.
+
+    A non-NaN, positive `ocr_score` on a page is the canonical "OCR ran
+    on this page" signal — Docling fills it only when its OCR step
+    produced text. Native-text pages get NaN.
+
+    Returns a small dict the caller merges into the stats. Empty when
+    Docling did not supply a confidence report (older versions, or a
+    backend that bypassed the OCR step entirely).
+    """
+    if confidence is None:
+        return {}
+    pages = getattr(confidence, "pages", None)
+    if not isinstance(pages, dict):
+        return {}
+    ocr_pages: list[int] = []
+    ocr_scores: list[float] = []
+    for page_no, scores in pages.items():
+        score = getattr(scores, "ocr_score", None)
+        if score is None and isinstance(scores, dict):
+            score = scores.get("ocr_score")
+        try:
+            s = float(score) if score is not None else float("nan")
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(s) or s <= 0.0:
+            continue
+        try:
+            pn = int(page_no)
+        except (TypeError, ValueError):
+            continue
+        ocr_pages.append(pn)
+        ocr_scores.append(s)
+    if not ocr_pages:
+        return {}
+    return {
+        "ocr_pages_count": len(ocr_pages),
+        "ocr_pages": sorted(ocr_pages),
+        "ocr_mean_score": round(sum(ocr_scores) / len(ocr_scores), 4),
+    }
+
+
+def _docling_stats(doc: Any, blocks: list[Block], result: Any = None) -> dict[str, Any]:
     """Build a stats dict mirroring the shape PyMuPDF/python-docx return.
 
     Keeps `parse_document`'s native_text_extraction merging simple.
@@ -349,10 +393,12 @@ def _docling_stats(doc: Any, blocks: list[Block]) -> dict[str, Any]:
     for b in blocks:
         block_counts[b.type] = block_counts.get(b.type, 0) + 1
 
-    return {
+    stats: dict[str, Any] = {
         "pages": page_count,
         "blocks_by_type": block_counts,
     }
+    stats.update(_ocr_signal_from_confidence(getattr(result, "confidence", None)))
+    return stats
 
 
 def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
@@ -392,5 +438,5 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     if not text:
         text = "\n\n".join(b.text for b in blocks if b.text)
 
-    stats = _docling_stats(doc, blocks)
+    stats = _docling_stats(doc, blocks, result=result)
     return text, blocks, stats

@@ -219,18 +219,40 @@ def _finalize_pdf_stats(raw: dict[str, Any], *, min_chars: int) -> dict[str, Any
     return out
 
 
-def _build_ocr_stats_block() -> dict[str, Any]:
+def _build_ocr_stats_block(native: dict[str, Any] | None = None) -> dict[str, Any]:
     """Stats shape kept for downstream consumers.
 
-    Docling handles OCR internally via RapidOCR; the old per-page Tesseract
-    routing is gone. Fields stay so that manifest schema v1 readers do not
-    break; values reflect "we did not run the old OCR loop"."""
-    return {
+    Docling handles OCR internally via RapidOCR. We surface the
+    real signal from Docling's per-page confidence report (non-NaN
+    `ocr_score` = OCR fired on that page) through the same shape the
+    manifest schema v1 reader expects:
+
+      - `applied: True` if at least one page was OCR-derived;
+      - `pages_recognized` is the count of those pages;
+      - `confidence` is the mean OCR quality score across them.
+
+    `before_ocr` / `after_ocr` are kept as null fields — they were
+    Tesseract-routing artefacts and no longer carry a meaningful
+    value, but their presence keeps older readers happy."""
+    block: dict[str, Any] = {
         "applied": False,
         "before_ocr": {"chars": None},
         "after_ocr": {"chars": None},
         "pages_recognized": 0,
     }
+    if not isinstance(native, dict):
+        return block
+    ocr_pages_count = native.get("ocr_pages_count")
+    if isinstance(ocr_pages_count, int) and ocr_pages_count > 0:
+        block["applied"] = True
+        block["pages_recognized"] = ocr_pages_count
+        mean_score = native.get("ocr_mean_score")
+        if isinstance(mean_score, (int, float)):
+            block["confidence"] = float(mean_score)
+        ocr_pages = native.get("ocr_pages")
+        if isinstance(ocr_pages, list):
+            block["ocr_pages"] = ocr_pages
+    return block
 
 
 def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
@@ -310,7 +332,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
 
     is_pdf = effective_ext == ".pdf"
     ocr_block = (
-        _build_ocr_stats_block()
+        _build_ocr_stats_block(extract_stats)
         if is_pdf
         else {
             "applied": False,
