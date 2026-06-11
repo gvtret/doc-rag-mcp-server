@@ -22,6 +22,7 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 - ~2 GB RAM for embeddings; ~1 GB extra for Docling models on first parse
 - `antiword` is optional (only needed for legacy `.doc` files)
 - OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install required
+- Node ≥ 20 (optional, v2.2+ — only needed to build the new Svelte `/ui-next/` page; the legacy inline `/ui` works without Node)
 
 ## Quickstart
 

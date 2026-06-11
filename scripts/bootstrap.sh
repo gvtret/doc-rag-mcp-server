@@ -104,3 +104,22 @@ if [[ "${ans_ing}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
 fi
 
 echo "[doc-rag] Bootstrap complete."
+
+# --- Optional: Svelte UI build ----------------------------------------------
+# v2.2+ ships a Svelte + Vite frontend under `ui/`. Build it if Node is
+# available on PATH; otherwise leave the legacy inline `/ui` as canonical
+# and let users build manually later.
+if [[ -f "${ROOT}/ui/package.json" ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "[doc-rag] Building Svelte UI bundle (ui/)…"
+    pushd "${ROOT}/ui" >/dev/null
+    npm ci --no-audit --no-fund
+    npm run build
+    popd >/dev/null
+    echo "[doc-rag] ui/dist ready."
+  else
+    echo "[doc-rag] Node/npm not on PATH — skipping ui/ build. The legacy"
+    echo "[doc-rag] inline /ui keeps serving. Install Node >= 20 and run"
+    echo "[doc-rag] 'cd ui && npm ci && npm run build' to enable /ui-next."
+  fi
+fi

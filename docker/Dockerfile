@@ -1,4 +1,17 @@
 # syntax=docker/dockerfile:1
+
+# --- UI builder stage --------------------------------------------------------
+# v2.2+ ships a Svelte + Vite frontend under `ui/`. Build it in a Node
+# stage so the runtime image stays Python-only. If `ui/` is missing the
+# stage's COPY still succeeds (empty dir copy) and the build is a no-op.
+FROM node:22-alpine AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json* /ui/
+RUN npm ci --no-audit --no-fund
+COPY ui/ /ui/
+RUN npm run build
+
+# --- Python runtime stage ----------------------------------------------------
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -30,6 +43,12 @@ RUN uv sync --frozen --extra server --no-install-project
 # Copy the rest of the source and install the project itself (editable
 # is fine inside a container — the source tree is immutable at runtime).
 COPY . /app
+
+# Drop in the freshly-built UI bundle from the ui-builder stage so
+# /opt/.../ui/dist is populated even though the source COPY above
+# excluded it via .dockerignore on the host.
+COPY --from=ui-builder /ui/dist /app/ui/dist
+
 RUN uv sync --frozen --extra server
 
 EXPOSE 3333

@@ -4,6 +4,57 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.2.0 — 2026-06-11
+
+Svelte UI toolchain bootstrap. Part 1 of the v2.2 series planned in
+`docs/roadmap.md`. **No business logic migrates yet.** The legacy
+inline `/ui` page (status panel, document table, ingest progress,
+OCR badge, doc preview, danger zone) stays canonical until v2.2.1.
+
+### Added
+- New top-level `ui/` directory: Svelte 5 + Vite + TypeScript
+  scaffold.
+  ```
+  ui/
+  ├── src/
+  │   ├── App.svelte          # stub: fetches /ui/status, polls every 5 s
+  │   ├── main.ts
+  │   ├── app.css
+  │   └── vite-env.d.ts
+  ├── index.html
+  ├── package.json
+  ├── package-lock.json
+  ├── tsconfig.json
+  ├── tsconfig.node.json
+  ├── svelte.config.js
+  └── vite.config.ts
+  ```
+  Production build: ~13 kB gzipped. `svelte-check` clean.
+- `mcp_http.py` mounts `ui/dist/` at `/ui-next/` via
+  `StaticFiles(html=True)` when the bundle is present; falls back
+  silently when it's not, so partial installs (no Node) keep
+  working on the legacy `/ui` path.
+  - `DOC_RAG_UI_DIST` env var overrides the dist directory in
+    container deployments.
+- `scripts/bootstrap.sh`: detects `ui/package.json`; if Node is on
+  PATH, runs `npm ci && npm run build`. Silently skipped otherwise.
+- `docker/Dockerfile`: multi-stage build — `node:22-alpine` stage
+  produces `ui/dist`, copied into the final Python image. Builds
+  green on a self-hosted runner with the existing buildx cache.
+- `.dockerignore`: excludes `ui/node_modules` + `ui/dist` from the
+  source `COPY`; the multi-stage reference brings in the fresh
+  bundle. Also excludes `.git/`, `.venv/`, `build/`, `sources/`,
+  `.claude/`, `.gigacode/`, `doc_rag_for_habr/` so the docker
+  context stays small.
+- `.github/workflows/lint.yml`: new `svelte-check` job (Node 22 via
+  `actions/setup-node@v4` with npm cache).
+
+### Changed
+- README + `docs/install.md` list Node ≥ 20 as an optional
+  prerequisite (only needed to build `/ui-next/`).
+- `pyproject.version` + the three hardcoded strings in
+  `src/doc_rag/server/mcp_http.py` bump to `2.2.0`.
+
 ## v2.1.3 — 2026-06-11
 
 Two regression fixes uncovered during the post-uv-migration server

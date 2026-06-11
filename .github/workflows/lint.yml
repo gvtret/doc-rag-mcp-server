@@ -26,3 +26,23 @@ jobs:
 
       - name: ruff format --check
         run: uvx ruff format --check .
+
+  svelte-check:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: npm ci
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+
+      - name: svelte-check
+        working-directory: ui
+        run: npm run check

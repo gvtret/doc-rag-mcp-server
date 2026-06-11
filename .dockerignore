@@ -1,0 +1,22 @@
+# Don't ship local build/cache state into the Docker context.
+.git/
+.venv/
+.venv-pip-backup/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.egg-info/
+.coverage
+.claude/
+.gigacode/
+doc_rag_for_habr/
+build/
+sources/incoming/
+sources/archived/
+
+# UI: node_modules is huge and the dist/ from the host would shadow the
+# fresh build the Docker `ui-builder` stage produces. Both are excluded
+# from the source COPY and brought in via stage references.
+ui/node_modules/
+ui/dist/
+ui/.vite/
