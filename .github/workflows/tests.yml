@@ -20,6 +20,11 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+          # Self-hosted runner: keep uv cache on the runner host instead
+          # of round-tripping through GitHub's Azure-backed actions/cache
+          # service (10 GB per-repo quota, had a 503 outage during v2.1.1
+          # CI).
+          cache-local-path: /opt/github-runner/_cache/uv
 
       - name: Pin Python ${{ matrix.python-version }}
         run: uv python pin ${{ matrix.python-version }}

@@ -16,6 +16,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+          cache-local-path: /opt/github-runner/_cache/uv
 
       - name: Pin Python 3.12
         run: uv python pin 3.12

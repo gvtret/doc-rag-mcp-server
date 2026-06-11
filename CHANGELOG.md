@@ -4,6 +4,33 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.1.2 — 2026-06-11
+
+CI tooling patch on top of v2.1.1. No code, deps, or behavioural
+surface changes.
+
+### Changed
+- **buildx + uv caches moved to the runner host (`type=local`).**
+  Both write to `/opt/github-runner/_cache/` instead of the
+  Azure-backed GHA `actions/cache` service:
+  - `build.yml`: `cache-from/to: type=local,src=/opt/github-runner/_cache/buildx,mode=max`
+  - `tests.yml` + `lint.yml` via `setup-uv@v3`: `cache-local-path: /opt/github-runner/_cache/uv`
+
+  Skips the 10 GB per-repo GHA cache quota and survives Azure
+  outages (one of which silently dropped the uv cache during v2.1.1
+  CI). Expected outcome: warm-cache docker build drops from ~14 min
+  to seconds when `pyproject.toml` / `uv.lock` / `docker/Dockerfile`
+  have not changed since the previous run.
+
+### Removed
+- `jlumbroso/free-disk-space@main` step in `build.yml`. Was added
+  in v2.1.0 to free GHA-hosted preinstalled toolchains; a no-op on
+  a clean self-hosted runner.
+
+### Internal version label
+- `pyproject.version` + the three hardcoded strings in
+  `src/doc_rag/server/mcp_http.py` bump to `2.1.2`.
+
 ## v2.1.1 — 2026-06-11
 
 CI + lockfile patch on top of v2.1.0. Behavioural surface (parsing,
