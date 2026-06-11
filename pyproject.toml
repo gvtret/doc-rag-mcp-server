@@ -44,9 +44,12 @@ server = [
   "python-multipart",
 ]
 
-# Vector index (optional)
+# Vector index (optional). Upper-bound at <1.14 because 1.14.x wheels
+# require AVX/AVX2 and SIGILL on QEMU-virtualised hosts that only
+# expose SSE4.2 (which is exactly the project's deployment target —
+# misc-server is QEMU Virtual CPU). 1.13.x stays compatible.
 faiss = [
-  "faiss-cpu>=1.8.0",
+  "faiss-cpu>=1.8.0,<1.14",
 ]
 
 # Embeddings (optional) - CPU-safe default. GPU is installed manually by the user.
