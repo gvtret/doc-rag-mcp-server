@@ -78,6 +78,20 @@ package-dir = {"" = "src"}
 [tool.setuptools.package-data]
 "doc_rag" = ["server/mcp_http.json", "server/mcp_cursor_http.json"]
 
+[tool.uv]
+# CPU-only is the project's deployment policy (server is CPU-only;
+# Docker image must not carry CUDA libs). Force torch off the PyTorch
+# CPU index across all platforms; saves ~5 GB of nvidia-* transitives
+# in the lockfile and the runtime image.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
