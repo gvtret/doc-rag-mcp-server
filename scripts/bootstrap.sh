@@ -1,51 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Universal bootstrap for doc-rag on Linux/WSL.
-# - Creates venv if missing
-# - Installs base deps (incl. Docling, the only PDF backend since v2.0)
-# - Optionally installs FAISS
-# - Optionally installs embeddings stack (torch + sentence-transformers)
-# - Optionally runs ingest
+# Universal bootstrap for doc-rag on Linux/WSL (v2.1+ uv-based).
+# - Installs uv if not already on PATH (single curl one-liner).
+# - Creates .venv via `uv sync` from the committed uv.lock.
+# - Pulls base deps + opt-in extras (FAISS, embeddings, server, dev).
+# - Optionally runs the initial ingest.
+#
+# Reproducibility: the committed uv.lock pins every transitive
+# dependency. `uv sync --frozen` refuses to update the lock; pass
+# DOC_RAG_BOOTSTRAP_FROZEN=0 to relax that (useful when changing
+# pyproject.toml locally).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-VENV_DIR="${VENV_DIR:-.venv}"
-VENV_PY="${ROOT}/${VENV_DIR}/bin/python"
-PIP="${VENV_PY} -m pip"
 NONINTERACTIVE="${DOC_RAG_BOOTSTRAP_NONINTERACTIVE:-0}"
+FROZEN="${DOC_RAG_BOOTSTRAP_FROZEN:-1}"
 
 echo "[doc-rag] Root: ${ROOT}"
-echo "[doc-rag] Python: ${PYTHON_BIN}"
-echo "[doc-rag] Venv: ${VENV_DIR}"
 
-if [[ ! -x "${VENV_PY}" ]]; then
-  echo "[doc-rag] Creating venv..."
-  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+# --- Install uv if missing ---------------------------------------------------
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[doc-rag] uv not found on PATH — installing via Astral's official script…"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # The installer prints `Installed uv to <dir>`; bring it onto PATH for
+  # this shell so the rest of the script can use it directly.
+  if [[ -d "${HOME}/.local/bin" ]]; then
+    export PATH="${HOME}/.local/bin:${PATH}"
+  fi
+  if [[ -d "${HOME}/.cargo/bin" ]]; then
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+  fi
 fi
+echo "[doc-rag] uv: $(uv --version)"
 
-echo "[doc-rag] Upgrading pip..."
-${PIP} install -U pip
+# --- Decide which extras to install ------------------------------------------
+EXTRA_ARGS=("--extra" "server")
 
-echo "[doc-rag] Installing base deps (Cursor-safe)..."
-${PIP} install -r requirements.txt
-${PIP} install -e .
-
-# Optional: Dev deps (tests)
-if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_dev="${DOC_RAG_BOOTSTRAP_DEV:-N}"
-else
-  read -r -p "[doc-rag] Install dev deps (pytest)? [y/N] " ans_dev || true
-  ans_dev="${ans_dev:-N}"
-fi
-if [[ "${ans_dev}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Installing dev deps..."
-  ${PIP} install -e ".[dev]"
-fi
-
-# Optional: FAISS
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_faiss="${DOC_RAG_BOOTSTRAP_FAISS:-Y}"
 else
@@ -53,69 +45,62 @@ else
   ans_faiss="${ans_faiss:-Y}"
 fi
 if [[ "${ans_faiss}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Installing faiss-cpu..."
-  ${PIP} install "faiss-cpu>=1.8.0"
+  EXTRA_ARGS+=("--extra" "faiss")
 fi
 
-# Docling ships as a base dep since v2.0 — `pip install -e .` above
-# already pulled it in. OCR for scanned PDFs is handled internally by
-# Docling via RapidOCR; no separate Tesseract install is required.
-
-# Optional: Embeddings stack
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_torch="${DOC_RAG_BOOTSTRAP_TORCH:-3}"
+  ans_dev="${DOC_RAG_BOOTSTRAP_DEV:-N}"
 else
-  echo ""
-  echo "[doc-rag] Embeddings are optional but required for building vectors/index."
-  echo "[doc-rag] Choose torch variant:"
-  echo "  1) GPU (CUDA cu124 via PyTorch index)"
-  echo "  2) CPU (via PyTorch index)"
-  echo "  3) Skip (only parsing/MD/JSON, no embeddings/index)"
-  read -r -p "[doc-rag] Select [1/2/3] (default 3): " ans_torch || true
-  ans_torch="${ans_torch:-3}"
+  read -r -p "[doc-rag] Install dev deps (pytest, ruff)? [y/N] " ans_dev || true
+  ans_dev="${ans_dev:-N}"
+fi
+if [[ "${ans_dev}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+  EXTRA_ARGS+=("--extra" "dev")
 fi
 
-if [[ "${ans_torch}" == "1" ]]; then
-  echo "[doc-rag] Installing torch GPU (cu124)..."
-  VENV_PY="${VENV_PY}" bash scripts/install_torch_gpu.sh
-  echo "[doc-rag] Installing sentence-transformers..."
-  ${PIP} install -r requirements-embed.txt
-elif [[ "${ans_torch}" == "2" ]]; then
-  echo "[doc-rag] Installing torch CPU..."
-  VENV_PY="${VENV_PY}" bash scripts/install_torch_cpu.sh
-  echo "[doc-rag] Installing sentence-transformers..."
-  ${PIP} install -r requirements-embed.txt
-else
-  echo "[doc-rag] Skipping embeddings stack."
-fi
-
-# Optional: Server deps (debug)
+# Embeddings (CPU-safe; torch picked from default index). For GPU/ROCm
+# wheels, install torch separately after this script.
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_srv="${DOC_RAG_BOOTSTRAP_SERVER:-N}"
+  ans_emb="${DOC_RAG_BOOTSTRAP_EMBEDDINGS:-Y}"
 else
-  read -r -p "[doc-rag] Install HTTP debug server deps (fastapi/uvicorn)? [y/N] " ans_srv || true
-  ans_srv="${ans_srv:-N}"
+  read -r -p "[doc-rag] Install embeddings stack (torch + sentence-transformers, CPU)? [Y/n] " ans_emb || true
+  ans_emb="${ans_emb:-Y}"
 fi
-if [[ "${ans_srv}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Installing server deps..."
-  ${PIP} install -e ".[server]"
+if [[ "${ans_emb}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+  EXTRA_ARGS+=("--extra" "embeddings")
 fi
 
-# Optional: Run ingest
+if [[ "${NONINTERACTIVE}" == "1" ]]; then
+  ans_metrics="${DOC_RAG_BOOTSTRAP_METRICS:-N}"
+else
+  read -r -p "[doc-rag] Install Prometheus /metrics extra? [y/N] " ans_metrics || true
+  ans_metrics="${ans_metrics:-N}"
+fi
+if [[ "${ans_metrics}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+  EXTRA_ARGS+=("--extra" "metrics")
+fi
+
+# --- Sync ---------------------------------------------------------------------
+SYNC_ARGS=()
+if [[ "${FROZEN}" == "1" ]]; then
+  SYNC_ARGS+=("--frozen")
+fi
+SYNC_ARGS+=("${EXTRA_ARGS[@]}")
+
+echo "[doc-rag] uv sync ${SYNC_ARGS[*]}"
+uv sync "${SYNC_ARGS[@]}"
+echo "[doc-rag] venv ready: ${ROOT}/.venv"
+
+# --- Optional initial ingest --------------------------------------------------
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_ing="${DOC_RAG_BOOTSTRAP_INGEST:-N}"
 else
-  read -r -p "[doc-rag] Run ingest now? [y/N] " ans_ing || true
+  read -r -p "[doc-rag] Run initial ingest now? [y/N] " ans_ing || true
   ans_ing="${ans_ing:-N}"
 fi
 if [[ "${ans_ing}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
-  echo "[doc-rag] Running: doc-rag ingest"
-  "${VENV_PY}" -m doc_rag.cli ingest
-  echo "[doc-rag] Done."
-else
-  echo "[doc-rag] Bootstrap complete."
-  echo "Next steps:"
-  echo "  - Put docs into sources/incoming/"
-  echo "  - Run: ${VENV_PY} -m doc_rag.cli ingest"
-  echo "  - Restart Cursor (MCP reads .cursor/mcp.json)"
+  echo "[doc-rag] Running doc-rag ingest…"
+  uv run doc-rag ingest
 fi
+
+echo "[doc-rag] Bootstrap complete."

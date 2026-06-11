@@ -9,9 +9,10 @@ set -euo pipefail
 #
 # Если путь не указан, считается корень репозитория по расположению этого скрипта.
 #
-# Опции: --cpu (по умолчанию) | --gpu (нужны драйверы NVIDIA на хосте) | --minimal (без torch).
-# Флаги указывайте перед путём INSTALL_ROOT при необходимости:
-#   sudo bash scripts/install_server_native.sh --cpu /opt/doc-rag
+# Опции: --minimal (без torch/embeddings; только HTTP/MCP, без семантики).
+# По умолчанию ставится embeddings stack (torch CPU + sentence-transformers).
+# Флаг указывайте перед путём INSTALL_ROOT при необходимости:
+#   sudo bash scripts/install_server_native.sh --minimal /opt/doc-rag
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "ERROR: запускайте от root: sudo bash $0 \"$@\""
@@ -22,16 +23,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_ROOT="/opt/doc-rag-mcp"
 
-INSTALL_CPU_EMBEDDINGS=1
-INSTALL_GPU_EMBEDDINGS=
 SKIP_EMBEDDINGS=
 
 usage() {
   echo "Usage: sudo bash scripts/install_server_native.sh [INSTALL_ROOT]"
   echo "       INSTALL_ROOT по умолчанию: ${DEFAULT_ROOT}"
   echo "Flags:"
-  echo "  --cpu       torch CPU + embeddings (поведение по умолчанию)"
-  echo "  --gpu       torch GPU + embeddings"
   echo "  --minimal   без torch/embeddings (только HTTP/MCP, без семантики)"
   exit "$1"
 }
@@ -40,9 +37,7 @@ POS_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage 0 ;;
-    --cpu) INSTALL_CPU_EMBEDDINGS=1; INSTALL_GPU_EMBEDDINGS=; SKIP_EMBEDDINGS=; shift ;;
-    --gpu) INSTALL_GPU_EMBEDDINGS=1; INSTALL_CPU_EMBEDDINGS=; SKIP_EMBEDDINGS=; shift ;;
-    --minimal) SKIP_EMBEDDINGS=1; INSTALL_CPU_EMBEDDINGS=; INSTALL_GPU_EMBEDDINGS=; shift ;;
+    --minimal) SKIP_EMBEDDINGS=1; shift ;;
     *) POS_ARGS+=("$1"); shift ;;
   esac
 done
@@ -58,16 +53,13 @@ mkdir -p "${INSTALL_ROOT}"
 INSTALL_ROOT="$(cd "$INSTALL_ROOT" && pwd)"
 
 SERVICE_USER=docrag
-TORCH_CHOICE=2
-if [[ -n "${INSTALL_GPU_EMBEDDINGS:-}" ]]; then
-  TORCH_CHOICE=1
-fi
-if [[ -n "${SKIP_EMBEDDINGS:-}" ]]; then
-  TORCH_CHOICE=3
-fi
 
 echo "[install] INSTALL_ROOT=${INSTALL_ROOT}"
-echo "[install] torch/bootstrap choice: ${TORCH_CHOICE} (1=GPU 2=CPU 3=skip)"
+if [[ -n "${SKIP_EMBEDDINGS}" ]]; then
+  echo "[install] embeddings: SKIP (only HTTP/MCP)"
+else
+  echo "[install] embeddings: install (torch CPU + sentence-transformers)"
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -108,7 +100,12 @@ chmod a+x "${INSTALL_ROOT}/scripts/run_mcp_http.sh" "${INSTALL_ROOT}/scripts/boo
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_ROOT}"
 
-echo "[install] bootstrap (venv + deps; Docling приходит как базовая зависимость)…"
+EMB_ENV="Y"
+if [[ -n "${SKIP_EMBEDDINGS}" ]]; then
+  EMB_ENV="N"
+fi
+
+echo "[install] bootstrap (venv через uv + базовые deps; Docling приходит как базовая зависимость)…"
 sudo -u "${SERVICE_USER}" -H bash -c "
 set -euo pipefail
 cd '${INSTALL_ROOT}'
@@ -116,9 +113,9 @@ export HOME='/var/lib/docrag'
 export DOC_RAG_BOOTSTRAP_NONINTERACTIVE='1'
 export DOC_RAG_BOOTSTRAP_DEV='N'
 export DOC_RAG_BOOTSTRAP_FAISS='Y'
-export DOC_RAG_BOOTSTRAP_SERVER='Y'
+export DOC_RAG_BOOTSTRAP_EMBEDDINGS='${EMB_ENV}'
+export DOC_RAG_BOOTSTRAP_METRICS='N'
 export DOC_RAG_BOOTSTRAP_INGEST='N'
-export DOC_RAG_BOOTSTRAP_TORCH='${TORCH_CHOICE}'
 bash scripts/bootstrap.sh
 "
 echo "[install] проверка Docling в venv:"
@@ -129,7 +126,7 @@ VPY="$INSTALL_ROOT/.venv/bin/python"
 if [ -x "$VPY" ] && "$VPY" -c "import docling" 2>/dev/null; then
   echo "  OK: docling импортируется."
 else
-  echo "  WARN: docling не найден в venv. Запустите вручную: $VPY -m pip install -e ."
+  echo "  WARN: docling не найден в venv. Запустите вручную: uv sync --frozen --extra server --extra faiss --extra embeddings"
 fi
 '
 

@@ -26,11 +26,12 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 ## Quickstart
 
 ```bash
+# uv is the official installer since v2.1; the bootstrap script installs it if missing.
 git clone https://github.com/gvtret/doc-rag-mcp-server
 cd doc-rag
-bash scripts/bootstrap.sh        # creates .venv, installs deps (interactive)
+bash scripts/bootstrap.sh        # installs uv, runs `uv sync --frozen`, creates .venv
 cp YOUR_FILES.pdf sources/incoming/
-.venv/bin/doc-rag ingest
+uv run doc-rag ingest
 bash scripts/run_mcp_http.sh     # MCP/UI on http://127.0.0.1:3333
 ```
 

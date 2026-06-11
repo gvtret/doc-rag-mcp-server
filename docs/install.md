@@ -1,12 +1,37 @@
 # Installation
 
+`doc-rag` v2.1+ ships with [uv](https://docs.astral.sh/uv/) as the
+official installer. A committed `uv.lock` makes every install
+reproducible — `uv sync --frozen` always reconstructs the exact venv
+that CI tests against.
+
 Three install paths:
 
-1. [Local dev (bootstrap script)](#local-dev-bootstrap) — recommended for hacking on the code
-2. [Docker Compose](#docker-compose) — single-command server, easiest for a LAN deploy
-3. [Native systemd](#native-systemd-no-docker) — production-style install under `/opt/doc-rag-mcp`
+1. [Local dev (bootstrap script)](#local-dev-bootstrap) — recommended for hacking on the code.
+2. [Docker Compose](#docker-compose) — single-command server, easiest for a LAN deploy.
+3. [Native systemd](#native-systemd-no-docker) — production-style install under `/opt/doc-rag-mcp`.
 
 For a deeper deploy walkthrough see [deploy.md](deploy.md).
+
+---
+
+## Prerequisites
+
+- Linux or WSL2
+- Python ≥ 3.10 (uv can install it for you if missing — see below)
+- ~2 GB RAM for embeddings; ~1 GB extra cache for Docling models on first parse
+- `antiword` (optional, only for legacy `.doc` files)
+- OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install
+
+### Installing uv
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+The installer drops a single binary into `~/.local/bin`. If your shell
+session does not pick it up, source the rc snippet the installer
+prints, or restart the shell.
 
 ---
 
@@ -16,177 +41,60 @@ For a deeper deploy walkthrough see [deploy.md](deploy.md).
 bash scripts/bootstrap.sh
 ```
 
-Creates `.venv`, installs base deps (Docling included — it is the only
-PDF backend since v2.0), then prompts (with sensible defaults) for:
+`bootstrap.sh` installs uv if missing, then prompts (with sensible
+defaults) for which extras to include and runs `uv sync --frozen` to
+materialise the venv into `.venv/`.
 
-- FAISS (`faiss-cpu`) — needed for semantic search
-- Server extras (`fastapi`, `uvicorn`, `python-multipart`)
-- torch + sentence-transformers (CPU)
-- Initial `doc-rag ingest`
+Extras the bootstrap exposes:
 
-Non-interactive mode (for CI / scripts):
+- `faiss` — `faiss-cpu` (semantic search index; default: Y)
+- `embeddings` — `torch` + `sentence-transformers` (CPU; default: Y)
+- `dev` — `pytest`, `pytest-cov`, `httpx`, `ruff` (default: N)
+- `metrics` — `prometheus-client` (default: N)
+
+`server` (FastAPI + Uvicorn + python-multipart) is always installed —
+nothing else makes sense without the HTTP layer.
+
+Non-interactive mode (CI / scripted deploy):
 
 ```bash
 DOC_RAG_BOOTSTRAP_NONINTERACTIVE=1 \
 DOC_RAG_BOOTSTRAP_FAISS=Y \
-DOC_RAG_BOOTSTRAP_SERVER=Y \
-DOC_RAG_BOOTSTRAP_TORCH=2 \
+DOC_RAG_BOOTSTRAP_EMBEDDINGS=Y \
+DOC_RAG_BOOTSTRAP_DEV=N \
+DOC_RAG_BOOTSTRAP_METRICS=N \
+DOC_RAG_BOOTSTRAP_INGEST=N \
 bash scripts/bootstrap.sh
 ```
 
-`DOC_RAG_BOOTSTRAP_TORCH`: `1` = GPU, `2` = CPU, `3` = skip.
+`DOC_RAG_BOOTSTRAP_FROZEN=0` relaxes `--frozen` (useful when iterating
+on `pyproject.toml`).
 
-### Manual venv install
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[server,faiss]"
-bash scripts/install_torch_cpu.sh        # or install_torch_gpu.sh
-pip install sentence-transformers
-```
-
-Torch is installed via a separate script on purpose — that lets you pick a CPU- or
-CUDA-specific wheel without polluting `requirements.txt`.
-
----
-
-## GPU install (NVIDIA / CUDA)
-
-`doc-rag` runs fine on CPU; GPU is an optional accelerator for the
-embedding step. Measured speedup on a development workstation
-(NVIDIA GTX 1650, 4 GB VRAM, WSL2): roughly **3×** for batched encoding
-with `bge-small-en-v1.5`. Bigger embeddings models scale better with
-GPU; for the default `bge-large-en-v1.5` the speedup is more dramatic
-because CPU becomes the bottleneck quickly.
-
-### Requirements
-
-- NVIDIA GPU with at least **4 GB VRAM** for `bge-small-en-v1.5`,
-  **6 GB+** for `bge-large-en-v1.5`. With less VRAM, drop the embedding
-  `batch_size` in `config/config.yaml` (try 8 or even 4) or switch to
-  `bge-small`.
-- NVIDIA driver matching CUDA 12.4 or newer (`nvidia-smi` reports the
-  driver version; CUDA itself is shipped inside the PyTorch wheel,
-  you do not need a system-wide CUDA toolkit).
-- WSL2 is supported transparently — the PyTorch CUDA wheel sees the
-  Windows-side GPU through the Linux subsystem.
-
-### Install
+### Manual uv sync (skipping the script)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[server,faiss]"
-bash scripts/install_torch_gpu.sh        # pulls torch from the CUDA 12.4 wheel index
-pip install sentence-transformers
+uv sync --frozen --extra server --extra faiss --extra embeddings --extra dev
 ```
 
-Verify:
+Add `--extra metrics` for the Prometheus exporter.
+
+Run anything with the venv via `uv run`:
 
 ```bash
-.venv/bin/python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-# expected: True NVIDIA GeForce GTX 1650
+uv run pytest
+uv run ruff check src/ tests/
+uv run doc-rag ingest
 ```
 
-### Tell doc-rag to use the GPU
+### Docling models on first parse
 
-`config/config.yaml`:
+Docling downloads ~300 MB of ML model weights (TableFormer, DocLayout,
+RapidOCR) on the first PDF parse. The download is cached under
+`~/.cache/docling/` and survives restarts. Subsequent parses are
+offline.
 
-```yaml
-embeddings:
-  model_name: "BAAI/bge-large-en-v1.5"
-  device: "cuda"            # or "auto" — picks cuda if torch.cuda.is_available()
-  batch_size: 16            # for 4 GB VRAM cards; raise to 32 on 8 GB+
-  normalize: true
-```
-
-`auto` is the friendliest default: deploys without a GPU fall back to
-CPU silently, deploys with a GPU pick it up without a config change.
-
-### Verify end-to-end
-
-Run the bundled benchmark to confirm the encoder is actually on the GPU:
-
-```bash
-python scripts/bench.py --size 1000 --device cuda --model BAAI/bge-large-en-v1.5 --batch-size 16
-```
-
-The JSON output's `platform.device` field should read `cuda`, and
-`encode_chunks_per_s` should be at least 5-10× higher than on the same
-host with `--device cpu`.
-
----
-
-## GPU install (AMD / ROCm)
-
-`doc-rag` runs identical code on AMD ROCm because PyTorch's HIP layer
-translates CUDA calls transparently — `torch.cuda.is_available()`
-returns `True` against a ROCm-built `torch`, and `device="cuda"` in
-`config/config.yaml` works without changes.
-
-### Requirements
-
-- **Linux only.** ROCm is not supported on WSL2 (CUDA is — this is a
-  CUDA/WSL-specific path that has no ROCm equivalent at time of
-  writing). If your development host is Windows + WSL2, run ROCm on a
-  separate Linux host or VM with PCI passthrough.
-- **A ROCm-supported AMD GPU.** Recent releases support RDNA2
-  (RX 6000-series), RDNA3 (RX 7000-series), CDNA (Instinct MI200/
-  MI300), and modern Vega. Older GCN cards (RX 500-series and older)
-  have been dropped from upstream support.
-- **Device nodes accessible:** `/dev/kfd` and `/dev/dri/renderD*`
-  must exist and be readable by the user running `doc-rag`. In a
-  VM this means the hypervisor must pass the GPU through (vfio).
-  Inside Docker, the container needs `--device=/dev/kfd
-  --device=/dev/dri --group-add video`.
-- **ROCm runtime installed system-wide.** AMD publishes apt/dnf
-  repositories — use `amdgpu-install --usecase=rocm` on
-  Debian/Ubuntu; do not rely on pip alone.
-
-### Install
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[server,faiss]"
-
-# Pick the ROCm version matching your installed runtime.
-# Example for ROCm 6.2:
-pip install torch --index-url https://download.pytorch.org/whl/rocm6.2
-pip install sentence-transformers
-```
-
-Verify:
-
-```bash
-.venv/bin/python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-# expected: True   <your AMD GPU name>
-```
-
-### Tell doc-rag to use the GPU
-
-The same config block as for CUDA — `device: cuda` is correct even
-on ROCm; PyTorch maps it to the AMD device internally.
-
-```yaml
-embeddings:
-  device: "cuda"      # or "auto"
-  batch_size: 16
-```
-
-### Known limits compared to CUDA
-
-- **`faiss-gpu` is NVIDIA-only.** FAISS stays on `faiss-cpu`. This is
-  fine for the project's typical sizes (< 50 K chunks); the
-  embedding step is the bottleneck regardless.
-- **ONNX Runtime ROCm execution provider is less mature** than CUDA.
-  When the v1.5+ Docling backend lands (see `docs/roadmap.md`), some
-  of its auxiliary ML models may still run on CPU under ROCm. The
-  primary PyTorch path will be GPU-accelerated either way.
+If your install is air-gapped, copy the populated cache directory from
+a connected box; the path is the same on all Linux hosts.
 
 ---
 
@@ -197,6 +105,10 @@ cp .env.example .env       # optional: tweak port, origins, API key
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
+
+The image now builds via uv inside the container (see
+`docker/Dockerfile`); the lockfile guarantees the deployed venv matches
+whatever CI tested.
 
 Volumes mounted by default:
 
@@ -212,24 +124,23 @@ For a Linux server you control, with auto-start on boot:
 
 ```bash
 sudo bash scripts/install_server_native.sh
-# optional: --gpu          NVIDIA driver required
-# optional: --minimal      MCP only, skip torch/embeddings
-# optional: <INSTALL_ROOT> (default: /opt/doc-rag-mcp)
+# optional: --minimal       only HTTP/MCP, skip torch/embeddings
+# optional: <INSTALL_ROOT>  default: /opt/doc-rag-mcp
 ```
 
 The installer:
 
 - creates system user `docrag`
-- installs apt packages: `python3-venv`, `build-essential`, `tesseract-ocr*`, `antiword`
+- installs apt packages: `python3`, `python3-venv`, `build-essential`, `rsync`, `antiword`
 - syncs the repo into `INSTALL_ROOT` (preserves existing `build/` — manifest and FAISS survive upgrades)
-- runs `scripts/bootstrap.sh` non-interactively
+- bootstraps the venv via `bash scripts/bootstrap.sh` non-interactively (which installs uv and runs `uv sync --frozen`)
 - installs and starts `doc-rag-mcp.service`
 - writes `/etc/default/doc-rag` (edit port / origins / API key, then `systemctl restart doc-rag-mcp`)
 
 Run ingest as the service user:
 
 ```bash
-sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/doc-rag ingest'
+sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && uv run doc-rag ingest'
 ```
 
 Logs: `journalctl -u doc-rag-mcp -f`
@@ -243,20 +154,11 @@ Required at runtime depending on what you parse:
 | Feature | Package | Notes |
 | --- | --- | --- |
 | Legacy `.doc` | `antiword` (preferred) or `catdoc` | required for binary Word format |
-| Scanned PDFs (OCR) | none | Docling runs RapidOCR internally — no separate Tesseract install |
+| Scanned PDFs (OCR) | none | Docling runs RapidOCR internally |
 | PDF tables / structure | none | Docling extracts grids, headings, formulas by default |
 
-`scripts/install_server_native.sh` installs `antiword`. For Docker, see `docker/Dockerfile`.
-
-### Docling models on first parse
-
-Docling downloads ~300 MB of ML model weights (TableFormer, DocLayout
-detection, RapidOCR) on the first PDF parse. The download is cached
-under `~/.cache/docling/` (or `$HOME/.cache/...` for the service user)
-and survives restarts. Subsequent parses are offline.
-
-If your install is air-gapped, copy the populated cache directory from
-a connected box; the path is the same on all Linux hosts.
+`scripts/install_server_native.sh` installs `antiword`. For Docker,
+see `docker/Dockerfile`.
 
 ---
 
@@ -269,7 +171,7 @@ Main config: `config/config.yaml`. Key sections:
 ```yaml
 embeddings:
   model_name: "BAAI/bge-large-en-v1.5"   # 1024-dim, multilingual works fine
-  device: "auto"                          # auto | cpu | cuda
+  device: "auto"                          # auto | cpu
   batch_size: 32
   normalize: true
 ```
@@ -307,10 +209,9 @@ sources:
 
 ## Performance notes
 
-- GPU strongly recommended for >2 GB corpora; FAISS rebuild on 4000+ chunks takes ~3 h on 8 CPU cores.
-- `bge-large-en-v1.5` ≈ 1.5 GB VRAM.
-- For low VRAM use `bge-small-en-v1.5`.
+- CPU-only build is the supported path. Full corpus rebuild on Docling is the heavier cost; plan large ingests off-hours.
+- `bge-large-en-v1.5` ≈ 1.5 GB RAM during encoding.
+- For low-RAM use `bge-small-en-v1.5`.
 - FAISS index is `IndexFlatIP` (exact, no training step).
 
-See [troubleshooting.md](troubleshooting.md) if torch/CUDA misbehaves or pip complains about
-PEP 668 / `externally-managed-environment`.
+See [troubleshooting.md](troubleshooting.md) for common install issues.
