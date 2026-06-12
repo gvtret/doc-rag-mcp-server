@@ -63,6 +63,8 @@ Optional extras
                          https://github.com/encode/uvicorn
     python-multipart   — Apache-2.0
                          https://github.com/Kludex/python-multipart
+    ruamel.yaml        — MIT
+                         https://sourceforge.net/projects/ruamel-yaml/
 
   [faiss]
     faiss-cpu          — MIT
