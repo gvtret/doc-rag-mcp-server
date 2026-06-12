@@ -82,6 +82,27 @@ export type ConfigSaveResponse = {
   error?: string;
 };
 
+// Parsed config.yaml for the structured form editor. `config` is the
+// YAML mapping as JSON; the form reads/writes individual fields by path.
+export type ConfigParsed = {
+  ok: true;
+  path: string;
+  config: Record<string, unknown>;
+};
+
+export type ConfigParsedError = {
+  ok: false;
+  error: string;
+};
+
+// Field-level, comment-preserving write. `updates` is a map of dotted
+// paths to values, e.g. { "chunking.target_tokens": 512 }.
+export type ConfigPatchResponse = {
+  ok: boolean;
+  path?: string;
+  error?: string;
+};
+
 export type RestartResponse = {
   ok: boolean;
   message?: string;

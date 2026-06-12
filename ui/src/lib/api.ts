@@ -3,6 +3,9 @@
 // keeps applying transparently.
 
 import type {
+  ConfigParsed,
+  ConfigParsedError,
+  ConfigPatchResponse,
   ConfigRaw,
   ConfigRawError,
   ConfigSaveResponse,
@@ -63,6 +66,25 @@ export function saveConfig(
   signal?: AbortSignal,
 ): Promise<ConfigSaveResponse> {
   return postForm<ConfigSaveResponse>("/ui/config/save", { content }, signal);
+}
+
+export function fetchConfigParsed(
+  signal?: AbortSignal,
+): Promise<ConfigParsed | ConfigParsedError> {
+  return getJSON<ConfigParsed | ConfigParsedError>("/ui/config/parsed", signal);
+}
+
+// `updates` maps dotted config paths to values; serialized to JSON for
+// the form-encoded POST body.
+export function patchConfig(
+  updates: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<ConfigPatchResponse> {
+  return postForm<ConfigPatchResponse>(
+    "/ui/config/patch",
+    { updates: JSON.stringify(updates) },
+    signal,
+  );
 }
 
 export function restartService(signal?: AbortSignal): Promise<RestartResponse> {

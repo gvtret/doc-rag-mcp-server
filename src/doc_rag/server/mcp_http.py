@@ -940,6 +940,8 @@ async def _http_log_mw(request: Request, call_next):
             "/api/v1/manifest",
             "/ui/config/raw",
             "/ui/config/save",
+            "/ui/config/parsed",
+            "/ui/config/patch",
             "/ui/restart",
         ):
             _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
@@ -1066,6 +1068,128 @@ async def ui_config_save(
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, "path": str(_config_path())})
+
+
+@app.get("/ui/config/parsed")
+async def ui_config_parsed(request: Request, key: str = "") -> JSONResponse:
+    """Parsed view of config.yaml for the structured form editor.
+
+    The form populates from this; comment-preserving writes go through
+    `/ui/config/patch`. The raw text path (`/ui/config/raw`) still backs
+    the Advanced tab."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    p = _config_path()
+    try:
+        import yaml
+
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    if not isinstance(data, dict):
+        return JSONResponse(
+            {"ok": False, "error": "Корень конфигурации не является объектом."},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "path": str(p), "config": data})
+
+
+def _coerce_like(existing: Any, value: Any) -> Any:
+    """Coerce `value` to the type of `existing` so a round-trip patch keeps
+    scalar types stable (the form sends typed JSON, but be defensive).
+
+    bool is checked before int because `bool` is a subclass of `int`."""
+    if isinstance(existing, bool):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if isinstance(existing, int):
+        return int(value)
+    if isinstance(existing, float):
+        return float(value)
+    if existing is None:
+        return value
+    return str(value)
+
+
+@app.post("/ui/config/patch")
+async def ui_config_patch(
+    request: Request, key: str = Form(""), updates: str = Form("")
+) -> JSONResponse:
+    """Apply field-level updates to config.yaml while preserving comments.
+
+    `updates` is a JSON object of dotted paths to values, e.g.
+    `{"chunking.target_tokens": 512, "parsing.pdf_backend": "docling"}`.
+    Only paths that already exist in the file are written; unknown paths
+    are rejected so the form cannot silently invent keys."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        parsed = json.loads(updates)
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"updates не JSON: {exc}"}, status_code=400
+        )
+    if not isinstance(parsed, dict) or not parsed:
+        return JSONResponse(
+            {"ok": False, "error": "updates должен быть непустым объектом."},
+            status_code=400,
+        )
+
+    from ruamel.yaml import YAML
+
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    # ruamel renders Python None as an empty scalar by default, which would
+    # silently rewrite untouched `key: null` lines to `key:`. Keep the
+    # explicit `null` so a field patch only changes the field it touched.
+    yaml_rt.representer.add_representer(
+        type(None),
+        lambda r, _d: r.represent_scalar("tag:yaml.org,2002:null", "null"),
+    )
+    p = _config_path()
+    try:
+        with p.open("r", encoding="utf-8") as fh:
+            doc = yaml_rt.load(fh)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    for dotted, value in parsed.items():
+        parts = str(dotted).split(".")
+        node = doc
+        try:
+            for seg in parts[:-1]:
+                node = node[seg]
+            leaf = parts[-1]
+            existing = node[leaf]
+        except (KeyError, TypeError):
+            return JSONResponse(
+                {"ok": False, "error": f"Неизвестный ключ конфигурации: {dotted}"},
+                status_code=400,
+            )
+        try:
+            node[leaf] = _coerce_like(existing, value)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"Неверное значение для {dotted}: {exc}"},
+                status_code=400,
+            )
+
+    import io
+
+    buf = io.StringIO()
+    yaml_rt.dump(doc, buf)
+    out = buf.getvalue()
+    ok, msg = _validate_root_yaml(out)
+    if not ok:
+        return JSONResponse({"ok": False, "error": msg}, status_code=400)
+    try:
+        _atomic_write_text(p, out)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "path": str(p)})
 
 
 @app.post("/ui/restart")

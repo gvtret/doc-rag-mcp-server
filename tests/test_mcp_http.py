@@ -170,3 +170,100 @@ def test_ui_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert r.status_code == 401
     r = c.get("/ui?key=secret")
     assert r.status_code == 200
+
+
+_SAMPLE_CONFIG = """\
+chunking:
+  # keep this comment intact across a form-save
+  target_tokens: 512
+  overlap_tokens: 64
+
+index:
+  metric: "ip"
+  top_k: 6
+"""
+
+
+def _write_sample_config(tmp_path):
+    p = tmp_path / "config" / "config.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_SAMPLE_CONFIG, encoding="utf-8")
+    return p
+
+
+def test_ui_config_parsed_returns_mapping(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    _write_sample_config(tmp_path)
+    from doc_rag.server.mcp_http import app
+
+    r = TestClient(app).get("/ui/config/parsed")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["config"]["chunking"]["target_tokens"] == 512
+    assert data["config"]["index"]["metric"] == "ip"
+
+
+def test_ui_config_patch_updates_and_preserves_comments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("ruamel.yaml")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    p = _write_sample_config(tmp_path)
+    from doc_rag.server.mcp_http import app
+
+    updates = '{"chunking.target_tokens": 256, "index.metric": "l2"}'
+    r = TestClient(app).post("/ui/config/patch", data={"updates": updates})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    on_disk = p.read_text(encoding="utf-8")
+    # Value changed, type stays an int (no quotes), comment survives.
+    assert "target_tokens: 256" in on_disk
+    assert "keep this comment intact across a form-save" in on_disk
+    assert 'metric: "l2"' in on_disk
+
+
+def test_ui_config_patch_rejects_unknown_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("ruamel.yaml")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    _write_sample_config(tmp_path)
+    from doc_rag.server.mcp_http import app
+
+    r = TestClient(app).post(
+        "/ui/config/patch", data={"updates": '{"chunking.bogus": 1}'}
+    )
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_ui_config_patch_requires_key_when_api_key_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    _write_sample_config(tmp_path)
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    assert c.get("/ui/config/parsed").status_code == 401
+    assert (
+        c.post("/ui/config/patch", data={"updates": "{}"}).status_code == 401
+    )
