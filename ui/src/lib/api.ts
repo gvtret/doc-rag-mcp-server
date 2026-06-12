@@ -9,6 +9,9 @@ import type {
   ConfigRaw,
   ConfigRawError,
   ConfigSaveResponse,
+  EnvGet,
+  EnvGetError,
+  EnvSaveResponse,
   HealthReady,
   RestartResponse,
   StatusPayload,
@@ -82,6 +85,21 @@ export function patchConfig(
 ): Promise<ConfigPatchResponse> {
   return postForm<ConfigPatchResponse>(
     "/ui/config/patch",
+    { updates: JSON.stringify(updates) },
+    signal,
+  );
+}
+
+export function fetchEnv(signal?: AbortSignal): Promise<EnvGet | EnvGetError> {
+  return getJSON<EnvGet | EnvGetError>("/ui/env", signal);
+}
+
+export function saveEnv(
+  updates: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<EnvSaveResponse> {
+  return postForm<EnvSaveResponse>(
+    "/ui/env/save",
     { updates: JSON.stringify(updates) },
     signal,
   );

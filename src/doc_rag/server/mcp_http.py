@@ -942,6 +942,8 @@ async def _http_log_mw(request: Request, call_next):
             "/ui/config/save",
             "/ui/config/parsed",
             "/ui/config/patch",
+            "/ui/env",
+            "/ui/env/save",
             "/ui/restart",
         ):
             _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
@@ -1129,9 +1131,7 @@ async def ui_config_patch(
     try:
         parsed = json.loads(updates)
     except Exception as exc:
-        return JSONResponse(
-            {"ok": False, "error": f"updates не JSON: {exc}"}, status_code=400
-        )
+        return JSONResponse({"ok": False, "error": f"updates не JSON: {exc}"}, status_code=400)
     if not isinstance(parsed, dict) or not parsed:
         return JSONResponse(
             {"ok": False, "error": "updates должен быть непустым объектом."},
@@ -1190,6 +1190,179 @@ async def ui_config_patch(
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, "path": str(p)})
+
+
+# --- service runtime env editor (Stage 2) ---------------------------------
+#
+# Production runs under systemd, which loads /etc/default/doc-rag (root-owned,
+# not writable by the `docrag` service user). So the UI manages a separate
+# <root>/.env that `scripts/run_mcp_http.sh` sources at startup (overriding
+# /etc/default). Changes apply on the next service restart.
+#
+# Each editable key carries a type for validation. DOC_RAG_API_KEY is a
+# secret: surfaced as set/not-set only, never echoed and never written here.
+
+_EDITABLE_ENV: dict[str, dict[str, Any]] = {
+    "DOC_RAG_HTTP_HOST": {"type": "text"},
+    "DOC_RAG_HTTP_PORT": {"type": "int"},
+    "DOC_RAG_ALLOWED_ORIGINS": {"type": "text"},
+    "DOC_RAG_HTTP_LOG": {"type": "text"},
+    "DOC_RAG_UI_RESTART_ENABLED": {"type": "bool"},
+    "DOC_RAG_UI_RESTART_CMD": {"type": "text"},
+    "DOC_RAG_UI_MAX_UPLOAD_MB": {"type": "int"},
+    "DOC_RAG_MAX_CONCURRENCY": {"type": "int"},
+    "DOC_RAG_RATE_LIMIT_RPS": {"type": "float"},
+    "DOC_RAG_RATE_LIMIT_BURST": {"type": "float"},
+    "DOC_RAG_LOG_LEVEL": {"type": "select", "options": ["DEBUG", "INFO", "WARNING", "ERROR"]},
+    "DOC_RAG_LOG_FORMAT": {"type": "select", "options": ["text", "json"]},
+}
+_SECRET_ENV = ("DOC_RAG_API_KEY",)
+
+
+def _env_file_path() -> Path:
+    override = (os.environ.get("DOC_RAG_ENV_FILE") or "").strip()
+    if override:
+        return Path(override)
+    root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
+    return root / ".env"
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Read KEY=VALUE pairs from a .env file, stripping surrounding quotes.
+    Comments and blank lines are ignored. Tolerant of a missing file."""
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
+def _coerce_env_value(key: str, raw: str) -> tuple[bool, str, str]:
+    """Validate+normalize a string value for an editable env key.
+    Returns (ok, normalized, error)."""
+    spec = _EDITABLE_ENV[key]
+    t = spec["type"]
+    s = str(raw).strip()
+    if t == "int":
+        try:
+            return True, str(int(s)), ""
+        except ValueError:
+            return False, "", f"{key}: ожидается целое число"
+    if t == "float":
+        try:
+            return True, repr(float(s)), ""
+        except ValueError:
+            return False, "", f"{key}: ожидается число"
+    if t == "bool":
+        truthy = s.lower() in ("1", "true", "yes", "on")
+        return True, "1" if truthy else "0", ""
+    if t == "select":
+        if s not in spec["options"]:
+            return False, "", f"{key}: допустимо одно из {spec['options']}"
+        return True, s, ""
+    return True, s, ""
+
+
+def _write_env_file(path: Path, updates: dict[str, str]) -> None:
+    """Merge managed keys into an existing .env, preserving unrelated lines
+    and comments. Values are single-quoted so the file is safe to `source`
+    from run_mcp_http.sh (DOC_RAG_UI_RESTART_CMD etc. contain spaces)."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    remaining = dict(updates)
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if key in remaining:
+            val = remaining.pop(key).replace("'", "'\\''")
+            out.append(f"{key}='{val}'")
+        else:
+            out.append(line)
+    for key, val in remaining.items():
+        esc = val.replace("'", "'\\''")
+        out.append(f"{key}='{esc}'")
+    _atomic_write_text(path, "\n".join(out) + "\n")
+
+
+@app.get("/ui/env")
+async def ui_env_get(request: Request, key: str = "") -> JSONResponse:
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env_file = _env_file_path()
+    persisted = _parse_env_file(env_file)
+    fields = []
+    for k, spec in _EDITABLE_ENV.items():
+        # Prefer the value persisted in the UI-managed .env; fall back to the
+        # effective process env (which includes /etc/default/doc-rag).
+        if k in persisted:
+            value, source = persisted[k], "file"
+        elif os.environ.get(k) is not None:
+            value, source = os.environ[k], "env"
+        else:
+            value, source = "", "default"
+        fields.append(
+            {
+                "key": k,
+                "type": spec["type"],
+                "options": spec.get("options"),
+                "value": value,
+                "source": source,
+            }
+        )
+    secrets = [
+        {"key": k, "set": bool((os.environ.get(k) or "").strip() or persisted.get(k))}
+        for k in _SECRET_ENV
+    ]
+    return JSONResponse({"ok": True, "path": str(env_file), "fields": fields, "secrets": secrets})
+
+
+@app.post("/ui/env/save")
+async def ui_env_save(
+    request: Request, key: str = Form(""), updates: str = Form("")
+) -> JSONResponse:
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        parsed = json.loads(updates)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"updates не JSON: {exc}"}, status_code=400)
+    if not isinstance(parsed, dict) or not parsed:
+        return JSONResponse(
+            {"ok": False, "error": "updates должен быть непустым объектом."}, status_code=400
+        )
+    normalized: dict[str, str] = {}
+    for k, v in parsed.items():
+        if k in _SECRET_ENV:
+            return JSONResponse(
+                {"ok": False, "error": f"{k} нельзя задавать из UI."}, status_code=400
+            )
+        if k not in _EDITABLE_ENV:
+            return JSONResponse(
+                {"ok": False, "error": f"Неизвестный ключ env: {k}"}, status_code=400
+            )
+        ok, norm, err = _coerce_env_value(k, v)
+        if not ok:
+            return JSONResponse({"ok": False, "error": err}, status_code=400)
+        normalized[k] = norm
+    try:
+        _write_env_file(_env_file_path(), normalized)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "path": str(_env_file_path())})
 
 
 @app.post("/ui/restart")

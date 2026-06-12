@@ -2,12 +2,16 @@
   import {
     fetchConfigParsed,
     fetchConfigRaw,
+    fetchEnv,
     patchConfig,
     restartService,
     saveConfig,
+    saveEnv,
   } from "../lib/api";
   import { CONFIG_SCHEMA, type Field } from "../lib/configSchema";
   import { getByPath } from "../lib/dotpath";
+  import { ENV_META } from "../lib/envSchema";
+  import type { EnvField, EnvSecret } from "../lib/types";
 
   // Two editors over the same config/config.yaml:
   //   - "form": structured fields (schema-driven), comment-preserving
@@ -15,7 +19,7 @@
   //   - "raw":  the original plain-text YAML editor (Advanced).
   // The raw textarea still validates server-side on save.
 
-  type Tab = "form" | "raw";
+  type Tab = "form" | "raw" | "env";
   let tab = $state<Tab>("form");
 
   type Banner = { tone: "ok" | "err"; text: string } | null;
@@ -166,11 +170,94 @@
     await loadRaw();
   }
 
+  // ---- service env tab --------------------------------------------------
+  type EnvState =
+    | { kind: "loading" }
+    | { kind: "loaded"; path: string }
+    | { kind: "error"; message: string };
+
+  let envState = $state<EnvState>({ kind: "loading" });
+  let envFields = $state<EnvField[]>([]);
+  let envSecrets = $state<EnvSecret[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let envValues = $state<Record<string, any>>({});
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let envBaseline = $state<Record<string, any>>({});
+  let envMsg: Banner = $state(null);
+  let envLoaded = false;
+
+  function envIn(f: EnvField): string | boolean {
+    if (f.type === "bool") return ["1", "true", "yes", "on"].includes(f.value.toLowerCase());
+    return f.value;
+  }
+
+  const envChangedKeys = $derived.by(() =>
+    envFields.map((f) => f.key).filter((k) => envValues[k] !== envBaseline[k]),
+  );
+  const envDirty = $derived(envChangedKeys.length > 0);
+
+  function envMeta(key: string): { label: string; hint?: string } {
+    return ENV_META[key] ?? { label: key };
+  }
+
+  async function loadEnv() {
+    envState = { kind: "loading" };
+    envMsg = null;
+    try {
+      const r = await fetchEnv();
+      if (r.ok) {
+        envFields = r.fields;
+        envSecrets = r.secrets;
+        const vals: Record<string, string | boolean> = {};
+        for (const f of r.fields) vals[f.key] = envIn(f);
+        envValues = vals;
+        envBaseline = { ...vals };
+        envState = { kind: "loaded", path: r.path };
+        envLoaded = true;
+      } else {
+        envState = { kind: "error", message: r.error };
+      }
+    } catch (e) {
+      envState = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async function onEnvSave() {
+    if (envState.kind !== "loaded" || busy || !envDirty) return;
+    busy = true;
+    envMsg = null;
+    try {
+      const updates: Record<string, string> = {};
+      for (const k of envChangedKeys) {
+        const v = envValues[k];
+        updates[k] = typeof v === "boolean" ? (v ? "1" : "0") : String(v);
+      }
+      const r = await saveEnv(updates);
+      if (r.ok) {
+        envBaseline = { ...envValues };
+        envMsg = { tone: "ok", text: `Записано в ${r.path ?? "(путь не возвращён)"}. Применится после рестарта.` };
+      } else {
+        envMsg = { tone: "err", text: r.error ?? "Неизвестная ошибка." };
+      }
+    } catch (e) {
+      envMsg = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
+  function onEnvReset() {
+    if (busy) return;
+    envValues = { ...envBaseline };
+    envMsg = null;
+  }
+
   // ---- shared -----------------------------------------------------------
   function switchTab(next: Tab) {
     tab = next;
     if (next === "form" && !formLoaded) void loadForm();
     if (next === "raw" && !rawLoaded) void loadRaw();
+    if (next === "env" && !envLoaded) void loadEnv();
   }
 
   async function onRestart() {
@@ -204,6 +291,9 @@
   <div class="tabs">
     <button type="button" class="tab" class:active={tab === "form"} onclick={() => switchTab("form")}>
       Форма
+    </button>
+    <button type="button" class="tab" class:active={tab === "env"} onclick={() => switchTab("env")}>
+      Сервис (env)
     </button>
     <button type="button" class="tab" class:active={tab === "raw"} onclick={() => switchTab("raw")}>
       Advanced (raw YAML)
@@ -285,40 +375,124 @@
         <span class="muted spacer">Изменения config'а вступят в силу после рестарта сервиса.</span>
       </div>
     {/if}
-  {:else if rawState.kind === "loading"}
-    <p class="muted">Загружаем <code>config/config.yaml</code>…</p>
-  {:else if rawState.kind === "error"}
-    <p class="error">Не удалось загрузить конфиг: <code>{rawState.message}</code></p>
-    <button type="button" class="btn" onclick={() => void loadRaw()}>Попробовать ещё раз</button>
+  {:else if tab === "raw"}
+    {#if rawState.kind === "loading"}
+      <p class="muted">Загружаем <code>config/config.yaml</code>…</p>
+    {:else if rawState.kind === "error"}
+      <p class="error">Не удалось загрузить конфиг: <code>{rawState.message}</code></p>
+      <button type="button" class="btn" onclick={() => void loadRaw()}>Попробовать ещё раз</button>
+    {:else}
+      <div class="meta mono">
+        <span class="muted">file:</span>
+        <code>{rawState.path}</code>
+        {#if rawDirty}
+          <span class="dot dirty" title="несохранённые изменения"></span>
+          <span class="muted">несохранённые изменения</span>
+        {/if}
+      </div>
+
+      {#if rawMsg}
+        <div class="banner {rawMsg.tone}">{rawMsg.text}</div>
+      {/if}
+
+      <div class="editor-wrap">
+        <textarea class="editor mono" bind:value={text} spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn primary" disabled={!rawDirty || busy} onclick={() => void onRawSave()}>
+          Сохранить
+        </button>
+        <button type="button" class="btn" disabled={busy} onclick={() => void onRawReload()}>
+          Перезагрузить с диска
+        </button>
+        <button type="button" class="btn warn" disabled={busy} onclick={() => void onRestart()}>
+          Перезапустить сервис
+        </button>
+        <span class="muted spacer">Изменения config'а вступят в силу после рестарта сервиса.</span>
+      </div>
+    {/if}
+  {:else if envState.kind === "loading"}
+    <p class="muted">Загружаем env сервиса…</p>
+  {:else if envState.kind === "error"}
+    <p class="error">Не удалось загрузить env: <code>{envState.message}</code></p>
+    <button type="button" class="btn" onclick={() => void loadEnv()}>Попробовать ещё раз</button>
   {:else}
     <div class="meta mono">
       <span class="muted">file:</span>
-      <code>{rawState.path}</code>
-      {#if rawDirty}
+      <code>{envState.path}</code>
+      {#if envDirty}
         <span class="dot dirty" title="несохранённые изменения"></span>
         <span class="muted">несохранённые изменения</span>
       {/if}
     </div>
 
-    {#if rawMsg}
-      <div class="banner {rawMsg.tone}">{rawMsg.text}</div>
+    <div class="banner info">
+      Эти настройки — runtime сервиса (не пайплайн). Запись идёт в <code>.env</code>,
+      который подхватывает <code>run_mcp_http.sh</code>; изменения применяются
+      только после перезапуска сервиса.
+    </div>
+
+    {#if envMsg}
+      <div class="banner {envMsg.tone}">{envMsg.text}</div>
     {/if}
 
-    <div class="editor-wrap">
-      <textarea class="editor mono" bind:value={text} spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <div class="form-scroll">
+      <fieldset class="group">
+        <legend>Runtime / env</legend>
+        {#each envFields as f (f.key)}
+          <div class="row" class:changed={envValues[f.key] !== envBaseline[f.key]}>
+            <label for={f.key}>{envMeta(f.key).label}</label>
+            <div class="control">
+              {#if f.type === "bool"}
+                <input id={f.key} type="checkbox" bind:checked={envValues[f.key]} />
+              {:else if f.type === "select"}
+                <select id={f.key} bind:value={envValues[f.key]}>
+                  {#each f.options ?? [] as opt (opt)}
+                    <option value={opt}>{opt}</option>
+                  {/each}
+                </select>
+              {:else if f.type === "int" || f.type === "float"}
+                <input id={f.key} type="number" step={f.type === "float" ? "any" : "1"} bind:value={envValues[f.key]} />
+              {:else}
+                <input id={f.key} type="text" bind:value={envValues[f.key]} />
+              {/if}
+              <p class="hint">
+                <code class="envkey">{f.key}</code>{#if f.source !== "file"} <span class="src">(из {f.source === "env" ? "окружения" : "по умолчанию"})</span>{/if}
+                {#if envMeta(f.key).hint}<br />{envMeta(f.key).hint}{/if}
+              </p>
+            </div>
+          </div>
+        {/each}
+      </fieldset>
+
+      {#if envSecrets.length}
+        <fieldset class="group">
+          <legend>Секреты (только статус)</legend>
+          {#each envSecrets as s (s.key)}
+            <div class="row">
+              <label for={s.key}>{s.key}</label>
+              <div class="control">
+                <span class="secret-status {s.set ? 'on' : 'off'}">{s.set ? "задан" : "не задан"}</span>
+                <p class="hint">Секрет не редактируется из UI — задайте его в env/systemd на сервере.</p>
+              </div>
+            </div>
+          {/each}
+        </fieldset>
+      {/if}
     </div>
 
     <div class="actions">
-      <button type="button" class="btn primary" disabled={!rawDirty || busy} onclick={() => void onRawSave()}>
+      <button type="button" class="btn primary" disabled={!envDirty || busy} onclick={() => void onEnvSave()}>
         Сохранить
       </button>
-      <button type="button" class="btn" disabled={busy} onclick={() => void onRawReload()}>
-        Перезагрузить с диска
+      <button type="button" class="btn" disabled={!envDirty || busy} onclick={onEnvReset}>
+        Сбросить изменения
       </button>
       <button type="button" class="btn warn" disabled={busy} onclick={() => void onRestart()}>
         Перезапустить сервис
       </button>
-      <span class="muted spacer">Изменения config'а вступят в силу после рестарта сервиса.</span>
+      <span class="muted spacer">Env применяется только после рестарта сервиса.</span>
     </div>
   {/if}
 </section>
@@ -392,6 +566,34 @@
     background: rgba(239, 68, 68, 0.1);
     border-color: var(--accent-error);
     color: var(--text-primary);
+  }
+  .banner.info {
+    background: rgba(59, 130, 246, 0.08);
+    border-color: var(--accent-info);
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .envkey {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+  .src {
+    color: var(--accent-info);
+    font-size: 0.75rem;
+  }
+  .secret-status {
+    font-size: 0.85rem;
+    padding: 3px 8px;
+    border-radius: 3px;
+    align-self: flex-start;
+  }
+  .secret-status.on {
+    color: var(--accent-ok);
+    border: 1px solid var(--accent-ok);
+  }
+  .secret-status.off {
+    color: var(--text-muted);
+    border: 1px solid var(--border-strong);
   }
   .form-scroll {
     flex: 1;

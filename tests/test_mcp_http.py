@@ -232,9 +232,7 @@ def test_ui_config_patch_updates_and_preserves_comments(
     assert 'metric: "l2"' in on_disk
 
 
-def test_ui_config_patch_rejects_unknown_key(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_ui_config_patch_rejects_unknown_key(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("ruamel.yaml")
     from fastapi.testclient import TestClient
@@ -244,9 +242,7 @@ def test_ui_config_patch_rejects_unknown_key(
     _write_sample_config(tmp_path)
     from doc_rag.server.mcp_http import app
 
-    r = TestClient(app).post(
-        "/ui/config/patch", data={"updates": '{"chunking.bogus": 1}'}
-    )
+    r = TestClient(app).post("/ui/config/patch", data={"updates": '{"chunking.bogus": 1}'})
     assert r.status_code == 400
     assert r.json()["ok"] is False
 
@@ -264,6 +260,98 @@ def test_ui_config_patch_requires_key_when_api_key_set(
 
     c = TestClient(app)
     assert c.get("/ui/config/parsed").status_code == 401
-    assert (
-        c.post("/ui/config/patch", data={"updates": "{}"}).status_code == 401
+    assert c.post("/ui/config/patch", data={"updates": "{}"}).status_code == 401
+
+
+def test_ui_env_get_lists_editable_keys(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
+    from doc_rag.server.mcp_http import app
+
+    r = TestClient(app).get("/ui/env")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    keys = {f["key"] for f in data["fields"]}
+    assert "DOC_RAG_HTTP_PORT" in keys
+    assert "DOC_RAG_UI_RESTART_CMD" in keys
+    # API key is a secret: present only as a set/not-set flag, never a field.
+    assert "DOC_RAG_API_KEY" not in keys
+    assert any(s["key"] == "DOC_RAG_API_KEY" for s in data["secrets"])
+
+
+def test_ui_env_get_masks_secret_value(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DOC_RAG_API_KEY", "supersecret123")
+    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
+    from doc_rag.server.mcp_http import app
+
+    r = TestClient(app).get("/ui/env?key=supersecret123")
+    assert r.status_code == 200
+    data = r.json()
+    secret = next(s for s in data["secrets"] if s["key"] == "DOC_RAG_API_KEY")
+    assert secret["set"] is True
+    # The secret value must never appear in the response body.
+    assert "supersecret123" not in r.text
+
+
+def test_ui_env_save_writes_quoted_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(env_file))
+    from doc_rag.server.mcp_http import app
+
+    updates = (
+        '{"DOC_RAG_HTTP_PORT": "4000", '
+        '"DOC_RAG_UI_RESTART_CMD": "sudo systemctl restart doc-rag-mcp"}'
     )
+    r = TestClient(app).post("/ui/env/save", data={"updates": updates})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    written = env_file.read_text(encoding="utf-8")
+    assert "DOC_RAG_HTTP_PORT='4000'" in written
+    # Value with spaces must be single-quoted so the file is safe to `source`.
+    assert "DOC_RAG_UI_RESTART_CMD='sudo systemctl restart doc-rag-mcp'" in written
+
+
+def test_ui_env_save_rejects_secret_unknown_and_bad_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    # secret key cannot be set from the UI
+    assert c.post("/ui/env/save", data={"updates": '{"DOC_RAG_API_KEY": "x"}'}).status_code == 400
+    # unknown key
+    assert c.post("/ui/env/save", data={"updates": '{"DOC_RAG_NOPE": "1"}'}).status_code == 400
+    # bad type (port must be int)
+    assert (
+        c.post("/ui/env/save", data={"updates": '{"DOC_RAG_HTTP_PORT": "abc"}'}).status_code == 400
+    )
+
+
+def test_ui_env_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
+    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    assert c.get("/ui/env").status_code == 401
+    assert c.post("/ui/env/save", data={"updates": "{}"}).status_code == 401
