@@ -59,6 +59,17 @@ sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/doc-rag ingest'
 
 To tune the service: `sudo nano /etc/default/doc-rag && sudo systemctl restart doc-rag-mcp`.
 
+### UI-managed env (`<root>/.env`)
+
+The Web UI's **Сервис (env)** tab writes a `<INSTALL_ROOT>/.env` file (the
+service user can write it; `/etc/default/doc-rag` is root-owned and cannot be
+edited from the UI). `scripts/run_mcp_http.sh` sources this file at startup
+and it **overrides** `/etc/default/doc-rag`, so a key set in both wins from
+`.env`. Override the path with `DOC_RAG_ENV_FILE`. Changes apply on the next
+`systemctl restart doc-rag-mcp` (the UI's Restart button, if sudoers allows
+it). `DOC_RAG_API_KEY` is never written from the UI — manage the key here or
+in `/etc/default/doc-rag`.
+
 ### Restarting from a deploy user
 
 A common pattern: dedicated `deploy` SSH user, restricted sudoers to only restart the

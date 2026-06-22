@@ -42,6 +42,9 @@ server = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "python-multipart",
+  # Round-trip YAML for the UI config form: preserves comments and
+  # formatting when patching individual fields (PyYAML cannot).
+  "ruamel.yaml>=0.18",
 ]
 
 # Vector index (optional). Upper-bound at <1.14 because 1.14.x wheels
