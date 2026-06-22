@@ -19,6 +19,7 @@ export type Field = {
   hint?: string;
   min?: number;
   max?: number;
+  required?: boolean;
 };
 
 export type Section = {
@@ -36,6 +37,7 @@ export const CONFIG_SCHEMA: Section[] = [
         type: "select",
         options: ["docling", "auto", "cascade"],
         hint: "docling — единственный backend; cascade — Docling с fallback на Unstructured при ошибке.",
+        required: true,
       },
       {
         path: "parsing.docx_backend",
@@ -43,6 +45,7 @@ export const CONFIG_SCHEMA: Section[] = [
         type: "select",
         options: ["python-docx", "docling"],
         hint: "python-docx — быстрый (по умолчанию); docling — структурный, дороже по времени и памяти.",
+        required: true,
       },
       {
         path: "parsing.normalize_whitespace",
@@ -93,6 +96,7 @@ export const CONFIG_SCHEMA: Section[] = [
         label: "Целевой размер чанка (токены)",
         type: "int",
         min: 1,
+        required: true,
       },
       {
         path: "chunking.overlap_tokens",
@@ -106,7 +110,7 @@ export const CONFIG_SCHEMA: Section[] = [
         type: "float",
         min: 0,
         max: 1,
-        hint: "Word-bigram Jaccard между документами. 0 = выключено; 0.85 = убирать чанки с ≥85% совпадением. PDF имеет приоритет над DOCX.",
+        hint: "Word-bigram Jaccard между документами. 0 = выключено; 0.85 = убирать чанки с ≥85% совпадением.",
       },
     ],
   },
@@ -118,6 +122,7 @@ export const CONFIG_SCHEMA: Section[] = [
         label: "Модель",
         type: "text",
         hint: "Имя модели sentence-transformers, напр. BAAI/bge-large-en-v1.5.",
+        required: true,
       },
       {
         path: "embeddings.device",
@@ -125,12 +130,14 @@ export const CONFIG_SCHEMA: Section[] = [
         type: "select",
         options: ["cpu", "cuda"],
         hint: "Целевой сервер без видеоускорителя — обычно cpu.",
+        required: true,
       },
       {
         path: "embeddings.batch_size",
         label: "Batch size",
         type: "int",
         min: 1,
+        required: true,
       },
       {
         path: "embeddings.normalize",
@@ -147,6 +154,7 @@ export const CONFIG_SCHEMA: Section[] = [
         label: "Backend",
         type: "select",
         options: ["faiss"],
+        required: true,
       },
       {
         path: "index.metric",
@@ -154,13 +162,50 @@ export const CONFIG_SCHEMA: Section[] = [
         type: "select",
         options: ["ip", "l2"],
         hint: "ip — скалярное произведение (для нормализованных векторов ≈ косинус).",
+        required: true,
       },
       {
         path: "index.top_k",
         label: "Top-K по умолчанию",
         type: "int",
         min: 1,
+        required: true,
       },
     ],
   },
 ];
+
+export type ValidationError = { path: string; message: string };
+
+export function validateField(field: Field, value: unknown): string | null {
+  if (field.required && (value === "" || value === null || value === undefined)) {
+    return "Обязательное поле";
+  }
+  if (field.type === "select" && field.options && !field.options.includes(String(value))) {
+    return `Допустимые значения: ${field.options.join(", ")}`;
+  }
+  if (field.type === "int") {
+    if (value === "" || value === null || value === undefined) return null;
+    const n = Number(value);
+    if (!Number.isInteger(n)) return "Целое число";
+    if (field.min !== undefined && n < field.min) return `Минимум: ${field.min}`;
+    if (field.max !== undefined && n > field.max) return `Максимум: ${field.max}`;
+  }
+  if (field.type === "float") {
+    if (value === "" || value === null || value === undefined) return null;
+    const n = Number(value);
+    if (isNaN(n)) return "Число";
+    if (field.min !== undefined && n < field.min) return `Минимум: ${field.min}`;
+    if (field.max !== undefined && n > field.max) return `Максимум: ${field.max}`;
+  }
+  return null;
+}
+
+export function validateAll(fields: Field[], values: Record<string, unknown>): ValidationError[] {
+  const errors: ValidationError[] = [];
+  for (const f of fields) {
+    const err = validateField(f, values[f.path]);
+    if (err) errors.push({ path: f.path, message: err });
+  }
+  return errors;
+}

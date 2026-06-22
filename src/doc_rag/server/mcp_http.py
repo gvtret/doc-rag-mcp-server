@@ -781,7 +781,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "2.3.0"},
+            "serverInfo": {"name": "doc-rag", "version": "2.4.0"},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -867,7 +867,7 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="2.3.0")
+app = FastAPI(title="doc-rag MCP HTTP", version="2.4.0")
 
 
 def _mount_ui_next(app: FastAPI) -> None:
@@ -1026,7 +1026,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "2.3.0",
+            "version": "2.4.0",
             "ready": state["ready"],
             "reasons": state["reasons"],
         }
@@ -1096,6 +1096,56 @@ async def ui_config_parsed(request: Request, key: str = "") -> JSONResponse:
     return JSONResponse({"ok": True, "path": str(p), "config": data})
 
 
+@app.post("/ui/config/validate")
+async def ui_config_validate(
+    request: Request, key: str = Form(""), updates: str = Form("")
+) -> JSONResponse:
+    """Validate config field updates without writing. Returns errors if any."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        parsed = json.loads(updates)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"updates не JSON: {exc}"}, status_code=400)
+    if not isinstance(parsed, dict):
+        return JSONResponse(
+            {"ok": False, "error": "updates должен быть объектом."},
+            status_code=400,
+        )
+
+    p = _config_path()
+    try:
+        import yaml as yaml_mod
+
+        data = yaml_mod.safe_load(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    errors: list[dict[str, str]] = []
+    for dotted, value in parsed.items():
+        parts = str(dotted).split(".")
+        node = data
+        try:
+            for seg in parts[:-1]:
+                node = node[seg]
+            _ = node[parts[-1]]
+        except (KeyError, TypeError):
+            errors.append({"path": dotted, "error": "Неизвестный ключ конфигурации"})
+            continue
+        try:
+            coerced = _coerce_like(node[parts[-1]], value)
+        except (ValueError, TypeError) as exc:
+            errors.append({"path": dotted, "error": str(exc)})
+            continue
+        val_err = _validate_field_value(dotted, coerced)
+        if val_err:
+            errors.append({"path": dotted, "error": val_err})
+
+    if errors:
+        return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
 def _coerce_like(existing: Any, value: Any) -> Any:
     """Coerce `value` to the type of `existing` so a round-trip patch keeps
     scalar types stable (the form sends typed JSON, but be defensive).
@@ -1114,6 +1164,51 @@ def _coerce_like(existing: Any, value: Any) -> Any:
     if existing is None:
         return value
     return str(value)
+
+
+_FIELD_CONSTRAINTS: dict[str, dict[str, Any]] = {
+    "parsing.pdf_backend": {"options": ["docling", "auto", "cascade"]},
+    "parsing.docx_backend": {"options": ["python-docx", "docling"]},
+    "parsing.min_chars_per_page": {"type": "int", "min": 0},
+    "sectioning.min_heading_len": {"type": "int", "min": 1},
+    "sectioning.max_heading_len": {"type": "int", "min": 1},
+    "chunking.target_tokens": {"type": "int", "min": 1},
+    "chunking.overlap_tokens": {"type": "int", "min": 0},
+    "chunking.dedup_similarity_threshold": {"type": "float", "min": 0.0, "max": 1.0},
+    "embeddings.batch_size": {"type": "int", "min": 1},
+    "embeddings.device": {"options": ["cpu", "cuda"]},
+    "index.backend": {"options": ["faiss"]},
+    "index.metric": {"options": ["ip", "l2"]},
+    "index.top_k": {"type": "int", "min": 1},
+}
+
+
+def _validate_field_value(dotted: str, value: Any) -> str | None:
+    """Return an error message if the value violates constraints, else None."""
+    c = _FIELD_CONSTRAINTS.get(dotted)
+    if c is None:
+        return None
+    if "options" in c and str(value) not in c["options"]:
+        return f"Допустимые значения: {', '.join(c['options'])}"
+    if c.get("type") == "int":
+        try:
+            n = int(value)
+        except (ValueError, TypeError):
+            return "Значение должно быть целым числом"
+        if "min" in c and n < c["min"]:
+            return f"Минимум: {c['min']}"
+        if "max" in c and n > c["max"]:
+            return f"Максимум: {c['max']}"
+    if c.get("type") == "float":
+        try:
+            n = float(value)
+        except (ValueError, TypeError):
+            return "Значение должно быть числом"
+        if "min" in c and n < c["min"]:
+            return f"Минимум: {c['min']}"
+        if "max" in c and n > c["max"]:
+            return f"Максимум: {c['max']}"
+    return None
 
 
 @app.post("/ui/config/patch")
@@ -1174,6 +1269,12 @@ async def ui_config_patch(
         except (ValueError, TypeError) as exc:
             return JSONResponse(
                 {"ok": False, "error": f"Неверное значение для {dotted}: {exc}"},
+                status_code=400,
+            )
+        val_err = _validate_field_value(dotted, node[leaf])
+        if val_err:
+            return JSONResponse(
+                {"ok": False, "error": f"{dotted}: {val_err}"},
                 status_code=400,
             )
 

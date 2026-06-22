@@ -90,6 +90,17 @@ export function patchConfig(
   );
 }
 
+export function validateConfig(
+  updates: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ ok: true } | { ok: false; errors: { path: string; error: string }[] }> {
+  return postForm(
+    "/ui/config/validate",
+    { updates: JSON.stringify(updates) },
+    signal,
+  );
+}
+
 export function fetchEnv(signal?: AbortSignal): Promise<EnvGet | EnvGetError> {
   return getJSON<EnvGet | EnvGetError>("/ui/env", signal);
 }

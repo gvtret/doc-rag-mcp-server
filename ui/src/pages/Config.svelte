@@ -8,7 +8,12 @@
     saveConfig,
     saveEnv,
   } from "../lib/api";
-  import { CONFIG_SCHEMA, type Field } from "../lib/configSchema";
+  import {
+    CONFIG_SCHEMA,
+    type Field,
+    validateField,
+    validateAll,
+  } from "../lib/configSchema";
   import { getByPath } from "../lib/dotpath";
   import { ENV_META } from "../lib/envSchema";
   import type { EnvField, EnvSecret } from "../lib/types";
@@ -42,6 +47,8 @@
   let formBaseline = $state<Record<string, any>>({});
   let formMsg: Banner = $state(null);
   let formLoaded = false;
+  let fieldErrors = $state<Record<string, string>>({});
+  let formTried = $state(false);
 
   const allFields: Field[] = CONFIG_SCHEMA.flatMap((s) => s.fields);
 
@@ -59,6 +66,25 @@
       .filter((p) => formValues[p] !== formBaseline[p]),
   );
   const formDirty = $derived(changedPaths.length > 0);
+
+  function validateForm() {
+    const errs = validateAll(allFields, formValues);
+    const map: Record<string, string> = {};
+    for (const e of errs) map[e.path] = e.message;
+    fieldErrors = map;
+    return errs.length === 0;
+  }
+
+  function onFieldInput(path: string) {
+    if (!formTried) return;
+    const field = allFields.find((f) => f.path === path);
+    if (!field) return;
+    const err = validateField(field, formValues[path]);
+    const next = { ...fieldErrors };
+    if (err) next[path] = err;
+    else delete next[path];
+    fieldErrors = next;
+  }
 
   async function loadForm() {
     formState = { kind: "loading" };
@@ -82,6 +108,11 @@
 
   async function onFormSave() {
     if (formState.kind !== "loaded" || busy || !formDirty) return;
+    formTried = true;
+    if (!validateForm()) {
+      formMsg = { tone: "err", text: "Исправьте ошибки валидации перед сохранением." };
+      return;
+    }
     busy = true;
     formMsg = null;
     try {
@@ -105,6 +136,8 @@
     if (busy) return;
     formValues = { ...formBaseline };
     formMsg = null;
+    fieldErrors = {};
+    formTried = false;
   }
 
   // ---- raw tab ----------------------------------------------------------
@@ -329,13 +362,15 @@
           <fieldset class="group">
             <legend>{section.title}</legend>
             {#each section.fields as field (field.path)}
-              <div class="row" class:changed={formValues[field.path] !== formBaseline[field.path]}>
-                <label for={field.path}>{field.label}</label>
+              <div class="row" class:changed={formValues[field.path] !== formBaseline[field.path]} class:invalid={fieldErrors[field.path]}>
+                <label for={field.path}>
+                  {field.label}{#if field.required}<span class="req">*</span>{/if}
+                </label>
                 <div class="control">
                   {#if field.type === "bool"}
                     <input id={field.path} type="checkbox" bind:checked={formValues[field.path]} />
                   {:else if field.type === "select"}
-                    <select id={field.path} bind:value={formValues[field.path]}>
+                    <select id={field.path} bind:value={formValues[field.path]} onchange={() => onFieldInput(field.path)}>
                       {#each field.options ?? [] as opt (opt)}
                         <option value={opt}>{opt}</option>
                       {/each}
@@ -348,11 +383,14 @@
                       min={field.min}
                       max={field.max}
                       bind:value={formValues[field.path]}
+                      oninput={() => onFieldInput(field.path)}
                     />
                   {:else}
-                    <input id={field.path} type="text" bind:value={formValues[field.path]} />
+                    <input id={field.path} type="text" bind:value={formValues[field.path]} oninput={() => onFieldInput(field.path)} />
                   {/if}
-                  {#if field.hint}
+                  {#if fieldErrors[field.path]}
+                    <p class="field-error">{fieldErrors[field.path]}</p>
+                  {:else if field.hint}
                     <p class="hint">{field.hint}</p>
                   {/if}
                 </div>
@@ -629,6 +667,9 @@
   .row.changed {
     border-left-color: var(--accent-warn);
   }
+  .row.invalid {
+    border-left-color: var(--accent-error);
+  }
   .row label {
     font-size: 0.85rem;
     padding-top: 5px;
@@ -668,6 +709,16 @@
     color: var(--text-muted);
     line-height: 1.35;
     max-width: 520px;
+  }
+  .field-error {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--accent-error);
+    line-height: 1.35;
+  }
+  .req {
+    color: var(--accent-error);
+    margin-left: 2px;
   }
   .editor-wrap {
     flex: 1;

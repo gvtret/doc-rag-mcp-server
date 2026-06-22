@@ -4,6 +4,29 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.4.0 — 2026-06-22
+
+Cascading PDF parser fallback: Docling → Unstructured (hi_res).
+
+### Added
+- `src/doc_rag/raglib/unstructured_backend.py`: new PDF backend using
+  Unstructured `hi_res` strategy as a fallback for Docling.
+- `parsers.py`: new `pdf_backend: cascade` config option — tries Docling
+  first, falls back to Unstructured on parser exception, logs each hop.
+- `pyproject.toml`: `unstructured` optional extra (`[unstructured]`
+  install group).
+- Config schema (`configSchema.ts`): `cascade` added to PDF backend
+  dropdown with tooltip.
+- 4 new tests: Docling-first happy path, fallback on Docling failure,
+  both-fail RuntimeError, invalid backend rejection.
+
+### Notes
+- Unstructured is an optional heavy dependency (~2 GB); only needed when
+  `pdf_backend: cascade` is set. Standard `docling` mode is unchanged.
+- `source_backend: "unstructured"` was already in the blocks schema v1
+  and `_KNOWN_BACKENDS`; this release wires it up.
+- Score-based cascade trigger deferred to v2.4 (quality checks module).
+
 ## v2.3.0 — 2026-06-22
 
 Configuration form editor with service/env management and full Russian localization.

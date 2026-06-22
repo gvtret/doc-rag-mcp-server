@@ -96,6 +96,7 @@ These are intended for trusted LAN/admin use. Keep the API key set in production
 | `GET`  | `/ui/document-preview` | rendered markdown for a `doc_id` |
 | `GET`  | `/ui/config/parsed` | parsed `config.yaml` for the structured form |
 | `POST` | `/ui/config/patch` | field-level, comment-preserving config write |
+| `POST` | `/ui/config/validate` | validate field updates without writing |
 | `GET`  | `/ui/env` | editable service env (secrets masked) |
 | `POST` | `/ui/env/save` | write service env to `<root>/.env` |
 | `GET`  | `/api/v1/manifest` | raw `build/manifest.json` |
