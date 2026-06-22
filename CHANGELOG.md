@@ -4,6 +4,31 @@ All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project does not yet ship versioned tags, so entries are grouped by date.
 
+## v2.3.0 — 2026-06-22
+
+Configuration form editor with service/env management and full Russian localization.
+
+### Added
+- `ui/src/pages/Config.svelte`: full editor with three tabs:
+  - **Параметры сервера**: Schema-driven form editor for `config.yaml` with validation
+  - **Окружение сервиса**: Service environment variables editor (writes to `<root>/.env`)
+  - **Дополнительно (сырой YAML)**: Raw YAML editor for advanced users
+- Backend endpoints: `GET /ui/config/parsed`, `POST /ui/config/patch`, `GET /ui/env`, `POST /ui/env/save`
+- Environment variable persistence: UI writes `<root>/.env`, sourced by `scripts/run_mcp_http.sh`
+- Secret handling: `DOC_RAG_API_KEY` masked in UI, never written to disk
+- Schema validation: `configSchema.ts` and `envSchema.ts` with type checking
+- Localization: Complete Russian translation of all UI text (proper nouns kept in English)
+- UX improvements: Tab rename «Форма»→«Параметры сервера», hover tooltips with plain-language descriptions
+- Dependency: `ruamel.yaml` added for YAML round-trip preservation (comments, types)
+
+### Changed
+- `pyproject.version` + `ui/package.json` + the three hardcoded strings in `mcp_http.py` bump to `2.3.0`
+
+### Notes
+- Server restart uses existing `/ui/restart` endpoint (requires `DOC_RAG_UI_RESTART_ENABLED=1`)
+- `server:` block intentionally excluded from form — prod bind comes from env `DOC_RAG_HTTP_HOST/PORT`
+- Live systemd `/etc/default/doc-rag` overridden by UI-managed `<root>/.env` via `scripts/run_mcp_http.sh`
+
 ## v2.2.2 — 2026-06-11
 
 Configuration page in the Svelte UI. Part 3 of the v2.2 series. The
