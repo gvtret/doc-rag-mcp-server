@@ -34,8 +34,8 @@ export const CONFIG_SCHEMA: Section[] = [
         path: "parsing.pdf_backend",
         label: "PDF backend",
         type: "select",
-        options: ["docling", "auto"],
-        hint: "С v2.0 единственный backend для PDF — Docling. Ключ оставлен для совместимости.",
+        options: ["docling", "auto", "cascade"],
+        hint: "docling — единственный backend; cascade — Docling с fallback на Unstructured при ошибке.",
       },
       {
         path: "parsing.docx_backend",

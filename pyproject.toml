@@ -90,6 +90,13 @@ metrics = [
   "prometheus-client>=0.20",
 ]
 
+# Unstructured (hi_res) — second-tier PDF fallback for the cascade
+# parser (pdf_backend: cascade). Heavy dependency (~2 GB); only
+# needed when cascade mode is enabled.
+unstructured = [
+  "unstructured[hi-res]>=0.15",
+]
+
 
 [project.scripts]
 doc-rag = "doc_rag.cli:main"

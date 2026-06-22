@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from doc_rag.raglib.blocks import Block, blocks_to_markdown
 from doc_rag.raglib.filetype_detect import detect_supported_extension
+
+logger = logging.getLogger(__name__)
 
 _BACKEND_BY_EXT: dict[str, str] = {
     ".pdf": "docling",
@@ -14,7 +17,7 @@ _BACKEND_BY_EXT: dict[str, str] = {
     ".txt": "direct",
 }
 
-_VALID_PDF_BACKENDS: frozenset[str] = frozenset({"docling", "auto"})
+_VALID_PDF_BACKENDS: frozenset[str] = frozenset({"docling", "auto", "cascade"})
 _VALID_DOCX_BACKENDS: frozenset[str] = frozenset({"python-docx", "docling"})
 
 
@@ -80,8 +83,8 @@ def _validate_pdf_backend(cfg: dict[str, Any]) -> None:
     if backend not in _VALID_PDF_BACKENDS:
         raise RuntimeError(
             f"parsing.pdf_backend={backend!r} is no longer supported. "
-            f"Since v2.0 the only PDF backend is Docling. "
-            f"Set parsing.pdf_backend to 'docling' (or remove the key)."
+            f"Valid backends: 'docling' (default), 'cascade' (Docling → Unstructured). "
+            f"Set parsing.pdf_backend to 'docling' or 'cascade' (or remove the key)."
         )
 
 
@@ -255,6 +258,47 @@ def _build_ocr_stats_block(native: dict[str, Any] | None = None) -> dict[str, An
     return block
 
 
+def _parse_pdf_cascade(path: str) -> tuple[str, list[Block], dict[str, Any]]:
+    """Try Docling first; on failure fall back to Unstructured.
+
+    Returns (text, blocks, stats) matching the parse_pdf_docling signature.
+    Raises RuntimeError if both backends fail.
+    """
+    from doc_rag.raglib.docling_backend import parse_pdf_docling
+
+    docling_exc: Exception | None = None
+    try:
+        text, blocks, stats = parse_pdf_docling(path)
+        logger.info("cascade: Docling succeeded on %s", path)
+        return text, blocks, stats
+    except Exception as exc:
+        docling_exc = exc
+        logger.warning(
+            "cascade: Docling failed on %s (%s), trying Unstructured",
+            path,
+            docling_exc,
+        )
+
+    try:
+        from doc_rag.raglib.unstructured_backend import parse_pdf_unstructured
+    except RuntimeError:
+        raise RuntimeError(
+            f"Docling failed on {path} ({docling_exc}), and Unstructured is not "
+            f"installed. Install it: uv sync --extra unstructured"
+        ) from docling_exc
+
+    try:
+        text, blocks, stats = parse_pdf_unstructured(path)
+        logger.info("cascade: Unstructured succeeded on %s", path)
+        return text, blocks, stats
+    except Exception as unstructured_exc:
+        raise RuntimeError(
+            f"Both Docling and Unstructured failed on {path}. "
+            f"Docling error: {docling_exc}. "
+            f"Unstructured error: {unstructured_exc}"
+        ) from unstructured_exc
+
+
 def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     _enforce_size_limit(cfg, path)
     _validate_pdf_backend(cfg)
@@ -277,10 +321,15 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
     backend_blocks: list[Block] | None = None
 
     if effective_ext == ".pdf":
-        from doc_rag.raglib.docling_backend import parse_pdf_docling
+        pdf_backend = (cfg.get("parsing", {}) or {}).get("pdf_backend", "docling")
+        if pdf_backend == "cascade":
+            text, backend_blocks, raw_stats = _parse_pdf_cascade(path)
+            source_backend = backend_blocks[0].source_backend if backend_blocks else "docling"
+        else:
+            from doc_rag.raglib.docling_backend import parse_pdf_docling
 
-        text, backend_blocks, raw_stats = parse_pdf_docling(path)
-        source_backend = "docling"
+            text, backend_blocks, raw_stats = parse_pdf_docling(path)
+            source_backend = "docling"
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif effective_ext == ".docx":
         docx_backend = (cfg.get("parsing", {}) or {}).get("docx_backend", "python-docx")

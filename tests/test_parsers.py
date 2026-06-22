@@ -347,3 +347,119 @@ def test_parse_pdf_rejects_legacy_pypdf2_backend(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="pdf_backend"):
         parse_document(cfg, str(path))
+
+
+# --------------------------------------------------------------------------
+# v2.4 — Cascade PDF backend (Docling → Unstructured fallback)
+# --------------------------------------------------------------------------
+
+
+_CASCADE_CFG: dict[str, Any] = {
+    "parsing": {
+        "pdf_backend": "cascade",
+        "normalize_whitespace": True,
+        "min_chars_per_page": 1,
+    },
+}
+
+
+def test_parse_pdf_cascade_uses_docling_when_it_succeeds(tmp_path: Path, monkeypatch):
+    """When Docling succeeds, cascade should use Docling and not touch Unstructured."""
+    marker = "cascade-docling-ok-7a3b"
+    path = _make_pdf_with_magic_bytes(tmp_path)
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.docling_backend.parse_pdf_docling",
+        _stub_parse_pdf_docling(marker),
+    )
+
+    called = {"unstructured": False}
+
+    def _stub_unstructured(path: str):
+        called["unstructured"] = True
+        raise RuntimeError("should not be called")
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.unstructured_backend.parse_pdf_unstructured",
+        _stub_unstructured,
+    )
+
+    result = parse_document(_CASCADE_CFG, str(path))
+
+    assert marker in result["markdown"]
+    assert result["blocks"][0].source_backend == "docling"
+    assert not called["unstructured"]
+
+
+def test_parse_pdf_cascade_falls_back_to_unstructured_on_docling_failure(
+    tmp_path: Path, monkeypatch
+):
+    """When Docling raises, cascade should fall back to Unstructured."""
+    marker = "cascade-unstructured-fb-9c2e"
+    path = _make_pdf_with_magic_bytes(tmp_path)
+
+    def _fail_docling(path: str):
+        raise RuntimeError("Docling cannot handle this PDF")
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.docling_backend.parse_pdf_docling",
+        _fail_docling,
+    )
+
+    def _stub_unstructured(path: str):
+        block = Block(
+            block_id="tmp:0000",
+            doc_id="tmp",
+            type="paragraph",
+            text=marker,
+            source_backend="unstructured",
+        )
+        return marker, [block], {"format": "pdf", "pdf_backend": "unstructured"}
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.unstructured_backend.parse_pdf_unstructured",
+        _stub_unstructured,
+    )
+
+    result = parse_document(_CASCADE_CFG, str(path))
+
+    assert marker in result["markdown"]
+    assert result["blocks"][0].source_backend == "unstructured"
+
+
+def test_parse_pdf_cascade_raises_when_both_fail(tmp_path: Path, monkeypatch):
+    """When both Docling and Unstructured fail, cascade should raise RuntimeError."""
+    path = _make_pdf_with_magic_bytes(tmp_path)
+
+    def _fail_docling(path: str):
+        raise RuntimeError("Docling failed")
+
+    def _fail_unstructured(path: str):
+        raise RuntimeError("Unstructured failed")
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.docling_backend.parse_pdf_docling",
+        _fail_docling,
+    )
+    monkeypatch.setattr(
+        "doc_rag.raglib.unstructured_backend.parse_pdf_unstructured",
+        _fail_unstructured,
+    )
+
+    with pytest.raises(RuntimeError, match="Both Docling and Unstructured failed"):
+        parse_document(_CASCADE_CFG, str(path))
+
+
+def test_parse_pdf_cascade_rejects_invalid_backend(tmp_path: Path):
+    """pdf_backend: invalid must be rejected by validation."""
+    path = _make_pdf_with_magic_bytes(tmp_path)
+    cfg = {
+        "parsing": {
+            "pdf_backend": "invalid_backend",
+            "normalize_whitespace": True,
+            "min_chars_per_page": 1,
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="pdf_backend"):
+        parse_document(cfg, str(path))
