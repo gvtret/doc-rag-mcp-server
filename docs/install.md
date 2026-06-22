@@ -172,7 +172,6 @@ Main config: `config/config.yaml`. Key sections:
 ```yaml
 embeddings:
   model_name: "BAAI/bge-large-en-v1.5"   # 1024-dim, multilingual works fine
-  device: "auto"                          # auto | cpu
   batch_size: 32
   normalize: true
 ```

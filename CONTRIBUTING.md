@@ -5,31 +5,31 @@ practical steps and the few rules that exist.
 
 ## License
 
-`doc-rag` is licensed under **GNU Affero General Public License v3.0 or
-later (AGPL-3.0-or-later)**. By contributing, you agree that your
-contribution is licensed under the same terms.
+`doc-rag` is licensed under **MIT License**. By contributing, you agree
+that your contribution is licensed under the same terms.
 
-We do **not** require a CLA. The AGPL covers everything.
+We do **not** require a CLA.
 
 If you are contributing on behalf of an employer, please make sure your
-employer is aware that your contribution will be released under the
-AGPL.
+employer is aware that your contribution will be released under the MIT
+license.
 
 ## Development setup
 
 ```bash
 gh repo clone gvtret/doc-rag-mcp-server doc-rag
 cd doc-rag
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[server,faiss,pdf,ocr,embeddings,dev]"
+bash scripts/bootstrap.sh
 ```
+
+`bootstrap.sh` installs [uv](https://docs.astral.sh/uv/) if missing,
+prompts for extras, and runs `uv sync --frozen` to materialise the
+venv into `.venv/`.
 
 System packages you may need for full development (Debian/Ubuntu):
 
 ```bash
-sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus antiword
+sudo apt install antiword
 ```
 
 ## Running tests
