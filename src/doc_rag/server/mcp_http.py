@@ -946,6 +946,7 @@ async def _http_log_mw(request: Request, call_next):
             "/ui/env/save",
             "/ui/restart",
             "/ui/quality",
+            "/api/v1/generate",
         ):
             _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
         set_request_id(None)
@@ -2479,6 +2480,33 @@ async def ui_quality(request: Request, key: str = "") -> JSONResponse:
         return JSONResponse({"ok": True, **data})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/v1/generate")
+async def api_v1_generate(
+    request: Request,
+    key: str = Form(""),
+    query: str = Form(""),
+    top_k: int = Form(5),
+    namespace: str = Form("default"),
+) -> JSONResponse:
+    """RAG generate: retrieve + LLM answer with citations."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not query.strip():
+        return JSONResponse({"error": "query is required"}, status_code=400)
+    try:
+        from doc_rag.raglib.pipeline import load_config as _lc
+
+        cfg = _lc(str(_config_path()))
+        from doc_rag.raglib.rag_generate import rag_generate
+
+        result = await asyncio.to_thread(
+            rag_generate, cfg, query.strip(), max(1, min(20, top_k)), namespace
+        )
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @app.get("/ui/document-preview")

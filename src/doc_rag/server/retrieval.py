@@ -376,26 +376,67 @@ def document_preview(doc_id: str) -> dict[str, Any]:
     }
 
 
+def _tokenize(text: str) -> list[str]:
+    """Simple whitespace + punctuation tokenizer, lowercased."""
+    import re
+
+    return [t for t in re.split(r"[\s\W]+", text.lower()) if len(t) > 1]
+
+
 def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list[dict[str, Any]]:
-    q = (query or "").strip().lower()
+    """Improved lexical search with tokenization, IDF weighting, and phrase matching."""
+    q = (query or "").strip()
     if not q:
         return []
-    scored: list[tuple[int, dict[str, Any]]] = []
+
+    query_tokens = _tokenize(q)
+    q_lower = q.lower()
+
+    # Precompute document frequency for IDF
+    df: dict[str, int] = {}
+    n_docs = len(chunks)
+    for ch in chunks:
+        txt = str(ch.get("text", ""))
+        seen = set(_tokenize(txt))
+        for t in seen:
+            df[t] = df.get(t, 0) + 1
+
+    scored: list[dict[str, Any]] = []
     for ch in chunks:
         txt = str(ch.get("text", ""))
         hay = txt.lower()
-        score = 0
-        if q in hay:
-            score += 10 + hay.count(q)
-        for token in q.split():
-            if token and token in hay:
-                score += 1
+        score = 0.0
+
+        # Exact phrase match (highest weight)
+        phrase_count = hay.count(q_lower)
+        if phrase_count > 0:
+            score += 10.0 + phrase_count * 3.0
+
+        # Token-level TF-IDF scoring
+        doc_tokens = _tokenize(txt)
+        tf: dict[str, int] = {}
+        for t in doc_tokens:
+            tf[t] = tf.get(t, 0) + 1
+
+        for qt in query_tokens:
+            if qt in tf:
+                term_tf = 1.0 + float(tf[qt])
+                doc_freq = df.get(qt, 1)
+                idf = float(n_docs) / float(doc_freq) if doc_freq > 0 else 1.0
+                score += term_tf * idf * 0.5
+
+        # Bonus for matching many query tokens
+        matched = sum(1 for qt in query_tokens if qt in tf)
+        if query_tokens and matched > 0:
+            score += float(matched) / float(len(query_tokens)) * 2.0
+
         if score > 0:
             item = dict(ch)
-            item["score"] = float(score)
-            scored.append((score, item))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [it for _, it in scored[: max(1, top_k)]]
+            item["score"] = round(score, 4)
+            scored.append(item)
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[: max(1, top_k)]
 
 
 def semantic_search(
