@@ -173,6 +173,18 @@ export const CONFIG_SCHEMA: Section[] = [
       },
     ],
   },
+  {
+    title: "Качество",
+    fields: [
+      {
+        path: "quality.fail_on_severity",
+        label: "Блокировать при",
+        type: "select",
+        options: ["never", "warn", "error"],
+        hint: "never — не блокировать; warn — блокировать при warnings; error — только при ошибках.",
+      },
+    ],
+  },
 ];
 
 export type ValidationError = { path: string; message: string };

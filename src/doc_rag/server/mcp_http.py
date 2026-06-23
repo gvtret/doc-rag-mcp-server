@@ -1180,6 +1180,7 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, Any]] = {
     "index.backend": {"options": ["faiss"]},
     "index.metric": {"options": ["ip", "l2"]},
     "index.top_k": {"type": "int", "min": 1},
+    "quality.fail_on_severity": {"options": ["never", "warn", "error"]},
 }
 
 

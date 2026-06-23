@@ -344,6 +344,14 @@ def _ingest_sources(
 
             blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
+            quality_report = None
+            if blocks:
+                from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
+
+                quality_dir = os.path.join(root, "build", "quality")
+                quality_report = run_quality_checks(doc_id, blocks)
+                persist_quality_report(quality_dir, quality_report)
+
             chunks = _chunk_text(md_text, chunk_target, chunk_overlap)
             for idx, c in enumerate(chunks):
                 all_chunks.append(
@@ -367,6 +375,14 @@ def _ingest_sources(
                     "title_hint": os.path.splitext(base)[0],
                     "edition_year": ed_y,
                     "coverage": cov,
+                    **(
+                        {
+                            "quality_score": quality_report.score,
+                            "quality_warning_count": len(quality_report.warnings),
+                        }
+                        if quality_report is not None
+                        else {}
+                    ),
                 }
             )
 
