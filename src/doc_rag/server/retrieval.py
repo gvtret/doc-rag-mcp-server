@@ -399,20 +399,22 @@ def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list
 
 
 def semantic_search(
-    cfg: dict[str, Any], chunks: list[dict[str, Any]], query: str, top_k: int
+    cfg: dict[str, Any], chunks: list[dict[str, Any]], query: str, top_k: int,
+    namespace: str = "default",
 ) -> list[dict[str, Any]] | None:
     # Try VectorIndex first (pluggable backends)
     try:
         from doc_rag.raglib.vector_index import VectorIndex
 
         root = str(cfg.get("_root", project_root()))
-        if _VECTOR_INDEX_CACHE.get("cfg_root") != root:
-            _VECTOR_INDEX_CACHE["cfg_root"] = root
+        cache_key = f"{root}:{namespace}"
+        if _VECTOR_INDEX_CACHE.get("cfg_root") != cache_key:
+            _VECTOR_INDEX_CACHE["cfg_root"] = cache_key
             _VECTOR_INDEX_CACHE["index"] = None
 
         vi = _VECTOR_INDEX_CACHE.get("index")
         if vi is None:
-            vi = VectorIndex(cfg)
+            vi = VectorIndex(cfg, namespace=namespace)
             _VECTOR_INDEX_CACHE["index"] = vi
 
         if not vi.is_available():
@@ -499,13 +501,13 @@ def semantic_search(
     return out
 
 
-def doc_search(query: str, top_k: int) -> list[dict[str, Any]]:
+def doc_search(query: str, top_k: int, namespace: str = "default") -> list[dict[str, Any]]:
     cfg = load_config()
     chunks = load_chunks(cfg)
     top_k = max(1, min(50, int(top_k) if top_k else 6))
     mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
     if mode == "semantic":
-        res = semantic_search(cfg, chunks, query, top_k)
+        res = semantic_search(cfg, chunks, query, top_k, namespace=namespace)
         if res is not None:
             return _enrich_results_with_source_file(cfg, res)
     return _enrich_results_with_source_file(cfg, lexical_search(chunks, query, top_k))

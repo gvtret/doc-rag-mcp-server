@@ -53,7 +53,7 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    results = doc_search(query=query, top_k=top_k)
+    results = doc_search(query=query, top_k=top_k, namespace=_namespace)
 
     content: list[dict[str, Any]] = []
     if fallback_active:
