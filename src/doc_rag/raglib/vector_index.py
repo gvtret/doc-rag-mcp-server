@@ -44,12 +44,15 @@ class VectorIndex:
     """Backend-agnostic vector index.
 
     Manages: VectorStore instance, embedder, metadata (chunk_ids),
-    and build/update/delete lifecycle.
+    and build/update/delete lifecycle. Supports namespaces via collection.
     """
 
-    def __init__(self, cfg: dict[str, Any], collection: str = "default") -> None:
+    def __init__(
+        self, cfg: dict[str, Any], collection: str = "default", namespace: str | None = None
+    ) -> None:
         self._cfg = cfg
-        self._collection = collection
+        self._collection = namespace or collection
+        self._namespace = namespace
         self._store: VectorStore | None = None
         self._embedder: Any = None
         self._chunk_ids: list[str] = []

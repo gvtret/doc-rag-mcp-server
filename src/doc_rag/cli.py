@@ -39,6 +39,15 @@ def main() -> None:
 
     sub.add_parser("clean-orphans", help="Drop md/chunks/vectors not referenced by manifest")
     sub.add_parser("clear-incoming", help="Delete every file in sources/incoming/")
+
+    p_migrate = sub.add_parser(
+        "migrate-vectors",
+        help="Migrate vectors between backends (faiss→qdrant, faiss→pgvector, etc.)",
+    )
+    p_migrate.add_argument("--from", dest="source_backend", default="faiss", help="Source backend")
+    p_migrate.add_argument("--to", dest="target_backend", required=True, help="Target backend")
+    p_migrate.add_argument("--collection", default="default", help="Target collection name")
+
     sub.add_parser(
         "migrate",
         help="Upgrade build/manifest.json to the current schema (no-op when already current)",
@@ -100,6 +109,19 @@ def main() -> None:
             "migrations_applied": [],
             "message": "no migrations defined for this version",
         }
+        json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return
+    if args.cmd == "migrate-vectors":
+        from doc_rag.raglib.migrate_vectors import migrate_vectors
+
+        cfg = load_config(cfg_path)
+        result = migrate_vectors(
+            cfg,
+            source_backend=args.source_backend,
+            target_backend=args.target_backend,
+            collection=args.collection,
+        )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return

@@ -21,6 +21,7 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         arguments: JSON object with fields:
             - query: str (required)
             - top_k: int (optional)
+            - namespace: str (optional, default "default")
 
     Returns:
         MCP content array (list of {type,text} objects).
@@ -34,6 +35,9 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         top_k = int(top_k_raw)
     except Exception:
         top_k = 6
+
+    # namespace is reserved for future multi-collection support
+    _namespace = str(arguments.get("namespace", "default")).strip() or "default"
 
     # Detect whether semantic mode is configured but the FAISS index isn't
     # available — in that case doc_search() silently falls back to lexical
