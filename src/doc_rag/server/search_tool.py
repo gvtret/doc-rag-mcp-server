@@ -39,6 +39,18 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     # namespace is reserved for future multi-collection support
     _namespace = str(arguments.get("namespace", "default")).strip() or "default"
 
+    # Parse optional filters for hybrid search (Qdrant backend)
+    _filters: dict[str, Any] | None = None
+    if "doc_id" in arguments:
+        _filters = _filters or {}
+        _filters["doc_id"] = str(arguments["doc_id"])
+    if "section_path" in arguments:
+        _filters = _filters or {}
+        _filters["section_path"] = str(arguments["section_path"])
+    if arguments.get("tables_only"):
+        _filters = _filters or {}
+        _filters["is_table"] = True
+
     # Detect whether semantic mode is configured but the FAISS index isn't
     # available — in that case doc_search() silently falls back to lexical
     # search and the caller should know the quality is degraded.
@@ -53,7 +65,7 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    results = doc_search(query=query, top_k=top_k, namespace=_namespace)
+    results = doc_search(query=query, top_k=top_k, namespace=_namespace, filters=_filters)
 
     content: list[dict[str, Any]] = []
     if fallback_active:

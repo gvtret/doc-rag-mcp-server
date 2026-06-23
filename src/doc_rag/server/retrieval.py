@@ -399,8 +399,12 @@ def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list
 
 
 def semantic_search(
-    cfg: dict[str, Any], chunks: list[dict[str, Any]], query: str, top_k: int,
+    cfg: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    query: str,
+    top_k: int,
     namespace: str = "default",
+    filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     # Try VectorIndex first (pluggable backends)
     try:
@@ -420,7 +424,10 @@ def semantic_search(
         if not vi.is_available():
             return None
 
-        dists, ids = vi.search(query, top_k)
+        if filters:
+            dists, ids, _payloads = vi.search_with_filter(query, top_k, filters)
+        else:
+            dists, ids = vi.search(query, top_k)
         if not ids:
             return None
 
@@ -501,13 +508,18 @@ def semantic_search(
     return out
 
 
-def doc_search(query: str, top_k: int, namespace: str = "default") -> list[dict[str, Any]]:
+def doc_search(
+    query: str,
+    top_k: int,
+    namespace: str = "default",
+    filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     cfg = load_config()
     chunks = load_chunks(cfg)
     top_k = max(1, min(50, int(top_k) if top_k else 6))
     mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
     if mode == "semantic":
-        res = semantic_search(cfg, chunks, query, top_k, namespace=namespace)
+        res = semantic_search(cfg, chunks, query, top_k, namespace=namespace, filters=filters)
         if res is not None:
             return _enrich_results_with_source_file(cfg, res)
     return _enrich_results_with_source_file(cfg, lexical_search(chunks, query, top_k))

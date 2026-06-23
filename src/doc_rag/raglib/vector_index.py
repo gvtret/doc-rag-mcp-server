@@ -146,6 +146,22 @@ class VectorIndex:
         vec = self._encode([query])
         return store.search(vec, top_k)
 
+    def search_with_filter(
+        self, query: str, top_k: int = 6, filters: dict[str, Any] | None = None
+    ) -> tuple[np.ndarray, list[str], list[dict[str, Any]]]:
+        """Hybrid search: vector similarity + metadata filter.
+
+        Only supported on Qdrant backend. Falls back to plain search on FAISS/pgvector.
+        """
+        store = self._ensure_store()
+        if store.size == 0:
+            return np.array([], dtype=np.float32), [], []
+        vec = self._encode([query])
+        if hasattr(store, "search_with_filter") and filters:
+            return store.search_with_filter(vec, top_k, filters)
+        dists, ids = store.search(vec, top_k)
+        return dists, ids, [{"chunk_id": cid} for cid in ids]
+
     def delete(self, doc_ids: set[str]) -> int:
         """Delete all chunks belonging to the given doc_ids."""
         store = self._ensure_store()
