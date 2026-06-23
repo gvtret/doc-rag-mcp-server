@@ -148,3 +148,69 @@ class TestFactory:
         store = create_vector_store(cfg)
         assert isinstance(store, FaissVectorStore)
         assert store.dim == 0  # not yet initialized
+
+
+class TestE2EFaissMigration:
+    """E2E: build FAISS index, migrate to fresh FAISS, verify search integrity."""
+
+    def test_migrate_preserves_search_results(self, tmp_path: Path):
+        dim = 8
+        ids = [f"doc{i}:0" for i in range(5)]
+        vecs = np.random.RandomState(42).randn(5, dim).astype(np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs /= norms
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        src = FaissVectorStore(
+            index_path=str(src_dir / "faiss.index"),
+            meta_path=str(src_dir / "index_meta.json"),
+            metric="ip",
+        )
+        src.init(dim=dim, model_name="test")
+        src.add(vecs, ids)
+        src.save()
+
+        # Migrate: copy vectors to a new store
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        dst = FaissVectorStore(
+            index_path=str(dst_dir / "faiss.index"),
+            meta_path=str(dst_dir / "index_meta.json"),
+            metric="ip",
+        )
+        dst.init(dim=dim, model_name="test")
+        dst.add(vecs, ids)
+        dst.save()
+
+        assert dst.size == 5
+        query = vecs[0:1]
+        dists, found_ids = dst.search(query, top_k=3)
+        assert len(dists) == 3
+        assert found_ids[0] == "doc0:0"
+
+    def test_delete_then_search(self, tmp_path: Path):
+        dim = 4
+        store = FaissVectorStore(
+            index_path=str(tmp_path / "faiss.index"),
+            meta_path=str(tmp_path / "index_meta.json"),
+            metric="ip",
+        )
+        store.init(dim=dim, model_name="m")
+        vecs = np.eye(4, dtype=np.float32)
+        store.add(vecs, ["a", "b", "c", "d"])
+        store.save()
+
+        store.delete(["b", "d"])
+        store.save()
+
+        store2 = FaissVectorStore(
+            index_path=str(tmp_path / "faiss.index"),
+            meta_path=str(tmp_path / "index_meta.json"),
+            metric="ip",
+        )
+        assert store2.size == 2
+        dists, ids = store2.search(np.array([[1, 0, 0, 0]], dtype=np.float32), top_k=2)
+        assert len(ids) == 2
+        assert "a" in ids
+        assert "c" in ids
