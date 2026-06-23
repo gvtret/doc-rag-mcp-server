@@ -508,6 +508,62 @@ def semantic_search(
     return out
 
 
+def _rrf_fusion(
+    *ranked_lists: list[dict[str, Any]],
+    k: int = 60,
+) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion of multiple ranked lists.
+
+    Each list is ordered best-first. Chunks are identified by chunk_id.
+    Final score = sum(1 / (k + rank_i)) across all lists containing
+    the chunk. Returns merged list sorted by fused score descending.
+    """
+    scores: dict[str, float] = {}
+    chunks_by_id: dict[str, dict[str, Any]] = {}
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked):
+            cid = item.get("chunk_id", "")
+            if not cid:
+                continue
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            if cid not in chunks_by_id:
+                chunks_by_id[cid] = dict(item)
+
+    merged = []
+    for cid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        item = chunks_by_id[cid]
+        item["score"] = round(score, 6)
+        merged.append(item)
+    return merged
+
+
+def hybrid_search(
+    cfg: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    query: str,
+    top_k: int,
+    namespace: str = "default",
+    filters: dict[str, Any] | None = None,
+    lexical_weight: float = 0.5,
+    semantic_weight: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Hybrid search: combine lexical + semantic via RRF."""
+    lex_results = lexical_search(chunks, query, top_k * 2)
+    sem_results = semantic_search(
+        cfg, chunks, query, top_k * 2, namespace=namespace, filters=filters
+    )
+    lists: list[list[dict[str, Any]]] = []
+    if sem_results is not None:
+        lists.append(sem_results)
+    if lex_results:
+        lists.append(lex_results)
+    if not lists:
+        return []
+    if len(lists) == 1:
+        return lists[0][:top_k]
+    return _rrf_fusion(*lists)[:top_k]
+
+
 def doc_search(
     query: str,
     top_k: int,
@@ -518,6 +574,10 @@ def doc_search(
     chunks = load_chunks(cfg)
     top_k = max(1, min(50, int(top_k) if top_k else 6))
     mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
+    if mode == "hybrid":
+        return _enrich_results_with_source_file(
+            cfg, hybrid_search(cfg, chunks, query, top_k, namespace=namespace, filters=filters)
+        )
     if mode == "semantic":
         res = semantic_search(cfg, chunks, query, top_k, namespace=namespace, filters=filters)
         if res is not None:

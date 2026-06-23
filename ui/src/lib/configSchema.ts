@@ -178,6 +178,13 @@ export const CONFIG_SCHEMA: Section[] = [
         min: 1,
         required: true,
       },
+      {
+        path: "mcp.retrieval_mode",
+        label: "Режим поиска",
+        type: "select",
+        options: ["semantic", "lexical", "hybrid"],
+        hint: "semantic — векторный; lexical — полнотекстовый; hybrid — комбинация (RRF).",
+      },
     ],
   },
   {
