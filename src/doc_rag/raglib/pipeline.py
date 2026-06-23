@@ -8,15 +8,30 @@ import shutil
 from datetime import datetime, timezone
 from typing import Any
 
-import numpy as np
 import yaml
 
 from doc_rag.raglib.audit_log import record_event as _audit
 from doc_rag.raglib.blocks import BLOCKS_SCHEMA_VERSION, Block, dump_blocks
 from doc_rag.raglib.edition_year import resolve_edition_year
-from doc_rag.raglib.indexer import ensure_faiss_index
 from doc_rag.raglib.parsers import parse_document
 from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
+
+# VectorIndex cache for the pipeline
+_VECTOR_INDEX: Any = None
+
+
+def _get_vector_index(cfg: dict[str, Any]) -> Any:
+    """Get or create a VectorIndex instance (per-root cache)."""
+    global _VECTOR_INDEX
+    root = cfg.get("_root", "")
+    if _VECTOR_INDEX is not None and getattr(_VECTOR_INDEX, "_cfg", {}).get("_root") != root:
+        _VECTOR_INDEX = None
+    if _VECTOR_INDEX is None:
+        from doc_rag.raglib.vector_index import VectorIndex
+
+        _VECTOR_INDEX = VectorIndex(cfg)
+    return _VECTOR_INDEX
+
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
 
@@ -607,9 +622,20 @@ def ingest(config_path: str) -> None:
             f"updated: {os.path.relpath(manifest_path, root)} (new_docs={len(new_docs)}, skipped={skipped}, failed={failed})",
         )
 
-    # Best-effort semantic index update. If FAISS/embeddings are missing, we keep lexical search.
+    # Best-effort semantic index update. If embeddings are missing, we keep lexical search.
     try:
-        ensure_faiss_index(cfg, force_rebuild=False, log=print)
+        vi = _get_vector_index(cfg)
+        # Load chunks and build/update index
+        chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+        if os.path.exists(chunks_path):
+            chunks = []
+            with open(chunks_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        chunks.append(json.loads(line))
+            if chunks:
+                vi.build(chunks, force=False, log=print)
     except Exception as e:
         _log("WARN", f"index update skipped: {e}")
 
@@ -704,89 +730,43 @@ def rebuild(config_path: str) -> None:
 
     # Force rebuild index so semantic search matches rebuilt chunks (best-effort)
     try:
-        ensure_faiss_index(cfg, force_rebuild=True, log=print)
+        vi = _get_vector_index(cfg)
+        vi.reset()
+        # Load chunks and build fresh index
+        chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+        if os.path.exists(chunks_path):
+            chunks = []
+            with open(chunks_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        chunks.append(json.loads(line))
+            if chunks:
+                vi.build(chunks, force=True, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
 
 def _rebuild_faiss_after_delete(cfg: dict[str, Any], deleted_doc_ids: set) -> dict[str, Any]:
-    """Rebuild FAISS index by reconstructing kept vectors (no re-encoding).
+    """Rebuild index after document deletion using VectorIndex.
 
-    Reads the old index + meta, drops vectors whose chunk_id belongs to a
-    deleted doc, and writes a fresh index with the surviving vectors. If
-    the index/meta files are missing it silently returns.
+    Drops vectors whose chunk_id belongs to a deleted doc. If the index
+    is unavailable it silently returns.
     """
-    root = cfg["_root"]
-    index_dir = os.path.join(root, cfg["paths"]["index_dir"])
-    index_file = os.path.join(index_dir, "faiss.index")
-    meta_file = os.path.join(index_dir, "index_meta.json")
     stats = {"removed_vectors": 0, "kept_vectors": 0, "had_index": False}
 
-    if not (os.path.exists(index_file) and os.path.exists(meta_file)):
-        return stats
-    stats["had_index"] = True
-
     try:
-        import faiss  # type: ignore
-    except Exception as e:
-        _log("WARN", f"faiss unavailable; cannot prune index: {e}")
-        return stats
-
-    try:
-        with open(meta_file, encoding="utf-8") as f:
-            meta = json.load(f)
-    except Exception as e:
-        _log("WARN", f"failed to read index_meta.json: {e}")
-        return stats
-
-    old_chunk_ids: list[str] = list(meta.get("chunk_ids") or [])
-    kept_positions: list[int] = []
-    kept_chunk_ids: list[str] = []
-    for i, cid in enumerate(old_chunk_ids):
-        doc_id = cid.rsplit(":", 1)[0] if ":" in cid else cid
-        if doc_id in deleted_doc_ids:
-            continue
-        kept_positions.append(i)
-        kept_chunk_ids.append(cid)
-
-    stats["removed_vectors"] = len(old_chunk_ids) - len(kept_positions)
-    stats["kept_vectors"] = len(kept_positions)
-
-    if stats["removed_vectors"] == 0:
-        return stats
-
-    if not kept_positions:
-        for p in (index_file, meta_file):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        return stats
-
-    try:
-        old_index = faiss.read_index(index_file)
-        dim = int(getattr(old_index, "d", 0)) or int(meta.get("dim", 0))
-        if dim <= 0:
-            _log("WARN", "index has unknown dimension; skipping prune")
+        vi = _get_vector_index(cfg)
+        if not vi.is_available():
             return stats
-        metric = str(meta.get("metric", "ip")).lower()
-        new_index = faiss.IndexFlatIP(dim) if metric == "ip" else faiss.IndexFlatL2(dim)
-        vecs = np.zeros((len(kept_positions), dim), dtype=np.float32)
-        for new_i, old_pos in enumerate(kept_positions):
-            vecs[new_i] = old_index.reconstruct(int(old_pos))
-        new_index.add(vecs)
-        faiss.write_index(new_index, index_file)
-        meta["chunk_ids"] = kept_chunk_ids
-        with open(meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        stats["had_index"] = True
+        removed = vi.delete(deleted_doc_ids)
+        stats["removed_vectors"] = removed
+        stats["kept_vectors"] = vi.size
+        return stats
     except Exception as e:
-        _log("WARN", f"FAISS prune failed, removing index for clean rebuild: {e}")
-        for p in (index_file, meta_file):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-    return stats
+        _log("WARN", f"vector index prune failed: {e}")
+        return stats
 
 
 def delete_documents(config_path: str, doc_ids: list[str]) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Shared chunk retrieval (lexical fallback + optional FAISS) for MCP HTTP and debug HTTP."""
+"""Shared chunk retrieval (lexical fallback + optional vector store) for MCP HTTP and debug HTTP."""
 
 import json
 import os
@@ -17,6 +17,7 @@ _SEMANTIC_CACHE: dict[str, Any] = {
     "index": None,
     "embedder": None,
 }
+_VECTOR_INDEX_CACHE: dict[str, Any] = {"cfg_root": None, "index": None}
 
 
 def project_root() -> str:
@@ -400,14 +401,45 @@ def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list
 def semantic_search(
     cfg: dict[str, Any], chunks: list[dict[str, Any]], query: str, top_k: int
 ) -> list[dict[str, Any]] | None:
+    # Try VectorIndex first (pluggable backends)
+    try:
+        from doc_rag.raglib.vector_index import VectorIndex
+
+        root = str(cfg.get("_root", project_root()))
+        if _VECTOR_INDEX_CACHE.get("cfg_root") != root:
+            _VECTOR_INDEX_CACHE["cfg_root"] = root
+            _VECTOR_INDEX_CACHE["index"] = None
+
+        vi = _VECTOR_INDEX_CACHE.get("index")
+        if vi is None:
+            vi = VectorIndex(cfg)
+            _VECTOR_INDEX_CACHE["index"] = vi
+
+        if not vi.is_available():
+            return None
+
+        dists, ids = vi.search(query, top_k)
+        if not ids:
+            return None
+
+        id_to_chunk = {c.get("chunk_id"): c for c in chunks}
+        out: list[dict[str, Any]] = []
+        for dist, cid in zip(dists, ids, strict=False):
+            chunk = id_to_chunk.get(cid)
+            if chunk:
+                item = dict(chunk)
+                item["score"] = float(dist)
+                out.append(item)
+        return out
+    except Exception:
+        pass
+
+    # Fallback: legacy FAISS path (backward compatibility)
     root = str(cfg.get("_root", project_root()))
     paths = cfg.get("paths", {}) or {}
     index_dir = paths.get("index_dir", "build/index")
     index_path = os.path.join(root, index_dir, "faiss.index")
     if not os.path.exists(index_path):
-        # Do NOT try to build the index from a search request — encoding
-        # thousands of chunks on CPU would hang the request for hours.
-        # Caller (doc_search) falls back to lexical search.
         return None
 
     emb = cfg.get("embeddings", {}) or {}

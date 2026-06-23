@@ -55,6 +55,19 @@ class VectorIndex:
         self._chunk_ids: list[str] = []
         self._initialized = False
 
+    def _load_existing_ids(self) -> None:
+        """Load existing chunk IDs from the store metadata if available."""
+        try:
+            from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
+
+            store = self._ensure_store()
+            if isinstance(store, FaissVectorStore):
+                store._ensure_loaded()
+                if store._meta and store._meta.chunk_ids:
+                    self._chunk_ids = list(store._meta.chunk_ids)
+        except Exception:
+            pass
+
     def _ensure_store(self) -> VectorStore:
         if self._store is None:
             self._store = create_vector_store(self._cfg, self._collection)
@@ -133,12 +146,16 @@ class VectorIndex:
     def delete(self, doc_ids: set[str]) -> int:
         """Delete all chunks belonging to the given doc_ids."""
         store = self._ensure_store()
+        self._load_existing_ids()
         to_delete = [cid for cid in self._chunk_ids if cid.split(":")[0] in doc_ids]
         if not to_delete:
             return 0
         removed = store.delete(to_delete)
         self._chunk_ids = [cid for cid in self._chunk_ids if cid not in set(to_delete)]
-        store.save()
+        if not self._chunk_ids:
+            store.reset()
+        else:
+            store.save()
         logger.info("vectorindex: deleted %d chunks for %d docs", removed, len(doc_ids))
         return removed
 
