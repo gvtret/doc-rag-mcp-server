@@ -120,6 +120,55 @@ export function restartService(signal?: AbortSignal): Promise<RestartResponse> {
   return postForm<RestartResponse>("/ui/restart", {}, signal);
 }
 
+export interface ManageResult {
+  ok: boolean;
+  message?: string;
+  removed?: string[];
+  deleted?: string[];
+  error?: string;
+  saved?: number;
+  dups?: number;
+}
+
+export async function uploadFiles(
+  files: File[],
+  signal?: AbortSignal,
+): Promise<ManageResult> {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  const r = await fetch("/ui/upload", {
+    method: "POST",
+    body: fd,
+    credentials: "same-origin",
+    redirect: "manual",
+    signal,
+  });
+  if (r.type === "opaqueredirect" || r.status === 303) {
+    return { ok: true, message: `Загружено файлов: ${files.length}` };
+  }
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    return { ok: false, error: text || `HTTP ${r.status}` };
+  }
+  return { ok: true, message: `Загружено файлов: ${files.length}` };
+}
+
+export function rebuildIndex(signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/rebuild", {}, signal);
+}
+
+export function wipeIndex(confirm: string, signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/wipe", { confirm }, signal);
+}
+
+export function cleanOrphans(signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/clean-orphans", {}, signal);
+}
+
+export function clearIncoming(signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/clear-incoming", {}, signal);
+}
+
 export interface QualityDoc {
   doc_id: string;
   pages: number;
