@@ -119,3 +119,22 @@ export function saveEnv(
 export function restartService(signal?: AbortSignal): Promise<RestartResponse> {
   return postForm<RestartResponse>("/ui/restart", {}, signal);
 }
+
+export interface QualityDoc {
+  doc_id: string;
+  pages: number;
+  score: number;
+  warning_count: number;
+}
+
+export interface QualitySummary {
+  ok: boolean;
+  schema_version?: number;
+  documents?: QualityDoc[];
+  message?: string;
+  error?: string;
+}
+
+export function fetchQuality(signal?: AbortSignal): Promise<QualitySummary> {
+  return getJSON<QualitySummary>("/ui/quality", signal);
+}

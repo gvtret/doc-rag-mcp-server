@@ -945,6 +945,7 @@ async def _http_log_mw(request: Request, call_next):
             "/ui/env",
             "/ui/env/save",
             "/ui/restart",
+            "/ui/quality",
         ):
             _log_line(f"{request.method} {request.url.path} -> {code} ({dur_ms}ms)")
         set_request_id(None)
@@ -1575,6 +1576,49 @@ def _ocr_badge_html(coverage: Any) -> str:
     return f'<span class="ocr-badge" title="{html.escape(title, quote=True)}">OCR</span>'
 
 
+def _quality_badge_html(doc_id: str, quality_map: dict[str, Any]) -> str:
+    """Inline quality badge for the document table."""
+    q = quality_map.get(doc_id)
+    if not q or not isinstance(q, dict):
+        return ""
+    score = q.get("score")
+    warnings = q.get("warning_count", 0)
+    if score is None:
+        return ""
+    score_f = float(score)
+    if score_f >= 0.9:
+        color = "#2e7d32"
+        label = "OK"
+    elif score_f >= 0.7:
+        color = "#f57f17"
+        label = "WARN"
+    else:
+        color = "#c62828"
+        label = "ERR"
+    title = f"Score: {score_f:.2f}, warnings: {warnings}"
+    return f'<span class="quality-badge" style="color:{color};font-weight:600" title="{html.escape(title, quote=True)}">{label}</span>'
+
+
+def _load_quality_map() -> dict[str, Any]:
+    """Load quality summary and return doc_id → entry mapping."""
+    try:
+        from doc_rag.raglib.config import load_config as _lc
+
+        cfg = _lc(str(_config_path()))
+        quality_path = os.path.join(cfg["_root"], "build", "quality", "summary.json")
+        if os.path.exists(quality_path):
+            with open(quality_path, encoding="utf-8") as f:
+                qdata = json.load(f)
+            result: dict[str, Any] = {}
+            for doc_entry in qdata.get("documents", []):
+                if isinstance(doc_entry, dict):
+                    result[doc_entry.get("doc_id", "")] = doc_entry
+            return result
+    except Exception:
+        pass
+    return {}
+
+
 def _indexed_documents_table_rows_html(
     catalog: dict[str, Any], max_rows: int = 300
 ) -> tuple[str, str]:
@@ -1584,6 +1628,10 @@ def _indexed_documents_table_rows_html(
     shown = docs[:max_rows]
     if len(docs) > max_rows:
         note = f'<p class="muted">Показаны первые {max_rows} из {len(docs)} документов.</p>'
+
+    # Load quality summary for badges
+    quality_map = _load_quality_map()
+
     rows: list[str] = []
     for i, d in enumerate(shown, 1):
         if not isinstance(d, dict):
@@ -1603,11 +1651,12 @@ def _indexed_documents_table_rows_html(
             quote=False,
         )
         ocr_badge = _ocr_badge_html(d.get("coverage"))
+        q_badge = _quality_badge_html(did_raw, quality_map)
         rows.append(
             f'<tr data-doc-id="{did_attr}">'
             f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
             f"<td>{i}</td>"
-            f'<td title="{sf}">{ocr_badge}<button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
+            f'<td title="{sf}">{ocr_badge}{q_badge}<button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
             f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
             f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
             f"</tr>"
@@ -1764,6 +1813,12 @@ async def ui(request: Request, key: str = "") -> HTMLResponse:
           font-size: 11px; font-weight: 600; line-height: 1.3;
           color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
           border-radius: 6px; vertical-align: middle; cursor: help;
+        }}
+        .quality-badge {{
+          display: inline-block; margin-right: 6px; padding: 1px 6px;
+          font-size: 11px; font-weight: 600; line-height: 1.3;
+          border: 1px solid currentColor; border-radius: 6px;
+          vertical-align: middle; cursor: help; opacity: 0.85;
         }}
         .modal-root {{ display: none; position: fixed; inset: 0; z-index: 50; align-items: center; justify-content: center; }}
         .modal-root.is-open {{ display: flex; }}
@@ -2350,6 +2405,26 @@ async def ui_status(request: Request, key: str = "") -> JSONResponse:
     if not _ui_key_ok(request, key):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse(_ui_status_payload())
+
+
+@app.get("/ui/quality")
+async def ui_quality(request: Request, key: str = "") -> JSONResponse:
+    """Return quality summary from build/quality/summary.json."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        from doc_rag.raglib.config import load_config as _lc
+
+        cfg = _lc(str(_config_path()))
+        quality_dir = os.path.join(cfg["_root"], "build", "quality")
+        summary_path = os.path.join(quality_dir, "summary.json")
+        if not os.path.exists(summary_path):
+            return JSONResponse({"ok": True, "documents": [], "message": "No quality reports yet"})
+        with open(summary_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return JSONResponse({"ok": True, **data})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.get("/ui/document-preview")
