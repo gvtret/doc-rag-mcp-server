@@ -92,6 +92,13 @@ export const CONFIG_SCHEMA: Section[] = [
     title: "Чанкинг",
     fields: [
       {
+        path: "chunking.strategy",
+        label: "Стратегия",
+        type: "select",
+        options: ["fixed", "recursive"],
+        hint: "fixed — фиксированный размер по символам; recursive — структурный (разбиение по заголовкам и блокам).",
+      },
+      {
         path: "chunking.target_tokens",
         label: "Целевой размер чанка (токены)",
         type: "int",

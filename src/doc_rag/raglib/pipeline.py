@@ -352,15 +352,35 @@ def _ingest_sources(
                 quality_report = run_quality_checks(doc_id, blocks)
                 persist_quality_report(quality_dir, quality_report)
 
-            chunks = _chunk_text(md_text, chunk_target, chunk_overlap)
-            for idx, c in enumerate(chunks):
-                all_chunks.append(
-                    {
+            chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
+            if chunking_strategy == "recursive" and blocks:
+                from doc_rag.raglib.chunker_recursive import chunk_recursive
+
+                rc_chunks = chunk_recursive(blocks, target_tokens=chunk_target)
+                for idx, c in enumerate(rc_chunks):
+                    entry: dict[str, Any] = {
                         "doc_id": doc_id,
                         "chunk_id": f"{doc_id}:{idx}",
-                        "text": c,
+                        "text": c["text"],
                     }
-                )
+                    if c.get("section_path"):
+                        entry["section_path"] = c["section_path"]
+                    if c.get("is_table"):
+                        entry["is_table"] = True
+                    if c.get("is_table_summary"):
+                        entry["is_table_summary"] = True
+                    all_chunks.append(entry)
+                chunks = [c["text"] for c in rc_chunks]
+            else:
+                chunks = _chunk_text(md_text, chunk_target, chunk_overlap)
+                for idx, c in enumerate(chunks):
+                    all_chunks.append(
+                        {
+                            "doc_id": doc_id,
+                            "chunk_id": f"{doc_id}:{idx}",
+                            "text": c,
+                        }
+                    )
 
             cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
             ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
