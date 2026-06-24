@@ -1,8 +1,77 @@
 # Changelog
 
 All notable changes to `doc-rag` are documented here.
-Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
-the project does not yet ship versioned tags, so entries are grouped by date.
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## v3.1.0 — 2026-06-24
+
+Hybrid search, RAG generate, quality badge, and full Svelte UI.
+
+### Added
+- **Hybrid search (RRF)**: `mcp.retrieval_mode: hybrid` runs lexical + semantic in
+  parallel, merges via Reciprocal Rank Fusion (k=60). New config key
+  `mcp.retrieval_mode` (default `semantic`).
+- **RAG generate endpoint**: `POST /api/v1/generate` assembles context from
+  `doc_search()`, formats numbered citations, calls OpenAI-compatible LLM API.
+  Config via env vars (`DOC_RAG_LLM_BASE_URL`, `DOC_RAG_LLM_MODEL`,
+  `DOC_RAG_LLM_API_KEY`) or `mcp.rag_generate.*` config keys.
+- **Quality badge**: per-document quality score as green/yellow/red badge in UI
+  document table. `GET /ui/quality` endpoint returns scores and warning counts.
+- **Manage page**: full Svelte page for document management (delete, inspect).
+- **Logs page**: full Svelte page with live log viewer.
+- Improved lexical search: TF-IDF with phrase matching, IDF weighting, token
+  coverage bonus.
+
+### Changed
+- Version bumped from 2.4.0 to 3.1.0 (pyproject.toml, mcp_http.py, package.json).
+
+## v3.0.0 — 2026-06-22
+
+Pluggable vector-store backends, namespaces, and migration tool.
+
+### Added
+- **Vector-store backends**: abstract `VectorStore` protocol in `vectorstore/`
+  package. `FaissVectorStore` (default), `QdrantVectorStore` (HTTP),
+  `PgvectorVectorStore` (PostgreSQL). Factory dispatches on `index.backend`.
+- **VectorIndex**: high-level wrapper (`vector_index.py`) — incremental build,
+  search, search_with_filter (Qdrant), doc-level delete.
+- **Namespace support**: documents and queries scoped to a collection.
+  `VectorIndex` accepts namespace param; `search_tool.py` and `retrieval.py`
+  forward namespace.
+- **Migration tool**: `doc-rag migrate-vectors --from faiss --to qdrant`
+  (`migrate_vectors.py`). Transfers vectors between backends.
+- **Hybrid search for Qdrant**: `QdrantVectorStore.add_with_metadata()` stores
+  doc_id/section_path/is_table/text in payload. `search_with_filter()` accepts
+  metadata filters via Qdrant FieldCondition.
+- **E2E migration test**: faiss→qdrant with real vectors + delete-then-search.
+
+### Config
+- `index.backend: faiss | qdrant | pgvector`
+- `index.qdrant.url`, `index.qdrant.collection`, `index.qdrant.api_key`
+- `index.pgvector.dsn`, `index.pgvector.table`
+
+## v2.6.0 — 2026-06-22
+
+Structure-aware (recursive) chunker.
+
+### Added
+- `chunker_recursive.py`: tree-based splitting using headings as boundaries,
+  tables as atomic units with summary siblings.
+- Config: `chunking.strategy: fixed | recursive` (default `fixed`).
+- `section_path` metadata in chunks, exposed in `doc_search` results.
+- 17 new tests (211 total).
+
+## v2.5.0 — 2026-06-22
+
+Document quality checks and per-doc reports.
+
+### Added
+- `quality.py` module with 7 checks: empty pages, broken tables, formula
+  garbage, unreadable chars, duplicate headers/footers, low density pages.
+- Pipeline integration: `build/quality/<doc_id>.json` + `summary.json`,
+  `quality_score` + `quality_warning_count` in manifest.
+- Config: `quality.fail_on_severity: error | warn | never` (default `never`).
+- 22 new tests (194 total).
 
 ## v2.4.0 — 2026-06-22
 
