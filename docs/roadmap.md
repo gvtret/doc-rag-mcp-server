@@ -494,6 +494,78 @@ Acceptance:
   answer.
 - Schema migration v1 → v2 actually moves a corpus end-to-end.
 
+### v3.1 — Hybrid search, RAG generate, quality badge
+
+Incremental release building on v3.0 vector-store foundations. Ships
+three features that were developed together and share a "retrieval →
+consumption" arc:
+
+- **Hybrid search (RRF)** — `retrieval_mode: hybrid` runs lexical
+  (TF-IDF) and semantic search in parallel, merges via Reciprocal Rank
+  Fusion (k=60). New config key `mcp.retrieval_mode` (default
+  `semantic`). All three backends support hybrid mode.
+- **RAG generate endpoint** — `POST /api/v1/generate` calls
+  `doc_search()` to assemble context, formats numbered citations, and
+  forwards to an OpenAI-compatible LLM API. LLM config via env vars
+  (`DOC_RAG_LLM_BASE_URL`, `DOC_RAG_LLM_MODEL`, `DOC_RAG_LLM_API_KEY`)
+  or config keys under `mcp.rag_generate.*`.
+- **Quality badge** — per-document quality score surfaced as a
+  green/yellow/red badge in the UI document table. `/ui/quality`
+  endpoint returns scores and warning counts.
+- **Manage + Logs pages** — full Svelte replacements for the remaining
+  stub pages (document management, live log viewer).
+
+Acceptance:
+
+- Hybrid search returns results that combine lexical phrase matches with
+  semantic similarity; pure-semantic and pure-lexical modes still work.
+- `/api/v1/generate` returns a coherent answer with numbered citations
+  when an LLM is configured.
+- Quality badge renders correctly in the UI for all severity levels.
+- Manage page supports document delete, Logs page tails server logs.
+
+### v4.0 — Full RAG pipeline
+
+Production-grade Retrieval-Augmented Generation. Builds on v3.1's
+generate endpoint by exposing it as an MCP tool, adding streaming,
+structured citations, and retrieval quality improvements.
+
+Concrete deliverables:
+
+- **`doc_generate` MCP tool** — registered in `tools/list` with proper
+  JSON Schema. Params: `query`, `top_k`, `namespace`, `max_tokens`,
+  `temperature`. Returns generated answer + structured citations array.
+- **Streaming responses** — SSE-based token-by-token output for both
+  `POST /mcp` (MCP streaming) and `POST /api/v1/generate` (HTTP SSE).
+  Non-streaming fallback preserved for clients that don't support SSE.
+- **Structured citations** — `doc_search` results include a
+  `citations` array with `chunk_id`, `source_file`, `section_path`,
+  `page`, `score`, and `text_preview`. `doc_generate` output includes
+  the same structured citations alongside the generated answer.
+- **Context assembly** — configurable context window management:
+  `mcp.rag_generate.max_context_tokens` (default 6000), chunk
+  truncation, relevance re-ordering, deduplication of overlapping
+  chunks before LLM call.
+- **MCP schema completeness** — `doc_search` schema declares all
+  runtime params: `namespace`, `doc_id`, `section_path`, `tables_only`,
+  `filters`.
+- **Config consolidation** — all `mcp.retrieval_mode`,
+  `mcp.rag_generate.*` keys documented in `config/config.yaml` with
+  sensible defaults.
+
+Acceptance:
+
+- `doc_search` returns structured citations that include section_path
+  and page number.
+- `doc_generate` is callable from MCP clients (Cursor, VSCode) and
+  returns a generated answer with source citations.
+- Streaming works end-to-end: tokens arrive incrementally, final
+  response includes full citations.
+- Context assembly respects `max_context_tokens` — LLM never receives
+  more context than configured.
+- All existing tests pass; new tests cover citations, streaming, context
+  assembly, and MCP schema.
+
 ## 7. Hardware acceleration paths
 
 Independently of the version plan, three hardware acceleration paths
