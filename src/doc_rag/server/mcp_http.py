@@ -2504,6 +2504,90 @@ async def ui_quality(request: Request, key: str = "") -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+@app.get("/ui/documents")
+async def ui_documents(request: Request, key: str = "") -> JSONResponse:
+    """List ALL source files (incoming + archived) cross-referenced with manifest.
+
+    Returns indexed docs (with chunk_count, quality) and pending files
+    (from sources/incoming and sources/archived not yet in manifest).
+    """
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        root = _root_dir()
+        cfg_path = _config_path()
+        with cfg_path.open(encoding="utf-8") as f:
+            import yaml
+            cfg = yaml.safe_load(f) or {}
+        paths = cfg.get("paths", {}) or {}
+        incoming_rel = paths.get("sources_incoming", "sources/incoming")
+        archived_rel = paths.get("sources_archived", "sources/archived")
+        manifest_rel = paths.get("manifest_path", "build/manifest.json")
+
+        incoming_dir = root / incoming_rel
+        archived_dir = root / archived_rel
+        manifest_path = root / manifest_rel
+
+        SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+
+        def _scan_dir(d: Path) -> list[dict[str, Any]]:
+            if not d.is_dir():
+                return []
+            out = []
+            for p in sorted(d.rglob("*")):
+                if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
+                    out.append({
+                        "path": str(p.relative_to(root)),
+                        "basename": p.name,
+                        "size": p.stat().st_size,
+                    })
+            return out
+
+        incoming_files = _scan_dir(incoming_dir)
+        archived_files = _scan_dir(archived_dir)
+
+        indexed_docs: list[dict[str, Any]] = []
+        indexed_basenames: set[str] = set()
+        if manifest_path.is_file():
+            try:
+                with manifest_path.open(encoding="utf-8") as f:
+                    manifest = json.load(f)
+                for d in manifest.get("documents", []):
+                    sf = str(d.get("source_file", ""))
+                    bn = os.path.basename(sf)
+                    indexed_basenames.add(bn)
+                    indexed_docs.append({
+                        "doc_id": d.get("doc_id"),
+                        "basename": bn,
+                        "source_file": sf,
+                        "chunk_count": d.get("chunk_count"),
+                        "edition_year": d.get("edition_year"),
+                        "indexed": True,
+                    })
+            except Exception:
+                pass
+
+        pending = []
+        for f in incoming_files + archived_files:
+            if f["basename"] not in indexed_basenames:
+                pending.append({
+                    "basename": f["basename"],
+                    "path": f["path"],
+                    "size": f["size"],
+                    "indexed": False,
+                })
+
+        return JSONResponse({
+            "ok": True,
+            "indexed": indexed_docs,
+            "pending": pending,
+            "indexed_count": len(indexed_docs),
+            "pending_count": len(pending),
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.post("/api/v1/generate")
 async def api_v1_generate(
     request: Request,

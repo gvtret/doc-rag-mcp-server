@@ -1,21 +1,35 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
-  import { fetchQuality, type QualityDoc } from "../lib/api";
+  import { fetchQuality, fetchAllDocuments, type QualityDoc, type AllDocument } from "../lib/api";
 
-  const documents = $derived(appState.status?.indexed?.documents ?? []);
   const indexed = $derived(appState.status?.indexed);
+  const running = $derived(appState.status?.running ?? false);
 
+  let allDocs = $state<AllDocument[]>([]);
+  let pendingDocs = $state<AllDocument[]>([]);
   let qualityMap = $state<Record<string, QualityDoc>>({});
+  let loading = $state(true);
+
+  async function refresh() {
+    try {
+      const [docs, qual] = await Promise.all([fetchAllDocuments(), fetchQuality()]);
+      if (docs.ok) {
+        allDocs = docs.indexed;
+        pendingDocs = docs.pending;
+      }
+      if (qual.ok && qual.documents) {
+        const m: Record<string, QualityDoc> = {};
+        for (const d of qual.documents) m[d.doc_id] = d;
+        qualityMap = m;
+      }
+    } catch {}
+    loading = false;
+  }
 
   $effect(() => {
-    let cancelled = false;
-    fetchQuality().then((q) => {
-      if (cancelled || !q.ok || !q.documents) return;
-      const m: Record<string, QualityDoc> = {};
-      for (const d of q.documents) m[d.doc_id] = d;
-      qualityMap = m;
-    }).catch(() => {});
-    return () => { cancelled = true; };
+    refresh();
+    const iv = setInterval(refresh, 5000);
+    return () => clearInterval(iv);
   });
 
   function qualityColor(score: number): string {
@@ -24,10 +38,6 @@
     return "err";
   }
 
-  function shortenSha(s: string | null | undefined): string {
-    if (!s) return "—";
-    return s.length > 16 ? s.slice(0, 16) + "…" : s;
-  }
 </script>
 
 <section>
@@ -35,30 +45,36 @@
     <p class="error">
       Не удалось прочитать индекс: <code>{indexed.error}</code>
     </p>
-  {:else if !indexed}
+  {:else if loading}
     <p class="muted">Загрузка…</p>
   {:else}
     <div class="summary mono">
-      <span>docs: <strong>{indexed.document_count ?? 0}</strong></span>
+      <span>indexed: <strong class="ok">{allDocs.length}</strong></span>
+      <span class="sep">·</span>
+      <span>pending: <strong class={pendingDocs.length > 0 ? "warn" : ""}>{pendingDocs.length}</strong></span>
       <span class="sep">·</span>
       <span>
-        lex: <strong
-          class={indexed.lexical_search_ready ? "ok" : "warn"}>{indexed.lexical_search_ready ? "ready" : "off"}</strong
-        >
+        lex: <strong class={indexed?.lexical_search_ready ? "ok" : "warn"}>
+          {indexed?.lexical_search_ready ? "ready" : "off"}
+        </strong>
       </span>
       <span class="sep">·</span>
       <span>
-        sem: <strong
-          class={indexed.semantic_search_ready ? "ok" : "warn"}>{indexed.semantic_search_ready ? "ready" : "off"}</strong
-        >
+        sem: <strong class={indexed?.semantic_search_ready ? "ok" : "warn"}>
+          {indexed?.semantic_search_ready ? "ready" : "off"}
+        </strong>
       </span>
-      {#if indexed.pipeline_version}
+      {#if running}
+        <span class="sep">·</span>
+        <span class="warn">ingest/rebuild…</span>
+      {/if}
+      {#if indexed?.pipeline_version}
         <span class="sep">·</span>
         <span class="muted">pipeline {indexed.pipeline_version}</span>
       {/if}
     </div>
 
-    {#if documents.length === 0}
+    {#if allDocs.length === 0 && pendingDocs.length === 0}
       <p class="muted">Пока ни одного документа.</p>
     {:else}
       <table>
@@ -69,33 +85,21 @@
             <th>DOC_ID</th>
             <th class="num">CHUNKS</th>
             <th class="num">YEAR</th>
-            <th>OCR</th>
+            <th>STATUS</th>
             <th>QUALITY</th>
-            <th>SHA256</th>
           </tr>
         </thead>
         <tbody>
-          {#each documents as d, i (d.doc_id)}
+          {#each allDocs as d, i (d.doc_id ?? d.basename + i)}
             <tr>
               <td class="num muted">{String(i + 1).padStart(2, "0")}</td>
-              <td title={d.source_file ?? ""}>{d.basename ?? "—"}</td>
-              <td class="mono small">{d.doc_id}</td>
+              <td title={d.source_file ?? ""}>{d.basename}</td>
+              <td class="mono small">{d.doc_id ?? "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
               <td class="num">{d.edition_year ?? "—"}</td>
+              <td><span class="s-badge s-ok">indexed</span></td>
               <td>
-                {#if d.coverage?.ocr?.applied}
-                  <span
-                    class="ocr-badge"
-                    title="страниц: {d.coverage.ocr.pages_recognized ?? '?'} · уверенность: {(d.coverage.ocr.confidence ?? 0).toFixed(2)}"
-                  >
-                    OCR
-                  </span>
-                {:else}
-                  <span class="muted">—</span>
-                {/if}
-              </td>
-              <td>
-                {#if qualityMap[d.doc_id]}
+                {#if d.doc_id && qualityMap[d.doc_id]}
                   {@const q = qualityMap[d.doc_id]}
                   <span
                     class="q-badge q-{qualityColor(q.score)}"
@@ -107,7 +111,17 @@
                   <span class="muted">—</span>
                 {/if}
               </td>
-              <td class="mono small muted">{shortenSha(d.sha256)}</td>
+            </tr>
+          {/each}
+          {#each pendingDocs as d, i (d.path ?? d.basename + i)}
+            <tr class="pending-row">
+              <td class="num muted">{String(allDocs.length + i + 1).padStart(2, "0")}</td>
+              <td title={d.path ?? ""}>{d.basename}</td>
+              <td class="mono small muted">—</td>
+              <td class="num muted">—</td>
+              <td class="num muted">—</td>
+              <td><span class="s-badge s-pending">pending</span></td>
+              <td><span class="muted">—</span></td>
             </tr>
           {/each}
         </tbody>
@@ -184,18 +198,26 @@
   .small {
     font-size: 0.72rem;
   }
-  .ocr-badge {
+  .pending-row td {
+    opacity: 0.55;
+  }
+  .s-badge {
     display: inline-block;
     padding: 1px 6px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--bg-base);
-    background: var(--accent-warn);
     border-radius: 2px;
-    cursor: help;
     font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
       Menlo, Consolas, monospace;
     letter-spacing: 0.05em;
+  }
+  .s-ok {
+    color: var(--bg-base);
+    background: var(--accent-ok);
+  }
+  .s-pending {
+    color: var(--text-primary);
+    background: var(--border-strong);
   }
   .q-badge {
     display: inline-block;

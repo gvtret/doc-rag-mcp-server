@@ -187,3 +187,27 @@ export interface QualitySummary {
 export function fetchQuality(signal?: AbortSignal): Promise<QualitySummary> {
   return getJSON<QualitySummary>("/ui/quality", signal);
 }
+
+export type AllDocument = {
+  doc_id?: string;
+  basename: string;
+  source_file?: string;
+  path?: string;
+  chunk_count?: number | null;
+  edition_year?: number | null;
+  size?: number;
+  indexed: boolean;
+};
+
+export type AllDocumentsResponse = {
+  ok: boolean;
+  indexed: AllDocument[];
+  pending: AllDocument[];
+  indexed_count: number;
+  pending_count: number;
+  error?: string;
+};
+
+export function fetchAllDocuments(signal?: AbortSignal): Promise<AllDocumentsResponse> {
+  return getJSON<AllDocumentsResponse>("/ui/documents", signal);
+}
