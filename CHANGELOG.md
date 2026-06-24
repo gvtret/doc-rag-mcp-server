@@ -3,6 +3,38 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v4.0.0 — 2026-06-24
+
+Full RAG pipeline, structured citations, and documentation UI.
+
+### Added
+- **`doc_generate` MCP tool**: retrieve context + call LLM for answer with
+  citations. Registered in `tools/list` with full JSON Schema. Params: `query`,
+  `top_k`, `namespace`, `max_tokens`, `max_context_tokens`.
+- **Structured citations**: `doc_search` returns a `citations` array alongside
+  text results — `index`, `chunk_id`, `source_file`, `section_path`, `doc_id`,
+  `score`, `text_preview`.
+- **Context assembly**: `max_context_tokens` budget (default 6000) truncates
+  chunks to fit the LLM context window. Chunks beyond budget are dropped.
+- **MCP schema completeness**: `doc_search` declares all runtime params
+  (`namespace`, `doc_id`, `section_path`, `tables_only`); `doc_generate`
+  declares all params including `max_context_tokens`.
+- **Documentation page**: new "Документация" sidebar item with service overview,
+  architecture diagram, all config/env params, REST API reference, MCP tool
+  docs, search modes, quality checks. Links to Swagger UI (`/docs`), ReDoc
+  (`/redoc`), OpenAPI JSON (`/openapi.json`).
+- **`chunking.strategy`**: added to `config.yaml` and server-side
+  `_FIELD_CONSTRAINTS` (was missing, caused UI save error).
+- 12 new tests (241 total).
+
+### Changed
+- `search_tool.py`: rewritten output format — numbered chunks with section
+  paths, structured citations appended as JSON block.
+- `generate_tool.py`: new module for `doc_generate` MCP tool handler.
+- `rag_generate.py`: `_format_context` accepts `max_context_tokens`, truncates
+  chunks with word-boundary awareness.
+- Version bumped from 3.1.0 to 4.0.0 (MAJOR — new MCP tool surface).
+
 ## v3.1.0 — 2026-06-24
 
 Hybrid search, RAG generate, quality badge, and full Svelte UI.

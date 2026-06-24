@@ -781,7 +781,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "3.1.0"},
+            "serverInfo": {"name": "doc-rag", "version": "4.0.0"},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -888,7 +888,7 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="3.1.0")
+app = FastAPI(title="doc-rag MCP HTTP", version="4.0.0")
 
 
 def _mount_ui_next(app: FastAPI) -> None:
@@ -1049,7 +1049,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "3.1.0",
+            "version": "4.0.0",
             "ready": state["ready"],
             "reasons": state["reasons"],
         }
