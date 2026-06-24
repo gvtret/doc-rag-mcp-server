@@ -60,6 +60,9 @@ index:
 mcp:
   retrieval_mode: "semantic"
 
+quality:
+  fail_on_severity: "never"
+
 server:
   host: "127.0.0.1"
   port: 3333
