@@ -91,6 +91,18 @@ echo "[doc-rag] uv sync ${SYNC_ARGS[*]}"
 uv sync "${SYNC_ARGS[@]}"
 echo "[doc-rag] venv ready: ${ROOT}/.venv"
 
+# --- Fix rapidocr missing arch_config.yaml (packaging bug in 3.8.x) ---------
+ARCH_CFG_SRC="${ROOT}/scripts/rapidocr/arch_config.yaml"
+ARCH_CFG_DST="${ROOT}/.venv/lib/python3.*/site-packages/rapidocr/inference_engine/pytorch/networks/arch_config.yaml"
+if [[ -f "$ARCH_CFG_SRC" ]]; then
+  for dst in $ARCH_CFG_DST; do
+    if [[ -d "$(dirname "$dst")" ]] && [[ ! -f "$dst" ]]; then
+      cp "$ARCH_CFG_SRC" "$dst"
+      echo "[doc-rag] patched rapidocr: installed arch_config.yaml"
+    fi
+  done
+fi
+
 # --- Optional initial ingest --------------------------------------------------
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_ing="${DOC_RAG_BOOTSTRAP_INGEST:-N}"

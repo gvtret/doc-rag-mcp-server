@@ -1,8 +1,28 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { fetchQuality, type QualityDoc } from "../lib/api";
 
   const documents = $derived(appState.status?.indexed?.documents ?? []);
   const indexed = $derived(appState.status?.indexed);
+
+  let qualityMap = $state<Record<string, QualityDoc>>({});
+
+  $effect(() => {
+    let cancelled = false;
+    fetchQuality().then((q) => {
+      if (cancelled || !q.ok || !q.documents) return;
+      const m: Record<string, QualityDoc> = {};
+      for (const d of q.documents) m[d.doc_id] = d;
+      qualityMap = m;
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  });
+
+  function qualityColor(score: number): string {
+    if (score >= 0.8) return "ok";
+    if (score >= 0.5) return "warn";
+    return "err";
+  }
 
   function shortenSha(s: string | null | undefined): string {
     if (!s) return "—";
@@ -50,6 +70,7 @@
             <th class="num">CHUNKS</th>
             <th class="num">YEAR</th>
             <th>OCR</th>
+            <th>QUALITY</th>
             <th>SHA256</th>
           </tr>
         </thead>
@@ -68,6 +89,19 @@
                     title="страниц: {d.coverage.ocr.pages_recognized ?? '?'} · уверенность: {(d.coverage.ocr.confidence ?? 0).toFixed(2)}"
                   >
                     OCR
+                  </span>
+                {:else}
+                  <span class="muted">—</span>
+                {/if}
+              </td>
+              <td>
+                {#if qualityMap[d.doc_id]}
+                  {@const q = qualityMap[d.doc_id]}
+                  <span
+                    class="q-badge q-{qualityColor(q.score)}"
+                    title="score: {q.score.toFixed(2)} · warnings: {q.warning_count}"
+                  >
+                    {q.score >= 0.8 ? "OK" : q.score >= 0.5 ? "WARN" : "ERR"}
                   </span>
                 {:else}
                   <span class="muted">—</span>
@@ -162,5 +196,28 @@
     font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
       Menlo, Consolas, monospace;
     letter-spacing: 0.05em;
+  }
+  .q-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 2px;
+    cursor: help;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
+    letter-spacing: 0.05em;
+  }
+  .q-ok {
+    color: var(--bg-base);
+    background: var(--accent-ok);
+  }
+  .q-warn {
+    color: var(--bg-base);
+    background: var(--accent-warn);
+  }
+  .q-err {
+    color: #fff;
+    background: var(--accent-error);
   }
 </style>

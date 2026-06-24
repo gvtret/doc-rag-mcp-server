@@ -1,0 +1,212 @@
+# PP-OCRv4 / v5 architecture configs for rapidocr torch backend.
+# Maps model file stem to {Backbone, Neck, Head} config.
+
+# ── Detection models ──────────────────────────────────────────────
+
+ch_PP-OCRv4_det_mobile:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: true
+  Head:
+    name: DBHead
+    k: 50
+
+ch_PP-OCRv4_det_server:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: false
+  Head:
+    name: PFHeadLocal
+    k: 50
+
+en_PP-OCRv3_det_mobile:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: true
+  Head:
+    name: DBHead
+    k: 50
+
+multi_PP-OCRv3_det_mobile:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: true
+  Head:
+    name: DBHead
+    k: 50
+
+ch_PP-OCRv5_det_mobile:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: true
+  Head:
+    name: DBHead
+    k: 50
+
+ch_PP-OCRv5_det_server:
+  model_type: det
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: DBFPN
+    model_name: large
+    use_depthwise: false
+  Head:
+    name: PFHeadLocal
+    k: 50
+
+# ── Recognition models (mobile) ───────────────────────────────────
+
+ch_PP-OCRv4_rec_mobile:
+  model_type: rec
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 0.8
+  Neck:
+    name: SequenceEncoder
+    encoder_type: rnn
+    hidden_size: 48
+  Head:
+    name: CTCHead
+    fc_decay: 0.00001
+
+ch_PP-OCRv4_rec_server:
+  model_type: rec
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: SequenceEncoder
+    encoder_type: rnn
+    hidden_size: 96
+  Head:
+    name: CTCHead
+    fc_decay: 0.00001
+
+en_PP-OCRv4_rec_mobile:
+  model_type: rec
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 0.8
+  Neck:
+    name: SequenceEncoder
+    encoder_type: rnn
+    hidden_size: 48
+  Head:
+    name: CTCHead
+    fc_decay: 0.00001
+
+ch_PP-OCRv5_rec_mobile:
+  model_type: rec
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 0.8
+  Neck:
+    name: SequenceEncoder
+    encoder_type: rnn
+    hidden_size: 48
+  Head:
+    name: CTCHead
+    fc_decay: 0.00001
+
+ch_PP-OCRv5_rec_server:
+  model_type: rec
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: large
+    scale: 1.0
+  Neck:
+    name: SequenceEncoder
+    encoder_type: rnn
+    hidden_size: 96
+  Head:
+    name: CTCHead
+    fc_decay: 0.00001
+
+# ── Classification models ─────────────────────────────────────────
+
+ch_ppocr_mobile_v2.0_cls_mobile:
+  model_type: cls
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 0.8
+  Neck: null
+  Head:
+    name: ClsHead
+    class_dim: 2
+    scale: 0.15
+
+ch_PP-LCNet_x0_25_textline_ori_cls_mobile:
+  model_type: cls
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 0.25
+  Neck: null
+  Head:
+    name: ClsHead
+    class_dim: 2
+    scale: 0.15
+
+ch_PP-LCNet_x1_0_textline_ori_cls_server:
+  model_type: cls
+  in_channels: 3
+  Backbone:
+    name: MobileNetV3
+    model_name: small
+    scale: 1.0
+  Neck: null
+  Head:
+    name: ClsHead
+    class_dim: 2
+    scale: 0.15
