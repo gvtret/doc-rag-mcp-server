@@ -1174,6 +1174,7 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, Any]] = {
     "parsing.min_chars_per_page": {"type": "int", "min": 0},
     "sectioning.min_heading_len": {"type": "int", "min": 1},
     "sectioning.max_heading_len": {"type": "int", "min": 1},
+    "chunking.strategy": {"options": ["fixed", "recursive"]},
     "chunking.target_tokens": {"type": "int", "min": 1},
     "chunking.overlap_tokens": {"type": "int", "min": 0},
     "chunking.dedup_similarity_threshold": {"type": "float", "min": 0.0, "max": 1.0},

@@ -38,6 +38,7 @@ sectioning:
   max_heading_len: 120
 
 chunking:
+  strategy: "fixed"
   target_tokens: 512
   overlap_tokens: 64
   # Нечёткая дедупликация чанков между документами (word-bigram Jaccard).
