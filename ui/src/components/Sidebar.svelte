@@ -9,6 +9,7 @@
     { key: "config", label: "Конфигурация", hint: "Парсинг, чанки, эмбеддинги" },
     { key: "manage", label: "Управление", hint: "Ingest, rebuild, аварийные" },
     { key: "logs", label: "Логи", hint: "Ingest log, HTTP log" },
+    { key: "docs", label: "Документация", hint: "API, параметры, архитектура" },
   ];
 
   function select(key: PageKey) {
@@ -19,7 +20,7 @@
 <aside class="sidebar" aria-label="Главное меню">
   <div class="brand">
     <span class="logo">doc-rag</span>
-    <span class="ver">v2.2</span>
+    <span class="ver">v3.1</span>
   </div>
   <nav>
     <ul>

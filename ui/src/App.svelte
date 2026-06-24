@@ -6,6 +6,7 @@
   import Config from "./pages/Config.svelte";
   import Manage from "./pages/Manage.svelte";
   import Logs from "./pages/Logs.svelte";
+  import Docs from "./pages/Docs.svelte";
   import { appState } from "./lib/state.svelte";
 
   // Single polling loop, owned by App. Each child reads from
@@ -29,6 +30,8 @@
       <Manage />
     {:else if appState.page === "logs"}
       <Logs />
+    {:else if appState.page === "docs"}
+      <Docs />
     {/if}
   </main>
 

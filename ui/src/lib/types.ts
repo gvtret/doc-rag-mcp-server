@@ -63,7 +63,7 @@ export type HealthReady = {
   reasons?: string[];
 };
 
-export type PageKey = "documents" | "config" | "manage" | "logs";
+export type PageKey = "documents" | "config" | "manage" | "logs" | "docs";
 
 export type ConfigRaw = {
   ok: true;
