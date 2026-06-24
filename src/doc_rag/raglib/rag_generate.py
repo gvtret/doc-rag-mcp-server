@@ -37,16 +37,32 @@ def _get_rag_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _format_context(results: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Format search results into numbered context block."""
+def _format_context(
+    results: list[dict[str, Any]],
+    max_context_tokens: int = 6000,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Format search results into numbered context block.
+
+    Truncates chunks to fit within max_context_tokens budget (~4 chars/token).
+    """
     lines: list[str] = []
     sources: list[dict[str, Any]] = []
+    budget = max_context_tokens * 4  # rough char estimate
+    used = 0
     for i, r in enumerate(results, 1):
         text = str(r.get("text", "")).strip()
         source_file = str(r.get("source_file", "unknown"))
         chunk_id = str(r.get("chunk_id", ""))
         section = str(r.get("section_path", ""))
-        lines.append(f"[{i}] ({source_file}, {chunk_id})\n{text}")
+        header = f"[{i}] ({source_file}, {chunk_id})\n"
+        header_len = len(header)
+        remaining = budget - used - header_len
+        if remaining <= 0:
+            break
+        if len(text) > remaining:
+            text = text[:remaining].rsplit(" ", 1)[0] + "..."
+        used += header_len + len(text) + 2  # +2 for \n\n
+        lines.append(header + text)
         sources.append(
             {
                 "index": i,
@@ -104,6 +120,7 @@ def rag_generate(
     query: str,
     top_k: int = 5,
     namespace: str = "default",
+    max_context_tokens: int = 6000,
 ) -> dict[str, Any]:
     """Full RAG pipeline: search → format context → LLM generate.
 
@@ -134,7 +151,7 @@ def rag_generate(
             "error": None,
         }
 
-    context, sources = _format_context(results)
+    context, sources = _format_context(results, max_context_tokens)
 
     # Generate
     user_msg = f"Context:\n\n{context}\n\nQuestion: {query}\n\nAnswer based on the context above:"

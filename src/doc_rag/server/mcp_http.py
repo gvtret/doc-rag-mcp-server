@@ -790,16 +790,35 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
         tools = [
             {
                 "name": "doc_search",
-                "description": "Search the document knowledge base (semantic if FAISS+embeddings are available).",
+                "description": "Search the document knowledge base. Returns relevant chunks with scores and structured citations.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
-                        "top_k": {"type": "integer", "default": 6},
+                        "query": {"type": "string", "description": "Search query text"},
+                        "top_k": {"type": "integer", "default": 6, "description": "Number of results to return"},
+                        "namespace": {"type": "string", "default": "default", "description": "Collection namespace"},
+                        "doc_id": {"type": "string", "description": "Filter by document ID"},
+                        "section_path": {"type": "string", "description": "Filter by section path prefix"},
+                        "tables_only": {"type": "boolean", "default": False, "description": "Return only table chunks"},
                     },
                     "required": ["query"],
                 },
-            }
+            },
+            {
+                "name": "doc_generate",
+                "description": "RAG generate: search documents and generate an answer with citations using an LLM.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Question to answer"},
+                        "top_k": {"type": "integer", "default": 5, "description": "Number of context chunks to retrieve"},
+                        "namespace": {"type": "string", "default": "default", "description": "Collection namespace"},
+                        "max_tokens": {"type": "integer", "description": "Override max tokens for LLM response"},
+                        "max_context_tokens": {"type": "integer", "default": 6000, "description": "Max tokens budget for retrieved context sent to LLM"},
+                    },
+                    "required": ["query"],
+                },
+            },
         ]
         return 200, _ok(req_id, {"tools": tools})
 
@@ -808,7 +827,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
         name = params.get("name", "")
         arguments = params.get("arguments") or {}
 
-        if name != "doc_search":
+        if name not in ("doc_search", "doc_generate"):
             _metrics.record_mcp_request(
                 tool=name or "unknown", status="unknown_tool", duration_seconds=0.0
             )
@@ -817,20 +836,22 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                 {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True},
             )
 
-        # Lazy import to keep base install lightweight
-        from doc_rag.server.search_tool import doc_search_tool
-
         started = time.time()
         try:
-            content = doc_search_tool(arguments)
-            _metrics.record_mcp_request("doc_search", "ok", time.time() - started)
+            if name == "doc_search":
+                from doc_rag.server.search_tool import doc_search_tool
+                content = doc_search_tool(arguments)
+            else:
+                from doc_rag.server.generate_tool import doc_generate_tool
+                content = doc_generate_tool(arguments)
+            _metrics.record_mcp_request(name, "ok", time.time() - started)
             return 200, _ok(req_id, {"content": content, "isError": False})
         except Exception as exc:
-            _metrics.record_mcp_request("doc_search", "error", time.time() - started)
+            _metrics.record_mcp_request(name, "error", time.time() - started)
             return 200, _ok(
                 req_id,
                 {
-                    "content": [{"type": "text", "text": f"doc_search failed: {exc}"}],
+                    "content": [{"type": "text", "text": f"{name} failed: {exc}"}],
                     "isError": True,
                 },
             )

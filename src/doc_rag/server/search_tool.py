@@ -14,6 +14,22 @@ _FALLBACK_NOTICE = (
 )
 
 
+def _build_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build structured citations array from search results."""
+    citations: list[dict[str, Any]] = []
+    for i, r in enumerate(results, 1):
+        citations.append({
+            "index": i,
+            "chunk_id": r.get("chunk_id", ""),
+            "source_file": r.get("source_file", ""),
+            "section_path": r.get("section_path", ""),
+            "doc_id": r.get("doc_id", ""),
+            "score": r.get("score"),
+            "text_preview": str(r.get("text", ""))[:200],
+        })
+    return citations
+
+
 def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Execute `doc_search` tool and return MCP `content` array.
 
@@ -22,6 +38,9 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
             - query: str (required)
             - top_k: int (optional)
             - namespace: str (optional, default "default")
+            - doc_id: str (optional, filter by document)
+            - section_path: str (optional, filter by section)
+            - tables_only: bool (optional, only table chunks)
 
     Returns:
         MCP content array (list of {type,text} objects).
@@ -36,24 +55,19 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         top_k = 6
 
-    # namespace is reserved for future multi-collection support
-    _namespace = str(arguments.get("namespace", "default")).strip() or "default"
+    namespace = str(arguments.get("namespace", "default")).strip() or "default"
 
-    # Parse optional filters for hybrid search (Qdrant backend)
-    _filters: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = None
     if "doc_id" in arguments:
-        _filters = _filters or {}
-        _filters["doc_id"] = str(arguments["doc_id"])
+        filters = filters or {}
+        filters["doc_id"] = str(arguments["doc_id"])
     if "section_path" in arguments:
-        _filters = _filters or {}
-        _filters["section_path"] = str(arguments["section_path"])
+        filters = filters or {}
+        filters["section_path"] = str(arguments["section_path"])
     if arguments.get("tables_only"):
-        _filters = _filters or {}
-        _filters["is_table"] = True
+        filters = filters or {}
+        filters["is_table"] = True
 
-    # Detect whether semantic mode is configured but the FAISS index isn't
-    # available — in that case doc_search() silently falls back to lexical
-    # search and the caller should know the quality is degraded.
     fallback_active = False
     try:
         cfg = load_config()
@@ -65,7 +79,7 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    results = doc_search(query=query, top_k=top_k, namespace=_namespace, filters=_filters)
+    results = doc_search(query=query, top_k=top_k, namespace=namespace, filters=filters)
 
     content: list[dict[str, Any]] = []
     if fallback_active:
@@ -75,21 +89,21 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         content.append({"type": "text", "text": "No results."})
         return content
 
+    citations = _build_citations(results)
+
     lines: list[str] = []
     for i, r in enumerate(results, 1):
         score = r.get("score", None)
         score_s = f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"
-        doc_id = r.get("doc_id", "")
-        chunk_id = r.get("chunk_id", "")
         source_file = r.get("source_file", "")
+        section = r.get("section_path", "")
 
-        header_bits = [f"{i}. ({score_s})"]
-        if doc_id:
-            header_bits.append(f"doc_id={doc_id}")
-        if chunk_id:
-            header_bits.append(f"chunk_id={chunk_id}")
+        header_bits = [f"[{i}]"]
         if source_file:
-            header_bits.append(f"source={source_file}")
+            header_bits.append(f"({source_file})")
+        if section:
+            header_bits.append(f"§{section}")
+        header_bits.append(f"score={score_s}")
 
         text = str(r.get("text", "")).strip()
         if text:
@@ -98,4 +112,10 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
             lines.append(" ".join(header_bits))
 
     content.append({"type": "text", "text": "\n\n".join(lines)})
+
+    content.append({
+        "type": "text",
+        "text": "\n---\nCitations: " + str(citations),
+    })
+
     return content
