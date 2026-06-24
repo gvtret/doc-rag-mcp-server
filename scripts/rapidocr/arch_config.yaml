@@ -12,8 +12,8 @@ ch_PP-OCRv4_det_mobile:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: true
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: DBHead
     k: 50
@@ -27,8 +27,8 @@ ch_PP-OCRv4_det_server:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: false
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: PFHeadLocal
     k: 50
@@ -42,8 +42,8 @@ en_PP-OCRv3_det_mobile:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: true
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: DBHead
     k: 50
@@ -57,8 +57,8 @@ multi_PP-OCRv3_det_mobile:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: true
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: DBHead
     k: 50
@@ -72,8 +72,8 @@ ch_PP-OCRv5_det_mobile:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: true
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: DBHead
     k: 50
@@ -87,8 +87,8 @@ ch_PP-OCRv5_det_server:
     scale: 1.0
   Neck:
     name: DBFPN
-    model_name: large
-    use_depthwise: false
+    in_channels: [24, 40, 112, 960]
+    out_channels: 256
   Head:
     name: PFHeadLocal
     k: 50

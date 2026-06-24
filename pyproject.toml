@@ -34,6 +34,9 @@ dependencies = [
   # Brings ~600 MB of deps plus ~300 MB of ML models downloaded on
   # first parse. See docs/install.md and NOTICE for details.
   "docling>=2.0",
+  # RapidOCR (via docling) defaults to onnxruntime engine; without it
+  # the fallback torch engine requires a missing arch_config.yaml.
+  "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]

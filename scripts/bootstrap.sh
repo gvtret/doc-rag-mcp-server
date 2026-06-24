@@ -103,6 +103,12 @@ if [[ -f "$ARCH_CFG_SRC" ]]; then
   done
 fi
 
+# --- Ensure onnxruntime is installed (rapidocr default engine) ----------------
+if ! "$ROOT/.venv/bin/python" -c "import onnxruntime" 2>/dev/null; then
+  echo "[doc-rag] onnxruntime missing — installing (rapidocr default engine)…"
+  uv pip install --python "$ROOT/.venv/bin/python" onnxruntime
+fi
+
 # --- Optional initial ingest --------------------------------------------------
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_ing="${DOC_RAG_BOOTSTRAP_INGEST:-N}"
