@@ -37,7 +37,7 @@ def _server_running(cfg: dict) -> bool:
 
 
 def _api_post(cfg: dict, path: str, body: dict | None = None) -> dict:
-    """POST JSON to the running server and return parsed response."""
+    """POST to the running server. Returns parsed JSON or a stub dict."""
     host = cfg.get("server", {}).get("host", "0.0.0.0")
     port = cfg.get("server", {}).get("port", 3333)
     if host in ("0.0.0.0", ""):
@@ -46,7 +46,11 @@ def _api_post(cfg: dict, path: str, body: dict | None = None) -> dict:
     data = json.dumps(body or {}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     resp = urllib.request.urlopen(req, timeout=30)
-    return json.loads(resp.read())
+    raw = resp.read()
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": resp.status < 400}
 
 
 def _wait_for_job(cfg: dict, timeout: int = 3600) -> None:

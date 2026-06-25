@@ -411,6 +411,9 @@ _RX_FOUND = re.compile(r"\bfound\s+(\d+)\s+file\(s\)")
 _RX_REBUILD_PASS = re.compile(
     r"\brebuild:\s+(?:archived|incoming(?:\s+ingest)?)\s+pass\s+\((\d+)\s+file\(s\)\)"
 )
+_RX_REBUILD_SUMMARY = re.compile(
+    r"\brebuild:\s+(\d+)\s+source\(s\)\s+total,\s+(\d+)\s+skipped,\s+(\d+)\s+to\s+parse"
+)
 _RX_PARSE = re.compile(r"\bparse:\s+(.+?)\s*$")
 _RX_DONE = re.compile(r"\b(?:ok|skip|failed):\s+(.+?)(?::|\s|$)")
 
@@ -439,6 +442,16 @@ def _apply_progress_from_line(line: str) -> None:
                 _INGEST_STATE["docs_total"] = cur + n
             else:
                 _INGEST_STATE["docs_total"] = n
+        return
+
+    m = _RX_REBUILD_SUMMARY.search(line)
+    if m:
+        try:
+            total = int(m.group(1))
+            to_parse = int(m.group(3))
+        except ValueError:
+            return
+        _INGEST_STATE["docs_total"] = total
         return
 
     m = _RX_PARSE.search(line)
