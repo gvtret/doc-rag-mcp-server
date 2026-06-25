@@ -566,6 +566,38 @@ Acceptance:
 - All existing tests pass; new tests cover citations, streaming, context
   assembly, and MCP schema.
 
+### v4.1 — Incremental rebuild, selective rebuild, CLI→UI sync
+
+Resilience and usability release. The previous `rebuild()` was
+destructive — it wiped all generated outputs and re-parsed everything
+from scratch, losing all progress on power outage. This release fixes
+that and adds per-document rebuild capability.
+
+Concrete deliverables:
+
+- **Incremental rebuild** — `rebuild()` checks manifest sha256 + disk
+  presence of `.md` files. Already-processed documents are skipped.
+  Interrupted rebuilds resume where they stopped. `--force` flag for
+  full wipe-and-reparse.
+- **`rebuild-docs` command** — `doc-rag rebuild-docs <id1> <id2>`
+  rebuilds only specific documents. `POST /ui/rebuild-docs` endpoint
+  for selective rebuild from the UI.
+- **CLI→UI sync** — CLI detects a running server and routes
+  `rebuild`/`ingest`/`rebuild-docs` through the API so the UI shows
+  job progress. Falls back to direct pipeline call when server is down.
+- **Selective rebuild in UI** — checkboxes on the Documents page with
+  a "Rebuild selected" button. Select indexed documents to reparse
+  them, or select pending files to process them.
+
+Acceptance:
+
+- Interrupted rebuild resumes without re-parsing already-processed
+  files (verified by checking parse log lines).
+- `doc-rag rebuild-docs <id>` re-parses only the specified document.
+- CLI `doc-rag rebuild` when server is running shows progress in
+  the terminal and the UI reflects the running job.
+- All existing tests pass; new tests for incremental rebuild logic.
+
 ## 7. Hardware acceleration paths
 
 Independently of the version plan, three hardware acceleration paths

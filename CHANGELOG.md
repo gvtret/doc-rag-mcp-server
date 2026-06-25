@@ -3,6 +3,37 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v4.1.0 — 2026-06-25
+
+Incremental rebuild, selective document rebuild, CLI→UI sync.
+
+### Added
+- **Incremental rebuild**: `rebuild()` skips files already in the manifest
+  whose `.md` file exists on disk. Interrupted rebuilds resume where they
+  stopped instead of starting from scratch. Use `--force` for full
+  wipe-and-reparse.
+- **`rebuild-docs` command**: `doc-rag rebuild-docs <id1> <id2> ...`
+  rebuilds only specific documents by doc_id. Backend function
+  `rebuild_docs()` + new `POST /ui/rebuild-docs` endpoint.
+- **CLI→UI sync**: `rebuild`, `ingest`, `rebuild-docs` CLI commands
+  detect a running server and route through the API so the UI shows
+  job progress. Falls back to direct pipeline call when server is down.
+- **Selective rebuild in UI**: Documents page now has checkboxes for
+  each row. "Rebuild selected" button triggers `POST /ui/rebuild-docs`
+  for the selected doc_ids.
+- **`/ui/rebuild?force=1`**: force flag for full wipe-and-reparse from
+  the UI.
+
+### Changed
+- `rebuild()` default behavior changed from destructive wipe to
+  incremental skip. Existing `.md` + chunks are preserved when the
+  source file's sha256 matches the manifest entry.
+- Progress tracking updated to parse the new rebuild summary log line.
+
+### Fixed
+- CLI `_api_post` handles non-JSON responses (303 redirects from
+  `/ui/rebuild`).
+
 ## v4.0.0 — 2026-06-24
 
 Full RAG pipeline, structured citations, and documentation UI.
