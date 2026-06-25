@@ -1833,12 +1833,29 @@ def _indexed_documents_summary_html(catalog: dict[str, Any]) -> str:
 
 
 @app.get("/ui")
-async def ui(request: Request, key: str = "") -> HTMLResponse:
+async def ui(request: Request, key: str = "") -> Response:
     if not _ui_key_ok(request, key):
         return HTMLResponse(
             "<h3>Unauthorized</h3><p>Append <code>?key=...</code> to URL or send Authorization header.</p>",
             status_code=401,
         )
+    # If the Svelte bundle is available, redirect to /ui-next/
+    ui_next_dist = None
+    candidates: list[str] = []
+    here = os.path.dirname(os.path.abspath(__file__))
+    for n in range(1, 5):
+        cand = os.path.join(os.path.abspath(os.path.join(here, *([".."] * n))), "ui", "dist")
+        candidates.append(cand)
+    env_dir = (os.environ.get("DOC_RAG_UI_DIST") or "").strip()
+    if env_dir:
+        candidates.insert(0, env_dir)
+    for d in candidates:
+        if os.path.isdir(d) and os.path.isfile(os.path.join(d, "index.html")):
+            ui_next_dist = d
+            break
+    if ui_next_dist:
+        kq = f"?key={key}" if key else ""
+        return RedirectResponse(url=f"/ui-next/{kq}", status_code=302)
 
     qp = request.query_params
     upload_banner = ""
