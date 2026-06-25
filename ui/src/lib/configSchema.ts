@@ -33,7 +33,7 @@ export const CONFIG_SCHEMA: Section[] = [
     fields: [
       {
         path: "parsing.pdf_backend",
-        label: "PDF backend",
+        label: "Backend PDF",
         type: "select",
         options: ["docling", "auto", "cascade"],
         hint: "docling — единственный backend; cascade — Docling с fallback на Unstructured при ошибке.",
@@ -41,7 +41,7 @@ export const CONFIG_SCHEMA: Section[] = [
       },
       {
         path: "parsing.docx_backend",
-        label: "DOCX backend",
+        label: "Backend DOCX",
         type: "select",
         options: ["python-docx", "docling"],
         hint: "python-docx — быстрый (по умолчанию); docling — структурный, дороже по времени и памяти.",
@@ -141,7 +141,7 @@ export const CONFIG_SCHEMA: Section[] = [
       },
       {
         path: "embeddings.batch_size",
-        label: "Batch size",
+        label: "Размер пакета",
         type: "int",
         min: 1,
         required: true,
@@ -158,7 +158,7 @@ export const CONFIG_SCHEMA: Section[] = [
     fields: [
       {
         path: "index.backend",
-        label: "Backend",
+        label: "Движок индекса",
         type: "select",
         options: ["faiss"],
         required: true,
@@ -173,7 +173,7 @@ export const CONFIG_SCHEMA: Section[] = [
       },
       {
         path: "index.top_k",
-        label: "Top-K по умолчанию",
+        label: "Количество результатов (Top-K)",
         type: "int",
         min: 1,
         required: true,

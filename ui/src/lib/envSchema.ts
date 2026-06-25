@@ -11,11 +11,11 @@ export const ENV_META: Record<string, EnvMeta> = {
     hint: "Адрес, на котором слушает сервис. 0.0.0.0 — слушать всю сеть (LAN).",
   },
   DOC_RAG_HTTP_PORT: {
-    label: "Port",
+    label: "Порт",
     hint: "TCP-порт MCP/UI. По умолчанию 3333.",
   },
   DOC_RAG_ALLOWED_ORIGINS: {
-    label: "CORS allow-list",
+    label: "Список разрешённых Origin (CORS)",
     hint: "Список Origin через запятую. Нужен, если клиент шлёт заголовок Origin. Не '*'.",
   },
   DOC_RAG_HTTP_LOG: {
@@ -39,11 +39,11 @@ export const ENV_META: Record<string, EnvMeta> = {
     hint: "Максимум одновременно выполняемых MCP-инструментов.",
   },
   DOC_RAG_RATE_LIMIT_RPS: {
-    label: "Rate limit (RPS)",
+    label: "Лимит запросов (RPS)",
     hint: "Устойчивая частота запросов на клиента. 0 — лимит выключен.",
   },
   DOC_RAG_RATE_LIMIT_BURST: {
-    label: "Rate limit (burst)",
+    label: "Лимит запросов (burst)",
     hint: "Ёмкость всплеска токен-бакета.",
   },
   DOC_RAG_LOG_LEVEL: {
