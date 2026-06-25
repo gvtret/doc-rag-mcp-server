@@ -18,6 +18,7 @@
 
   const running = $derived(appState.status?.running ?? false);
   const job = $derived(appState.status?.job ?? null);
+  const rebuildInterrupted = $derived(appState.status?.rebuild_interrupted ?? false);
 
   // ---- Upload ----
   function onDragOver(e: DragEvent) {
@@ -66,7 +67,7 @@
     try {
       const r = await rebuildIndex();
       if (r.ok) {
-        banner = { tone: "info", text: "Rebuild запущен. Следите за прогрессом в статусе." };
+        banner = { tone: "info", text: "Пересборка запущена. Следите за прогрессом в статусе." };
       } else {
         banner = { tone: "err", text: r.error ?? "Ошибка" };
       }
@@ -171,6 +172,18 @@
     <div class="banner info">
       Выполняется: <strong>{job ?? "…"}</strong>. Дождитесь завершения перед новыми операциями.
     </div>
+  {:else if rebuildInterrupted}
+    <div class="banner warn">
+      Предыдущий rebuild был прерван. Нажмите «Продолжить» для возобновления.
+      <button
+        type="button"
+        class="btn inline"
+        disabled={busy}
+        onclick={() => void doRebuild()}
+      >
+        Продолжить
+      </button>
+    </div>
   {/if}
 
   <fieldset class="group">
@@ -213,7 +226,7 @@
         disabled={busy || running}
         onclick={() => void doRebuild()}
       >
-        Rebuild index
+        Пересобрать индекс
       </button>
       <button
         type="button"
@@ -221,7 +234,7 @@
         disabled={busy || running}
         onclick={() => void doWipe()}
       >
-        Wipe index
+        Очистить индекс
       </button>
       <button
         type="button"
@@ -229,7 +242,7 @@
         disabled={busy || running}
         onclick={() => void doCleanOrphans()}
       >
-        Clean orphans
+        Удалить потеряные
       </button>
       <button
         type="button"
@@ -237,7 +250,7 @@
         disabled={busy || running}
         onclick={() => void doClearIncoming()}
       >
-        Clear incoming
+        Очистить загрузки
       </button>
       <button
         type="button"
@@ -245,11 +258,11 @@
         disabled={busy}
         onclick={() => void doRestart()}
       >
-        Restart service
+        Перезапустить сервис
       </button>
     </div>
     <p class="hint">
-      Wipe и Clear требуют подтверждения. Rebuild и операции с данными блокируются во время ingest/rebuild.
+      Очистка и Удаление требуют подтверждения. Пересборка и операции с данными блокируются во время загрузки/пересборки.
     </p>
   </fieldset>
 </section>
@@ -284,6 +297,20 @@
     background: rgba(59, 130, 246, 0.08);
     border-color: var(--accent-info);
     color: var(--text-secondary);
+  }
+  .banner.warn {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: var(--accent-warn);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .banner .inline {
+    margin-left: auto;
+    padding: 3px 10px;
+    font-size: 0.8rem;
+    flex-shrink: 0;
   }
   .group {
     border: 1px solid var(--border-strong);

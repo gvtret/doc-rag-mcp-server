@@ -80,7 +80,7 @@
       if (r.ok) {
         banner = {
           tone: "info",
-          text: r.message ?? `Rebuild запущен для ${selectedDocIds.length} документ(ов).`,
+          text: r.message ?? `Пересборка запущена для ${selectedDocIds.length} документ(ов).`,
         };
         selected = new Set();
       } else {
@@ -113,19 +113,19 @@
     <p class="muted">Загрузка…</p>
   {:else}
     <div class="summary mono">
-      <span>indexed: <strong class="ok">{allDocs.length}</strong></span>
+      <span>в индексе: <strong class="ok">{allDocs.length}</strong></span>
       <span class="sep">·</span>
-      <span>pending: <strong class={pendingDocs.length > 0 ? "warn" : ""}>{pendingDocs.length}</strong></span>
+      <span>в очереди: <strong class={pendingDocs.length > 0 ? "warn" : ""}>{pendingDocs.length}</strong></span>
       <span class="sep">·</span>
       <span>
-        lex: <strong class={indexed?.lexical_search_ready ? "ok" : "warn"}>
-          {indexed?.lexical_search_ready ? "ready" : "off"}
+        лекс.: <strong class={indexed?.lexical_search_ready ? "ok" : "warn"}>
+          {indexed?.lexical_search_ready ? "активен" : "выкл"}
         </strong>
       </span>
       <span class="sep">·</span>
       <span>
-        sem: <strong class={indexed?.semantic_search_ready ? "ok" : "warn"}>
-          {indexed?.semantic_search_ready ? "ready" : "off"}
+        сем.: <strong class={indexed?.semantic_search_ready ? "ok" : "warn"}>
+          {indexed?.semantic_search_ready ? "активен" : "выкл"}
         </strong>
       </span>
       {#if running}
@@ -134,7 +134,7 @@
       {/if}
       {#if indexed?.pipeline_version}
         <span class="sep">·</span>
-        <span class="muted">pipeline {indexed.pipeline_version}</span>
+        <span class="muted">пайплайн {indexed.pipeline_version}</span>
       {/if}
     </div>
 
@@ -150,7 +150,7 @@
             disabled={busy || running}
             onclick={() => void doRebuildSelected()}
           >
-            Rebuild selected
+            Пересобрать выбранные
           </button>
           <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>
             Сбросить
@@ -193,7 +193,7 @@
               <td class="mono small">{d.doc_id ?? "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
               <td class="num">{d.edition_year ?? "—"}</td>
-              <td><span class="s-badge s-ok">indexed</span></td>
+              <td><span class="s-badge s-ok">в индексе</span></td>
               <td>
                 {#if d.doc_id && qualityMap[d.doc_id]}
                   {@const q = qualityMap[d.doc_id]}
@@ -223,7 +223,7 @@
               <td class="mono small muted">—</td>
               <td class="num muted">—</td>
               <td class="num muted">—</td>
-              <td><span class="s-badge s-pending">pending</span></td>
+              <td><span class="s-badge s-pending">в очереди</span></td>
               <td><span class="muted">—</span></td>
             </tr>
           {/each}

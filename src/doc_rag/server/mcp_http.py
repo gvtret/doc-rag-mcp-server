@@ -636,6 +636,16 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         _INGEST_STATE["last_error"] = None
         _INGEST_STATE["last_ok"] = None
 
+    # Write lock file so interrupted rebuilds can be detected on restart
+    if "rebuild" in job:
+        lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
+        try:
+            ensure_dir(os.path.dirname(lock_path))
+            with open(lock_path, "w") as lf:
+                lf.write(f"{job}\n{time.time()}\n")
+        except Exception:
+            pass
+
     _append_ingest_ui_line(f"[doc-rag][INFO] --- старт задачи: {job} ---", ansi_strip=False)
 
     ok = False
@@ -657,6 +667,13 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         _INGEST_STATE["last_ok"] = ok
         _INGEST_STATE["last_error"] = err
         _reset_progress_state()
+        # Remove lock file on successful completion
+        if ok and "rebuild" in job:
+            lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
         if ok:
             _append_ingest_ui_line(f"[doc-rag][INFO] {job} завершился успешно.", ansi_strip=False)
         elif err:
@@ -1604,6 +1621,11 @@ def _ui_status_payload() -> dict[str, Any]:
     eta_s, eta_h = _compute_eta()
     out["eta_seconds"] = eta_s
     out["eta_human"] = eta_h
+    # Detect interrupted rebuild via lock file
+    lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
+    out["rebuild_interrupted"] = (
+        os.path.isfile(lock_path) and not _INGEST_STATE.get("running")
+    )
     try:
         out["indexed"] = indexed_catalog()
     except Exception as exc:

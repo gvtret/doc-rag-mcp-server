@@ -7,8 +7,8 @@
   const items: MenuItem[] = [
     { key: "documents", label: "Документы", hint: "Индексированный корпус" },
     { key: "config", label: "Конфигурация", hint: "Парсинг, чанки, эмбеддинги" },
-    { key: "manage", label: "Управление", hint: "Ingest, rebuild, аварийные" },
-    { key: "logs", label: "Логи", hint: "Ingest log, HTTP log" },
+    { key: "manage", label: "Управление", hint: "Загрузка, пересборка, аварийные" },
+    { key: "logs", label: "Логи", hint: "Лог загрузки, HTTP лог" },
     { key: "docs", label: "Документация", hint: "API, параметры, архитектура" },
   ];
 

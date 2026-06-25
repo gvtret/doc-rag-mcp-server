@@ -741,6 +741,10 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         f"{skipped} skipped, {len(sources_to_parse)} to parse",
     )
 
+    # Sort: light files first (md, txt), then heavier (docx, pdf, doc)
+    _PARSE_ORDER = {".md": 0, ".txt": 1, ".docx": 2, ".doc": 3, ".pdf": 4}
+    sources_to_parse.sort(key=lambda s: _PARSE_ORDER.get(os.path.splitext(s)[1].lower(), 99))
+
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
 
@@ -872,6 +876,9 @@ def rebuild_docs(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
             if os.path.isfile(cand_abs):
                 sources_to_parse.append(cand_abs)
                 break
+
+    _PARSE_ORDER = {".md": 0, ".txt": 1, ".docx": 2, ".doc": 3, ".pdf": 4}
+    sources_to_parse.sort(key=lambda s: _PARSE_ORDER.get(os.path.splitext(s)[1].lower(), 99))
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))

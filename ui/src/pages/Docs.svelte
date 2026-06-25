@@ -373,7 +373,7 @@
       (бейджи в таблице документов) и <code>/ui/quality</code>.</p>
     <h3>Типы проверок</h3>
     <table class="doc-table">
-      <thead><tr><th>Код</th><th>Описание</th><th>Severity</th></tr></thead>
+      <thead><tr><th>Код</th><th>Описание</th><th>Уровень</th></tr></thead>
       <tbody>
         <tr><td><code>empty_pages</code></td><td>Пустые страницы.</td><td>warn</td></tr>
         <tr><td><code>low_text_density</code></td><td>Страницы с подозрительно низкой плотностью текста.</td><td>info</td></tr>

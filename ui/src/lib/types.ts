@@ -51,6 +51,7 @@ export type StatusPayload = {
   log_tail?: string[];
   http_log_tail?: string[];
   http_log_file?: string | null;
+  rebuild_interrupted?: boolean;
   indexed?: IndexedCatalog;
 };
 
