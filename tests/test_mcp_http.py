@@ -123,7 +123,7 @@ def test_ui_rebuild_returns_redirect(monkeypatch: pytest.MonkeyPatch, tmp_path) 
 
     import doc_rag.server.mcp_http as mh
 
-    async def _noop_rebuild() -> None:
+    async def _noop_rebuild(force: bool = False) -> None:
         return
 
     monkeypatch.setattr(mh, "_run_rebuild_background", _noop_rebuild)

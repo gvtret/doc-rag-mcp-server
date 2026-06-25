@@ -211,3 +211,19 @@ export type AllDocumentsResponse = {
 export function fetchAllDocuments(signal?: AbortSignal): Promise<AllDocumentsResponse> {
   return getJSON<AllDocumentsResponse>("/ui/documents", signal);
 }
+
+export function rebuildDocs(docIds: string[], signal?: AbortSignal): Promise<ManageResult> {
+  return fetch("/ui/rebuild-docs", {
+    method: "POST",
+    body: JSON.stringify({ doc_ids: docIds }),
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    signal,
+  }).then(async (r) => {
+    try {
+      return (await r.json()) as ManageResult;
+    } catch {
+      return { ok: false, error: `HTTP ${r.status}` };
+    }
+  });
+}

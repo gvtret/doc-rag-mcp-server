@@ -646,8 +646,33 @@ def ingest(config_path: str) -> None:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
 
-def rebuild(config_path: str) -> None:
-    """Full rebuild from archived first, then ingest incoming."""
+def _load_existing_chunks(chunks_path: str) -> list[dict[str, Any]]:
+    """Load existing chunks from chunks.jsonl."""
+    chunks: list[dict[str, Any]] = []
+    if not os.path.exists(chunks_path):
+        return chunks
+    with open(chunks_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                chunks.append(json.loads(line))
+    return chunks
+
+
+def _write_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
+    with open(chunks_path, "w", encoding="utf-8") as f:
+        for it in chunks:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+
+
+def rebuild(config_path: str, *, force: bool = False) -> None:
+    """Rebuild chunks/embeddings/index.
+
+    By default (incremental), skips files already present in the manifest
+    whose .md file still exists on disk — so an interrupted rebuild
+    resumes where it left off.  Pass ``force=True`` (or CLI ``--force``)
+    for a full wipe-and-reparse.
+    """
     cfg = load_config(config_path)
     root = cfg["_root"]
 
@@ -666,27 +691,77 @@ def rebuild(config_path: str) -> None:
     ensure_dir(docs_md)
     ensure_dir(chunks_dir)
 
-    # Wipe previous generated outputs (but keep sources)
-    for p in [docs_md, chunks_dir]:
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        ensure_dir(p)
+    existing = _load_existing_manifest(manifest_path)
+    existing_docs: list[dict] = existing.get("documents", [])
+    existing_by_hash: dict[str, dict] = {}
+    for d in existing_docs:
+        if isinstance(d, dict) and isinstance(d.get("sha256"), str):
+            existing_by_hash[d["sha256"]] = d
+
+    archived_sources = list_files_recursive(archived_dir, exts=SUPPORTED_EXTS)
+    incoming_sources = list_files_recursive(incoming_dir, exts=SUPPORTED_EXTS)
+    all_sources = archived_sources + incoming_sources
+
+    # Build hash → source mapping
+    source_by_hash: dict[str, str] = {}
+    for src in all_sources:
+        try:
+            source_by_hash[_hash_file(src)] = src
+        except Exception as e:
+            _log("WARN", f"hash failed: {os.path.relpath(src, root)}: {e}")
+
+    if force:
+        _log("INFO", "rebuild (force): wiping docs_md + chunks, re-parsing everything")
+        for p in [docs_md, chunks_dir]:
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            ensure_dir(p)
+        to_skip_hashes: set[str] = set()
+    else:
+        to_skip_hashes = set()
+        for h, d in existing_by_hash.items():
+            md_rel = d.get("md_path", "")
+            md_abs = os.path.join(root, md_rel) if md_rel else ""
+            if md_abs and os.path.isfile(md_abs):
+                to_skip_hashes.add(h)
+
+    # Determine which sources need parsing
+    sources_to_parse: list[str] = []
+    skipped = 0
+    for h, src in source_by_hash.items():
+        if h in to_skip_hashes:
+            skipped += 1
+            _log("INFO", f"skip: {os.path.relpath(src, root)} (already processed)")
+        else:
+            sources_to_parse.append(src)
+
+    _log(
+        "INFO",
+        f"rebuild: {len(all_sources)} source(s) total, "
+        f"{skipped} skipped, {len(sources_to_parse)} to parse",
+    )
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
 
-    archived_sources = list_files_recursive(archived_dir, exts=SUPPORTED_EXTS)
-    _log("INFO", f"rebuild: archived pass ({len(archived_sources)} file(s))")
-    man_a, chunks_a, _ = _ingest_sources(cfg, root, archived_sources, docs_md, target, overlap)
-
-    incoming_sources = list_files_recursive(incoming_dir, exts=SUPPORTED_EXTS)
-    _log("INFO", f"rebuild: incoming ingest pass ({len(incoming_sources)} file(s))")
-    man_i, chunks_i, processed_i = _ingest_sources(
-        cfg, root, incoming_sources, docs_md, target, overlap
+    # Parse only the files that need it
+    new_docs, new_chunks, processed = _ingest_sources(
+        cfg, root, sources_to_parse, docs_md, target, overlap
     )
 
-    all_docs = man_a + man_i
-    all_chunks = chunks_a + chunks_i
+    # Merge: keep existing docs that were skipped, add newly parsed docs
+    kept_docs = [d for d in existing_docs if d.get("sha256") in to_skip_hashes]
+    all_docs = kept_docs + new_docs
+
+    # Merge chunks: load existing chunks for kept docs, add new chunks
+    chunks_path = os.path.join(chunks_dir, "chunks.jsonl")
+    if force or not kept_docs:
+        all_chunks = new_chunks
+    else:
+        existing_chunks = _load_existing_chunks(chunks_path)
+        kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
+        kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
+        all_chunks = kept_chunks + new_chunks
 
     dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
     if dedup_thresh > 0.0:
@@ -696,10 +771,7 @@ def rebuild(config_path: str) -> None:
 
     manifest = _manifest_shell(cfg, all_docs)
 
-    chunks_path = os.path.join(chunks_dir, "chunks.jsonl")
-    with open(chunks_path, "w", encoding="utf-8") as f:
-        for it in all_chunks:
-            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    _write_chunks(chunks_path, all_chunks)
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -711,8 +783,8 @@ def rebuild(config_path: str) -> None:
     )
 
     archive_enabled = bool(cfg.get("sources", {}).get("archive_after_ingest", True))
-    if archive_enabled and processed_i:
-        _archive_or_dedup_sources(cfg, root, processed_i)
+    if archive_enabled and processed:
+        _archive_or_dedup_sources(cfg, root, processed)
     elif not archive_enabled:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
@@ -732,19 +804,124 @@ def rebuild(config_path: str) -> None:
     try:
         vi = _get_vector_index(cfg)
         vi.reset()
-        # Load chunks and build fresh index
-        chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
         if os.path.exists(chunks_path):
-            chunks = []
-            with open(chunks_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        chunks.append(json.loads(line))
+            chunks = _load_existing_chunks(chunks_path)
             if chunks:
                 vi.build(chunks, force=True, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
+
+
+def rebuild_docs(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
+    """Rebuild only specific documents by doc_id.
+
+    Removes their .md and chunks, re-parses the source files, then
+    merges everything back. Returns a summary dict.
+    """
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+
+    manifest_path = os.path.join(root, cfg["paths"]["manifest_path"])
+    chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+    docs_md = os.path.join(root, cfg["paths"]["docs_md_dir"])
+    chunks_dir = os.path.join(root, cfg["paths"]["chunks_dir"])
+
+    ensure_dir(docs_md)
+    ensure_dir(chunks_dir)
+
+    existing = _load_existing_manifest(manifest_path)
+    existing_docs: list[dict] = existing.get("documents", [])
+
+    target_ids = {d for d in doc_ids if d}
+    if not target_ids:
+        return {"requested": 0, "rebuilt": 0, "missing": 0}
+
+    to_rebuild = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids]
+    found_ids = {d["doc_id"] for d in to_rebuild}
+    missing = target_ids - found_ids
+    kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
+
+    _log("INFO", f"rebuild-docs: {len(to_rebuild)} doc(s) to rebuild, {len(missing)} missing")
+
+    # Clean up old .md and blocks for docs being rebuilt
+    for d in to_rebuild:
+        md_rel = d.get("md_path", "")
+        if md_rel:
+            md_abs = os.path.join(root, md_rel)
+            if os.path.isfile(md_abs):
+                try:
+                    os.remove(md_abs)
+                except OSError:
+                    pass
+
+    # Resolve source files for docs being rebuilt
+    sources_to_parse: list[str] = []
+    for d in to_rebuild:
+        sf_rel = d.get("source_file", "")
+        if not sf_rel:
+            continue
+        # Try multiple locations
+        candidates = [sf_rel]
+        bn = os.path.basename(sf_rel)
+        for dir_key in ("sources_archived", "sources_incoming"):
+            d_rel = cfg["paths"].get(dir_key)
+            if d_rel:
+                candidates.append(os.path.join(d_rel, bn))
+        for cand in candidates:
+            cand_abs = os.path.join(root, cand)
+            if os.path.isfile(cand_abs):
+                sources_to_parse.append(cand_abs)
+                break
+
+    target = int(cfg.get("chunking", {}).get("target_tokens", 512))
+    overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
+
+    new_docs, new_chunks, _ = _ingest_sources(
+        cfg, root, sources_to_parse, docs_md, target, overlap
+    )
+
+    # Merge
+    all_docs = kept_docs + new_docs
+
+    kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
+    existing_chunks = _load_existing_chunks(chunks_path)
+    kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
+    all_chunks = kept_chunks + new_chunks
+
+    dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
+    if dedup_thresh > 0.0:
+        doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in all_docs}
+        all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
+
+    manifest = _manifest_shell(cfg, all_docs)
+
+    _write_chunks(chunks_path, all_chunks)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
+
+    # Rebuild vector index
+    _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+    for _fname in ("faiss.index", "index_meta.json"):
+        _p = os.path.join(_index_dir, _fname)
+        if os.path.exists(_p):
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
+
+    try:
+        vi = _get_vector_index(cfg)
+        vi.reset()
+        if os.path.exists(chunks_path):
+            chunks = _load_existing_chunks(chunks_path)
+            if chunks:
+                vi.build(chunks, force=True, log=print)
+    except Exception as e:
+        _log("WARN", f"index rebuild skipped: {e}")
+
+    return {"requested": len(target_ids), "rebuilt": len(new_docs), "missing": len(missing)}
 
 
 def _rebuild_faiss_after_delete(cfg: dict[str, Any], deleted_doc_ids: set) -> dict[str, Any]:

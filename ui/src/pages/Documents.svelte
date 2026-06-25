@@ -1,6 +1,13 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
-  import { fetchQuality, fetchAllDocuments, type QualityDoc, type AllDocument } from "../lib/api";
+  import {
+    fetchQuality,
+    fetchAllDocuments,
+    rebuildDocs,
+    type QualityDoc,
+    type AllDocument,
+    type ManageResult,
+  } from "../lib/api";
 
   const indexed = $derived(appState.status?.indexed);
   const running = $derived(appState.status?.running ?? false);
@@ -9,6 +16,9 @@
   let pendingDocs = $state<AllDocument[]>([]);
   let qualityMap = $state<Record<string, QualityDoc>>({});
   let loading = $state(true);
+  let selected = $state<Set<string>>(new Set());
+  let busy = $state(false);
+  let banner: { tone: "ok" | "err" | "info"; text: string } | null = $state(null);
 
   async function refresh() {
     try {
@@ -32,15 +42,69 @@
     return () => clearInterval(iv);
   });
 
+  function toggleSelect(key: string) {
+    const next = new Set(selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    selected = next;
+  }
+
+  function toggleSelectAll() {
+    const allKeys = [
+      ...allDocs.map((d) => d.doc_id ?? ""),
+      ...pendingDocs.map((d) => d.path ?? d.basename),
+    ].filter(Boolean);
+    if (selected.size === allKeys.length) {
+      selected = new Set();
+    } else {
+      selected = new Set(allKeys);
+    }
+  }
+
+  async function doRebuildSelected() {
+    if (busy || running || selected.size === 0) return;
+    const selectedDocIds = [...selected].filter((k) =>
+      allDocs.some((d) => d.doc_id === k),
+    );
+    if (selectedDocIds.length === 0) return;
+    if (
+      !confirm(
+        `Пересобрать ${selectedDocIds.length} документ(ов)? Их текущий индекс будет перезаписан.`,
+      )
+    )
+      return;
+    busy = true;
+    banner = null;
+    try {
+      const r: ManageResult = await rebuildDocs(selectedDocIds);
+      if (r.ok) {
+        banner = {
+          tone: "info",
+          text: r.message ?? `Rebuild запущен для ${selectedDocIds.length} документ(ов).`,
+        };
+        selected = new Set();
+      } else {
+        banner = { tone: "err", text: r.error ?? "Ошибка" };
+      }
+    } catch (e) {
+      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
   function qualityColor(score: number): string {
     if (score >= 0.8) return "ok";
     if (score >= 0.5) return "warn";
     return "err";
   }
-
 </script>
 
 <section>
+  {#if banner}
+    <div class="banner {banner.tone}">{banner.text}</div>
+  {/if}
+
   {#if indexed?.error}
     <p class="error">
       Не удалось прочитать индекс: <code>{indexed.error}</code>
@@ -77,9 +141,34 @@
     {#if allDocs.length === 0 && pendingDocs.length === 0}
       <p class="muted">Пока ни одного документа.</p>
     {:else}
+      {#if selected.size > 0}
+        <div class="toolbar">
+          <span class="muted">Выбрано: {selected.size}</span>
+          <button
+            type="button"
+            class="btn"
+            disabled={busy || running}
+            onclick={() => void doRebuildSelected()}
+          >
+            Rebuild selected
+          </button>
+          <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>
+            Сбросить
+          </button>
+        </div>
+      {/if}
       <table>
         <thead>
           <tr>
+            <th class="check">
+              <input
+                type="checkbox"
+                checked={selected.size > 0 &&
+                  allDocs.every((d) => selected.has(d.doc_id ?? "")) &&
+                  pendingDocs.every((d) => selected.has(d.path ?? d.basename))}
+                onchange={toggleSelectAll}
+              />
+            </th>
             <th class="num">##</th>
             <th>FILENAME</th>
             <th>DOC_ID</th>
@@ -91,7 +180,14 @@
         </thead>
         <tbody>
           {#each allDocs as d, i (d.doc_id ?? d.basename + i)}
-            <tr>
+            <tr class:selected-row={selected.has(d.doc_id ?? "")}>
+              <td class="check">
+                <input
+                  type="checkbox"
+                  checked={selected.has(d.doc_id ?? "")}
+                  onchange={() => toggleSelect(d.doc_id ?? "")}
+                />
+              </td>
               <td class="num muted">{String(i + 1).padStart(2, "0")}</td>
               <td title={d.source_file ?? ""}>{d.basename}</td>
               <td class="mono small">{d.doc_id ?? "—"}</td>
@@ -115,6 +211,13 @@
           {/each}
           {#each pendingDocs as d, i (d.path ?? d.basename + i)}
             <tr class="pending-row">
+              <td class="check">
+                <input
+                  type="checkbox"
+                  checked={selected.has(d.path ?? d.basename)}
+                  onchange={() => toggleSelect(d.path ?? d.basename)}
+                />
+              </td>
               <td class="num muted">{String(allDocs.length + i + 1).padStart(2, "0")}</td>
               <td title={d.path ?? ""}>{d.basename}</td>
               <td class="mono small muted">—</td>
@@ -133,6 +236,59 @@
 <style>
   section {
     padding: 16px 24px;
+  }
+  .banner {
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 0.85rem;
+    border-left: 3px solid;
+    margin-bottom: 8px;
+  }
+  .banner.ok {
+    background: rgba(34, 197, 94, 0.1);
+    border-color: var(--accent-ok);
+    color: var(--text-primary);
+  }
+  .banner.err {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: var(--accent-error);
+    color: var(--text-primary);
+  }
+  .banner.info {
+    background: rgba(59, 130, 246, 0.08);
+    border-color: var(--accent-info);
+    color: var(--text-secondary);
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+  }
+  .btn {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-size: 0.82rem;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
+    cursor: pointer;
+  }
+  .btn:hover:not(:disabled) {
+    border-color: var(--text-muted);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn.secondary {
+    color: var(--text-muted);
   }
   .summary {
     display: flex;
@@ -178,6 +334,12 @@
     letter-spacing: 0.05em;
     font-weight: 500;
   }
+  th.check,
+  td.check {
+    text-align: center;
+    width: 32px;
+    padding: 6px 4px;
+  }
   td {
     padding: 6px 10px;
     border-bottom: 1px solid var(--border-subtle);
@@ -186,6 +348,9 @@
   tbody tr:hover td {
     background: var(--bg-base);
     color: var(--text-primary);
+  }
+  tbody tr.selected-row td {
+    background: rgba(59, 130, 246, 0.06);
   }
   tbody tr:last-child td {
     border-bottom: none;

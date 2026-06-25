@@ -4,6 +4,9 @@ import argparse
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from doc_rag.raglib.pipeline import (
     MANIFEST_SCHEMA_VERSION,
@@ -13,9 +16,62 @@ from doc_rag.raglib.pipeline import (
     ingest,
     load_config,
     rebuild,
+    rebuild_docs,
     wipe_index,
 )
 from doc_rag.server.http_server import run as run_http
+
+
+def _server_running(cfg: dict) -> bool:
+    """Check if the HTTP server is reachable on localhost."""
+    try:
+        host = cfg.get("server", {}).get("host", "0.0.0.0")
+        port = cfg.get("server", {}).get("port", 3333)
+        if host in ("0.0.0.0", ""):
+            host = "127.0.0.1"
+        url = f"http://{host}:{port}/health/live"
+        urllib.request.urlopen(url, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _api_post(cfg: dict, path: str, body: dict | None = None) -> dict:
+    """POST JSON to the running server and return parsed response."""
+    host = cfg.get("server", {}).get("host", "0.0.0.0")
+    port = cfg.get("server", {}).get("port", 3333)
+    if host in ("0.0.0.0", ""):
+        host = "127.0.0.1"
+    url = f"http://{host}:{port}{path}"
+    data = json.dumps(body or {}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    resp = urllib.request.urlopen(req, timeout=30)
+    return json.loads(resp.read())
+
+
+def _wait_for_job(cfg: dict, timeout: int = 3600) -> None:
+    """Poll /ui/status until the background job finishes."""
+    host = cfg.get("server", {}).get("host", "0.0.0.0")
+    port = cfg.get("server", {}).get("port", 3333)
+    if host in ("0.0.0.0", ""):
+        host = "127.0.0.1"
+    url = f"http://{host}:{port}/ui/status"
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            resp = urllib.request.urlopen(url, timeout=5)
+            data = json.loads(resp.read())
+            if not data.get("running"):
+                return
+            job = data.get("job", "")
+            done = data.get("docs_done", 0)
+            total = data.get("docs_total")
+            total_str = str(total) if total else "?"
+            print(f"\r  {job}: {done}/{total_str}", end="", flush=True)
+        except Exception:
+            pass
+        time.sleep(2)
+    print()
 
 
 def main() -> None:
@@ -26,7 +82,11 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("ingest", help="Incremental ingest from sources/incoming")
-    sub.add_parser("rebuild", help="Rebuild chunks/embeddings/index from build/docs_md")
+    p_rebuild = sub.add_parser("rebuild", help="Rebuild chunks/embeddings/index from build/docs_md")
+    p_rebuild.add_argument("--force", action="store_true", help="Full rebuild: wipe docs_md + chunks, reparse everything")
+
+    p_rebuild_docs = sub.add_parser("rebuild-docs", help="Rebuild specific documents by doc_id")
+    p_rebuild_docs.add_argument("doc_ids", nargs="+", help="doc_id(s) to rebuild")
     sub.add_parser("serve", help="Start local HTTP retrieval server (debug)")
 
     p_delete = sub.add_parser("delete", help="Remove one or more documents by doc_id")
@@ -57,10 +117,36 @@ def main() -> None:
     cfg_path = os.path.normpath(args.config)
 
     if args.cmd == "ingest":
-        ingest(cfg_path)
+        cfg = load_config(cfg_path)
+        if _server_running(cfg):
+            print("Сервер запущен — отправляю ingest через API…")
+            _api_post(cfg, "/ui/ingest")
+            _wait_for_job(cfg)
+            print("Готово.")
+        else:
+            ingest(cfg_path)
         return
     if args.cmd == "rebuild":
-        rebuild(cfg_path)
+        cfg = load_config(cfg_path)
+        if _server_running(cfg):
+            print("Сервер запущен — отправляю rebuild через API…")
+            _api_post(cfg, "/ui/rebuild")
+            _wait_for_job(cfg)
+            print("Готово.")
+        else:
+            rebuild(cfg_path, force=args.force)
+        return
+    if args.cmd == "rebuild-docs":
+        cfg = load_config(cfg_path)
+        if _server_running(cfg):
+            print(f"Сервер запущен — отправляю rebuild-docs ({len(args.doc_ids)} doc(s)) через API…")
+            _api_post(cfg, "/ui/rebuild-docs", {"doc_ids": args.doc_ids})
+            _wait_for_job(cfg)
+            print("Готово.")
+        else:
+            result = rebuild_docs(cfg_path, args.doc_ids)
+            json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+            sys.stdout.write("\n")
         return
     if args.cmd == "serve":
         cfg = load_config(cfg_path)
