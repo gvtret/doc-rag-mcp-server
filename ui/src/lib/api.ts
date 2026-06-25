@@ -197,6 +197,7 @@ export type AllDocument = {
   edition_year?: number | null;
   size?: number;
   indexed: boolean;
+  status?: "processing" | "processed";
 };
 
 export type AllDocumentsResponse = {
@@ -205,6 +206,11 @@ export type AllDocumentsResponse = {
   pending: AllDocument[];
   indexed_count: number;
   pending_count: number;
+  rebuild_progress?: {
+    current_doc: string | null;
+    docs_done: number;
+    docs_total: number | null;
+  } | null;
   error?: string;
 };
 

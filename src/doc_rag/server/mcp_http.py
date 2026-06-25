@@ -395,6 +395,8 @@ _INGEST_STATE: dict[str, Any] = {
     "docs_done": 0,
     "docs_total": None,
     "current_doc_started_at": None,
+    # Doc_ids processed during the current job (for live /ui/documents updates)
+    "processed_doc_ids": set(),
 }
 
 
@@ -403,6 +405,7 @@ def _reset_progress_state() -> None:
     _INGEST_STATE["docs_done"] = 0
     _INGEST_STATE["docs_total"] = None
     _INGEST_STATE["current_doc_started_at"] = None
+    _INGEST_STATE["processed_doc_ids"] = set()
 
 
 # Markers from pipeline._log lines we use to derive per-doc progress.
@@ -467,6 +470,10 @@ def _apply_progress_from_line(line: str) -> None:
         except (TypeError, ValueError):
             cur = 0
         _INGEST_STATE["docs_done"] = cur + 1
+        # Track processed filename for live /ui/documents updates
+        done_path = m.group(1).strip()
+        if done_path:
+            _INGEST_STATE["processed_doc_ids"].add(os.path.basename(done_path))
         _INGEST_STATE["current_doc"] = None
         _INGEST_STATE["current_doc_started_at"] = None
 
@@ -1614,6 +1621,9 @@ def _compute_eta() -> tuple[float | None, str | None]:
 
 def _ui_status_payload() -> dict[str, Any]:
     out = dict(_INGEST_STATE)
+    # Convert set to list for JSON serialization
+    if isinstance(out.get("processed_doc_ids"), set):
+        out["processed_doc_ids"] = list(out["processed_doc_ids"])
     out["log_tail"] = _snapshot_ingest_ui_log_tail()
     out["http_log_tail"] = _snapshot_server_http_ui_log_tail()
     log_path = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
@@ -2659,12 +2669,31 @@ async def ui_documents(request: Request, key: str = "") -> JSONResponse:
                     "indexed": False,
                 })
 
+        # Live rebuild progress
+        rebuild_progress = None
+        if _INGEST_STATE.get("running") and "rebuild" in (_INGEST_STATE.get("job") or ""):
+            processed = _INGEST_STATE.get("processed_doc_ids", set())
+            current = _INGEST_STATE.get("current_doc")
+            rebuild_progress = {
+                "current_doc": current,
+                "docs_done": _INGEST_STATE.get("docs_done", 0),
+                "docs_total": _INGEST_STATE.get("docs_total"),
+                "processed_basenames": list(processed),
+            }
+            # Move processed pending files to a "processing" status
+            for p in pending:
+                if p["basename"] in processed:
+                    p["status"] = "processed"
+                elif p["basename"] == current:
+                    p["status"] = "processing"
+
         return JSONResponse({
             "ok": True,
             "indexed": indexed_docs,
             "pending": pending,
             "indexed_count": len(indexed_docs),
             "pending_count": len(pending),
+            "rebuild_progress": rebuild_progress,
         })
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

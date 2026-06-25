@@ -19,6 +19,7 @@
   let selected = $state<Set<string>>(new Set());
   let busy = $state(false);
   let banner: { tone: "ok" | "err" | "info"; text: string } | null = $state(null);
+  let rebuildProgress = $state<{ current_doc: string | null; docs_done: number; docs_total: number | null } | null>(null);
 
   async function refresh() {
     try {
@@ -26,6 +27,7 @@
       if (docs.ok) {
         allDocs = docs.indexed;
         pendingDocs = docs.pending;
+        rebuildProgress = docs.rebuild_progress ?? null;
       }
       if (qual.ok && qual.documents) {
         const m: Record<string, QualityDoc> = {};
@@ -138,6 +140,23 @@
       {/if}
     </div>
 
+    {#if rebuildProgress}
+      <div class="progress-bar">
+        <div class="progress-info mono">
+          <span>Обработка: <strong>{rebuildProgress.current_doc ?? "…"}</strong></span>
+          <span>{rebuildProgress.docs_done} / {rebuildProgress.docs_total ?? "?"}</span>
+        </div>
+        {#if rebuildProgress.docs_total && rebuildProgress.docs_total > 0}
+          <div class="progress-track">
+            <div
+              class="progress-fill"
+              style="width: {(rebuildProgress.docs_done / rebuildProgress.docs_total * 100).toFixed(1)}%"
+            ></div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if allDocs.length === 0 && pendingDocs.length === 0}
       <p class="muted">Пока ни одного документа.</p>
     {:else}
@@ -226,7 +245,15 @@
               <td class="num muted">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num muted">—</td>
               <td class="num muted">—</td>
-              <td><span class="s-badge s-pending">в очереди</span></td>
+              <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-pending'}">
+                {#if d.status === "processing"}
+                  обработка…
+                {:else if d.status === "processed"}
+                  обработан
+                {:else}
+                  в очереди
+                {/if}
+              </span></td>
               <td><span class="muted">—</span></td>
             </tr>
           {/each}
@@ -261,6 +288,32 @@
     background: rgba(59, 130, 246, 0.08);
     border-color: var(--accent-info);
     color: var(--text-secondary);
+  }
+  .progress-bar {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+  }
+  .progress-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+  .progress-track {
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent-info);
+    border-radius: 2px;
+    transition: width 0.3s ease;
   }
   .toolbar {
     display: flex;
@@ -386,6 +439,15 @@
   .s-pending {
     color: var(--text-primary);
     background: var(--border-strong);
+  }
+  .s-processing {
+    color: var(--bg-base);
+    background: var(--accent-info);
+  }
+  .s-processed {
+    color: var(--bg-base);
+    background: var(--accent-ok);
+    opacity: 0.7;
   }
   .q-badge {
     display: inline-block;
