@@ -172,6 +172,7 @@
             <th class="num">##</th>
             <th>FILENAME</th>
             <th>DOC_ID</th>
+            <th class="num">РАЗМЕР</th>
             <th class="num">CHUNKS</th>
             <th class="num">YEAR</th>
             <th>STATUS</th>
@@ -191,6 +192,7 @@
               <td class="num muted">{String(i + 1).padStart(2, "0")}</td>
               <td title={d.source_file ?? ""}>{d.basename}</td>
               <td class="mono small">{d.doc_id ?? "—"}</td>
+              <td class="num">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
               <td class="num">{d.edition_year ?? "—"}</td>
               <td><span class="s-badge s-ok">в индексе</span></td>
@@ -221,6 +223,7 @@
               <td class="num muted">{String(allDocs.length + i + 1).padStart(2, "0")}</td>
               <td title={d.path ?? ""}>{d.basename}</td>
               <td class="mono small muted">—</td>
+              <td class="num muted">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num muted">—</td>
               <td class="num muted">—</td>
               <td><span class="s-badge s-pending">в очереди</span></td>

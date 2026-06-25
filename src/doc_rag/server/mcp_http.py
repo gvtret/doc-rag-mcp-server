@@ -2628,12 +2628,22 @@ async def ui_documents(request: Request, key: str = "") -> JSONResponse:
                     sf = str(d.get("source_file", ""))
                     bn = os.path.basename(sf)
                     indexed_basenames.add(bn)
+                    # Resolve size from disk
+                    sz = 0
+                    for dir_key in ("sources_archived", "sources_incoming"):
+                        d_rel = cfg.get("paths", {}).get(dir_key)
+                        if d_rel:
+                            cand = root / d_rel / bn
+                            if cand.is_file():
+                                sz = cand.stat().st_size
+                                break
                     indexed_docs.append({
                         "doc_id": d.get("doc_id"),
                         "basename": bn,
                         "source_file": sf,
                         "chunk_count": d.get("chunk_count"),
                         "edition_year": d.get("edition_year"),
+                        "size": sz,
                         "indexed": True,
                     })
             except Exception:
