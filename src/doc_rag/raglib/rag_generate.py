@@ -103,7 +103,7 @@ def _call_llm(
 
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=180) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         choices = data.get("choices", [])
         if choices and isinstance(choices[0], dict):
