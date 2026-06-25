@@ -214,7 +214,15 @@
               <td class="num">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
               <td class="num">{d.edition_year ?? "—"}</td>
-              <td><span class="s-badge s-ok">в индексе</span></td>
+              <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-ok'}">
+                {#if d.status === "processing"}
+                  пересборка…
+                {:else if d.status === "processed"}
+                  обработан
+                {:else}
+                  в индексе
+                {/if}
+              </span></td>
               <td>
                 {#if d.doc_id && qualityMap[d.doc_id]}
                   {@const q = qualityMap[d.doc_id]}

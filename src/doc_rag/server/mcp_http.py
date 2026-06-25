@@ -2680,7 +2680,14 @@ async def ui_documents(request: Request, key: str = "") -> JSONResponse:
                 "docs_total": _INGEST_STATE.get("docs_total"),
                 "processed_basenames": list(processed),
             }
-            # Move processed pending files to a "processing" status
+            # Update indexed docs status during rebuild
+            for d in indexed_docs:
+                bn = d["basename"]
+                if bn == current:
+                    d["status"] = "processing"
+                elif bn in processed:
+                    d["status"] = "processed"
+            # Update pending files status during rebuild
             for p in pending:
                 if p["basename"] in processed:
                     p["status"] = "processed"

@@ -197,7 +197,7 @@ export type AllDocument = {
   edition_year?: number | null;
   size?: number;
   indexed: boolean;
-  status?: "processing" | "processed";
+  status?: "processing" | "processed" | "reprocessing";
 };
 
 export type AllDocumentsResponse = {
