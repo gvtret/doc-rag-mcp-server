@@ -1135,6 +1135,9 @@ async def _http_log_mw(request: Request, call_next):
         response = await call_next(request)
         if response is not None:
             response.headers["X-Request-ID"] = rid
+            path = request.url.path
+            if path in ("/ui-next/", "/ui-next") or path.endswith("/index.html"):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
     finally:
         dur_ms = int((time.time() - start) * 1000)
