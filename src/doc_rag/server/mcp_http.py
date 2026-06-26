@@ -2772,6 +2772,7 @@ def _build_documents_list() -> dict[str, Any]:
 
     indexed_docs: list[dict[str, Any]] = []
     indexed_basenames: set[str] = set()
+    _seen_doc_ids: set[str] = set()
     if manifest_path.is_file():
         try:
             with manifest_path.open(encoding="utf-8") as f:
@@ -2779,6 +2780,10 @@ def _build_documents_list() -> dict[str, Any]:
             for d in manifest.get("documents", []):
                 sf = str(d.get("source_file", ""))
                 bn = os.path.basename(sf)
+                did = d.get("doc_id", "")
+                if did in _seen_doc_ids:
+                    continue
+                _seen_doc_ids.add(did)
                 indexed_basenames.add(bn)
                 sz = 0
                 for dir_key in ("sources_archived", "sources_incoming"):
@@ -2789,7 +2794,7 @@ def _build_documents_list() -> dict[str, Any]:
                             sz = cand.stat().st_size
                             break
                 indexed_docs.append({
-                    "doc_id": d.get("doc_id"),
+                    "doc_id": did,
                     "basename": bn,
                     "source_file": sf,
                     "chunk_count": d.get("chunk_count"),
@@ -2801,10 +2806,13 @@ def _build_documents_list() -> dict[str, Any]:
             pass
 
     pending = []
+    seen_pending: set[str] = set()
     for f in incoming_files + archived_files:
-        if f["basename"] not in indexed_basenames:
+        bn = f["basename"]
+        if bn not in indexed_basenames and bn not in seen_pending:
+            seen_pending.add(bn)
             pending.append({
-                "basename": f["basename"],
+                "basename": bn,
                 "path": f["path"],
                 "size": f["size"],
                 "indexed": False,

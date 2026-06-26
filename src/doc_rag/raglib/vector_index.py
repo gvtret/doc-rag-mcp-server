@@ -104,6 +104,17 @@ class VectorIndex:
         Returns True if index is available after build.
         """
         store = self._ensure_store()
+
+        # Dedup input chunks by chunk_id (keep last)
+        _seen: set[str] = set()
+        _deduped: list[dict[str, Any]] = []
+        for c in reversed(chunks):
+            cid = str(c.get("chunk_id", ""))
+            if cid and cid not in _seen:
+                _seen.add(cid)
+                _deduped.append(c)
+        chunks = list(reversed(_deduped))
+
         all_ids = [str(c.get("chunk_id", "")) for c in chunks if c.get("chunk_id")]
         if not all_ids:
             log("[doc-rag][index] No chunks with chunk_id -> skipping")

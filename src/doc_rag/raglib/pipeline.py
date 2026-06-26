@@ -780,6 +780,18 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         _log("WARN", f"rebuild: removed {len(all_docs) - len(deduped_docs)} duplicate doc entries")
     all_docs = list(reversed(deduped_docs))
 
+    # Deduplicate chunks by chunk_id (keep last)
+    seen_cids: set[str] = set()
+    deduped_chunks: list[dict] = []
+    for c in reversed(all_chunks):
+        cid = c.get("chunk_id", "")
+        if cid and cid not in seen_cids:
+            seen_cids.add(cid)
+            deduped_chunks.append(c)
+    if len(deduped_chunks) != len(all_chunks):
+        _log("WARN", f"rebuild: removed {len(all_chunks) - len(deduped_chunks)} duplicate chunk entries")
+    all_chunks = list(reversed(deduped_chunks))
+
     dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
     if dedup_thresh > 0.0:
         doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in all_docs}
@@ -932,6 +944,18 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     existing_chunks = _load_existing_chunks(chunks_path)
     kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
     all_chunks = kept_chunks + new_chunks
+
+    # Deduplicate chunks by chunk_id
+    _sc: set[str] = set()
+    _dc: list[dict] = []
+    for c in reversed(all_chunks):
+        _cid = c.get("chunk_id", "")
+        if _cid and _cid not in _sc:
+            _sc.add(_cid)
+            _dc.append(c)
+    if len(_dc) != len(all_chunks):
+        _log("WARN", f"rebuild-docs: removed {len(all_chunks) - len(_dc)} duplicate chunk entries")
+    all_chunks = list(reversed(_dc))
 
     dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
     if dedup_thresh > 0.0:
