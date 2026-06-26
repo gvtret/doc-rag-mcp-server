@@ -697,7 +697,7 @@ async def _run_rebuild_background(force: bool = False) -> None:
     await _run_index_job_background("rebuild", lambda: _sync_run_rebuild_with_ui_logging(force=force))
 
 
-def _sync_run_rebuild_docs_with_ui_logging(doc_ids: list[str]) -> None:
+def _sync_run_rebuild_docs_with_ui_logging(doc_ids: list[str], filenames: list[str]) -> None:
     from doc_rag.raglib.pipeline import rebuild_docs
 
     stderr = getattr(sys, "stderr", None) or sys.__stderr__
@@ -705,16 +705,17 @@ def _sync_run_rebuild_docs_with_ui_logging(doc_ids: list[str]) -> None:
     old_stderr = sys.stderr
     sys.stderr = tee
     try:
-        rebuild_docs(str(_config_path()), doc_ids)
+        rebuild_docs(str(_config_path()), doc_ids, filenames)
     finally:
         sys.stderr = old_stderr
         tee.finish()
 
 
-async def _run_rebuild_docs_background(doc_ids: list[str]) -> None:
+async def _run_rebuild_docs_background(doc_ids: list[str], filenames: list[str]) -> None:
+    total = len(doc_ids) + len(filenames)
     await _run_index_job_background(
-        f"rebuild-docs ({len(doc_ids)} doc(s))",
-        lambda: _sync_run_rebuild_docs_with_ui_logging(doc_ids),
+        f"rebuild-docs ({total} doc(s))",
+        lambda: _sync_run_rebuild_docs_with_ui_logging(doc_ids, filenames),
     )
 
 
@@ -2845,13 +2846,18 @@ async def ui_rebuild_docs(request: Request) -> JSONResponse:
     except Exception:
         return JSONResponse({"ok": False, "error": "invalid JSON body"}, status_code=400)
     doc_ids = body.get("doc_ids") if isinstance(body, dict) else None
-    if not isinstance(doc_ids, list) or not doc_ids:
-        return JSONResponse({"ok": False, "error": "doc_ids is required (non-empty list)"}, status_code=400)
+    filenames = body.get("filenames") if isinstance(body, dict) else None
+    if not isinstance(doc_ids, list):
+        doc_ids = []
+    if not isinstance(filenames, list):
+        filenames = []
     doc_ids = [str(d) for d in doc_ids if d]
-    if not doc_ids:
-        return JSONResponse({"ok": False, "error": "doc_ids is required (non-empty list)"}, status_code=400)
-    asyncio.create_task(_run_rebuild_docs_background(doc_ids))
-    return JSONResponse({"ok": True, "message": f"rebuild-docs запущен для {len(doc_ids)} документ(ов)"})
+    filenames = [str(f) for f in filenames if f]
+    if not doc_ids and not filenames:
+        return JSONResponse({"ok": False, "error": "doc_ids or filenames required"}, status_code=400)
+    asyncio.create_task(_run_rebuild_docs_background(doc_ids, filenames))
+    total = len(doc_ids) + len(filenames)
+    return JSONResponse({"ok": True, "message": f"rebuild-docs запущен для {total} документ(ов)"})
 
 
 @app.post("/ui/ingest")

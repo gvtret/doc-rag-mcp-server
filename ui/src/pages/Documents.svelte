@@ -65,24 +65,34 @@
 
   async function doRebuildSelected() {
     if (busy || running || selected.size === 0) return;
-    const selectedDocIds = [...selected].filter((k) =>
-      allDocs.some((d) => d.doc_id === k),
-    );
-    if (selectedDocIds.length === 0) return;
+    // Collect doc_ids from indexed docs AND filenames from pending docs
+    const selectedDocIds: string[] = [];
+    const selectedFilenames: string[] = [];
+    for (const key of selected) {
+      const idxDoc = allDocs.find((d) => d.doc_id === key);
+      if (idxDoc?.doc_id) {
+        selectedDocIds.push(idxDoc.doc_id);
+      } else {
+        const pendDoc = pendingDocs.find((d) => (d.path ?? d.basename) === key);
+        if (pendDoc) selectedFilenames.push(pendDoc.basename);
+      }
+    }
+    const total = selectedDocIds.length + selectedFilenames.length;
+    if (total === 0) return;
     if (
       !confirm(
-        `Пересобрать ${selectedDocIds.length} документ(ов)? Их текущий индекс будет перезаписан.`,
+        `Пересобрать ${total} документ(ов)? Их текущий индекс будет перезаписан.`,
       )
     )
       return;
     busy = true;
     banner = null;
     try {
-      const r: ManageResult = await rebuildDocs(selectedDocIds);
+      const r: ManageResult = await rebuildDocs(selectedDocIds, selectedFilenames);
       if (r.ok) {
         banner = {
           tone: "info",
-          text: r.message ?? `Пересборка запущена для ${selectedDocIds.length} документ(ов).`,
+          text: r.message ?? `Пересборка запущена для ${total} документ(ов).`,
         };
         selected = new Set();
       } else {

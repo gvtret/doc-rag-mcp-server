@@ -218,10 +218,10 @@ export function fetchAllDocuments(signal?: AbortSignal): Promise<AllDocumentsRes
   return getJSON<AllDocumentsResponse>("/ui/documents", signal);
 }
 
-export function rebuildDocs(docIds: string[], signal?: AbortSignal): Promise<ManageResult> {
+export function rebuildDocs(docIds: string[], filenames: string[] = [], signal?: AbortSignal): Promise<ManageResult> {
   return fetch("/ui/rebuild-docs", {
     method: "POST",
-    body: JSON.stringify({ doc_ids: docIds }),
+    body: JSON.stringify({ doc_ids: docIds, filenames }),
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     signal,

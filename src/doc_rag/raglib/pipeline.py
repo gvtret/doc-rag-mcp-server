@@ -816,8 +816,8 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         _log("WARN", f"index rebuild skipped: {e}")
 
 
-def rebuild_docs(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
-    """Rebuild only specific documents by doc_id.
+def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | None = None) -> dict[str, Any]:
+    """Rebuild only specific documents by doc_id or filename.
 
     Removes their .md and chunks, re-parses the source files, then
     merges everything back. Returns a summary dict.
@@ -837,11 +837,34 @@ def rebuild_docs(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
     existing_docs: list[dict] = existing.get("documents", [])
 
     target_ids = {d for d in doc_ids if d}
-    if not target_ids:
-        return {"requested": 0, "rebuilt": 0, "missing": 0}
+    target_filenames = {f for f in (filenames or []) if f}
 
+    # Find docs by doc_id
     to_rebuild = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids]
     found_ids = {d["doc_id"] for d in to_rebuild}
+
+    # Find docs by filename (for pending files not yet in manifest)
+    if target_filenames:
+        # Scan source directories for matching filenames
+        archived_rel = cfg["paths"].get("sources_archived", "sources/archived")
+        incoming_rel = cfg["paths"].get("sources_incoming", "sources/incoming")
+        for dir_rel in [archived_rel, incoming_rel]:
+            dir_path = os.path.join(root, dir_rel)
+            if not os.path.isdir(dir_path):
+                continue
+            for p in list_files_recursive(dir_path, exts=SUPPORTED_EXTS):
+                bn = os.path.basename(p)
+                if bn in target_filenames:
+                    # Check if already in manifest
+                    file_hash = _hash_file(p)
+                    already_in_manifest = any(
+                        isinstance(d, dict) and d.get("sha256") == file_hash
+                        for d in existing_docs
+                    )
+                    if not already_in_manifest:
+                        # This is a pending file - add to sources_to_parse directly
+                        _log("INFO", f"rebuild-docs: found pending file {bn}")
+
     missing = target_ids - found_ids
     kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
 
