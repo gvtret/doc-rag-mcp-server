@@ -922,23 +922,13 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
 
     _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
 
-    # Rebuild vector index
-    _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
-    for _fname in ("faiss.index", "index_meta.json"):
-        _p = os.path.join(_index_dir, _fname)
-        if os.path.exists(_p):
-            try:
-                os.remove(_p)
-            except OSError:
-                pass
-
+    # Incremental index update (add new chunks only)
     try:
         vi = _get_vector_index(cfg)
-        vi.reset()
         if os.path.exists(chunks_path):
             chunks = _load_existing_chunks(chunks_path)
             if chunks:
-                vi.build(chunks, force=True, log=print)
+                vi.build(chunks, force=False, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 

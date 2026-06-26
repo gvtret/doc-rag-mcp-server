@@ -110,6 +110,9 @@ class VectorIndex:
             return False
 
         if not force and store.size > 0:
+            # Load existing IDs from store metadata if not yet loaded
+            if not self._chunk_ids:
+                self._load_existing_ids()
             existing = set(self._chunk_ids) if self._chunk_ids else set()
             new_ids = [cid for cid in all_ids if cid not in existing]
             if not new_ids:
