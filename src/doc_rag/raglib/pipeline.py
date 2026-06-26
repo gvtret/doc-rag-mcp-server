@@ -792,26 +792,25 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
     elif not archive_enabled:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
-    # Delete stale index files before encoding so that an interrupted rebuild
-    # (SIGHUP, OOM, etc.) doesn't leave index_meta.json mismatched against
-    # the freshly written chunks.jsonl — next ingest/rebuild will start clean.
-    _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
-    for _fname in ("faiss.index", "index_meta.json"):
-        _p = os.path.join(_index_dir, _fname)
-        if os.path.exists(_p):
-            try:
-                os.remove(_p)
-            except OSError as _e:
-                _log("WARN", f"could not remove stale index file {_fname}: {_e}")
-
-    # Force rebuild index so semantic search matches rebuilt chunks (best-effort)
+    # Update vector index — only force-rebuild when new chunks were parsed
     try:
         vi = _get_vector_index(cfg)
-        vi.reset()
-        if os.path.exists(chunks_path):
-            chunks = _load_existing_chunks(chunks_path)
-            if chunks:
-                vi.build(chunks, force=True, log=print)
+        if new_chunks:
+            _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+            for _fname in ("faiss.index", "index_meta.json"):
+                _p = os.path.join(_index_dir, _fname)
+                if os.path.exists(_p):
+                    try:
+                        os.remove(_p)
+                    except OSError as _e:
+                        _log("WARN", f"could not remove stale index file {_fname}: {_e}")
+            vi.reset()
+            if os.path.exists(chunks_path):
+                chunks = _load_existing_chunks(chunks_path)
+                if chunks:
+                    vi.build(chunks, force=True, log=print)
+        else:
+            _log("INFO", "rebuild: no new chunks — index unchanged")
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
