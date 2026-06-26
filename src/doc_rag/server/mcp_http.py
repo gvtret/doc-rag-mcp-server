@@ -2635,114 +2635,115 @@ async def ui_documents(request: Request, key: str = "") -> JSONResponse:
     if not _ui_key_ok(request, key):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
-        root = _root_dir()
-        cfg_path = _config_path()
-        with cfg_path.open(encoding="utf-8") as f:
-            import yaml
-            cfg = yaml.safe_load(f) or {}
-        paths = cfg.get("paths", {}) or {}
-        incoming_rel = paths.get("sources_incoming", "sources/incoming")
-        archived_rel = paths.get("sources_archived", "sources/archived")
-        manifest_rel = paths.get("manifest_path", "build/manifest.json")
-
-        incoming_dir = root / incoming_rel
-        archived_dir = root / archived_rel
-        manifest_path = root / manifest_rel
-
-        SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
-
-        def _scan_dir(d: Path) -> list[dict[str, Any]]:
-            if not d.is_dir():
-                return []
-            out = []
-            for p in sorted(d.rglob("*")):
-                if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
-                    out.append({
-                        "path": str(p.relative_to(root)),
-                        "basename": p.name,
-                        "size": p.stat().st_size,
-                    })
-            return out
-
-        incoming_files = _scan_dir(incoming_dir)
-        archived_files = _scan_dir(archived_dir)
-
-        indexed_docs: list[dict[str, Any]] = []
-        indexed_basenames: set[str] = set()
-        if manifest_path.is_file():
-            try:
-                with manifest_path.open(encoding="utf-8") as f:
-                    manifest = json.load(f)
-                for d in manifest.get("documents", []):
-                    sf = str(d.get("source_file", ""))
-                    bn = os.path.basename(sf)
-                    indexed_basenames.add(bn)
-                    # Resolve size from disk
-                    sz = 0
-                    for dir_key in ("sources_archived", "sources_incoming"):
-                        d_rel = cfg.get("paths", {}).get(dir_key)
-                        if d_rel:
-                            cand = root / d_rel / bn
-                            if cand.is_file():
-                                sz = cand.stat().st_size
-                                break
-                    indexed_docs.append({
-                        "doc_id": d.get("doc_id"),
-                        "basename": bn,
-                        "source_file": sf,
-                        "chunk_count": d.get("chunk_count"),
-                        "edition_year": d.get("edition_year"),
-                        "size": sz,
-                        "indexed": True,
-                    })
-            except Exception:
-                pass
-
-        pending = []
-        for f in incoming_files + archived_files:
-            if f["basename"] not in indexed_basenames:
-                pending.append({
-                    "basename": f["basename"],
-                    "path": f["path"],
-                    "size": f["size"],
-                    "indexed": False,
-                })
-
-        # Live rebuild progress
-        rebuild_progress = None
-        if _INGEST_STATE.get("running") and "rebuild" in (_INGEST_STATE.get("job") or ""):
-            processed = _INGEST_STATE.get("processed_doc_ids", set())
-            current = _INGEST_STATE.get("current_doc")
-            rebuild_progress = {
-                "current_doc": current,
-                "docs_done": _INGEST_STATE.get("docs_done", 0),
-                "docs_total": _INGEST_STATE.get("docs_total"),
-                "processed_basenames": list(processed),
-            }
-            # Update indexed docs status during rebuild
-            for d in indexed_docs:
-                bn = d["basename"]
-                if bn == current:
-                    d["status"] = "processing"
-                elif bn in processed:
-                    d["status"] = "processed"
-            # Update pending files status during rebuild
-            for p in pending:
-                if p["basename"] in processed:
-                    p["status"] = "processed"
-                elif p["basename"] == current:
-                    p["status"] = "processing"
-
-        return JSONResponse({
-            "ok": True,
-            "indexed": indexed_docs,
-            "pending": pending,
-            "indexed_count": len(indexed_docs),
-            "pending_count": len(pending),
-            "rebuild_progress": rebuild_progress,
-        })
+        result = await asyncio.to_thread(_build_documents_list)
+        return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+def _build_documents_list() -> dict[str, Any]:
+    root = _root_dir()
+    cfg_path = _config_path()
+    with cfg_path.open(encoding="utf-8") as f:
+        import yaml
+        cfg = yaml.safe_load(f) or {}
+    paths = cfg.get("paths", {}) or {}
+    incoming_rel = paths.get("sources_incoming", "sources/incoming")
+    archived_rel = paths.get("sources_archived", "sources/archived")
+    manifest_rel = paths.get("manifest_path", "build/manifest.json")
+
+    incoming_dir = root / incoming_rel
+    archived_dir = root / archived_rel
+    manifest_path = root / manifest_rel
+
+    SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+
+    def _scan_dir(d: Path) -> list[dict[str, Any]]:
+        if not d.is_dir():
+            return []
+        out = []
+        for p in sorted(d.rglob("*")):
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
+                out.append({
+                    "path": str(p.relative_to(root)),
+                    "basename": p.name,
+                    "size": p.stat().st_size,
+                })
+        return out
+
+    incoming_files = _scan_dir(incoming_dir)
+    archived_files = _scan_dir(archived_dir)
+
+    indexed_docs: list[dict[str, Any]] = []
+    indexed_basenames: set[str] = set()
+    if manifest_path.is_file():
+        try:
+            with manifest_path.open(encoding="utf-8") as f:
+                manifest = json.load(f)
+            for d in manifest.get("documents", []):
+                sf = str(d.get("source_file", ""))
+                bn = os.path.basename(sf)
+                indexed_basenames.add(bn)
+                sz = 0
+                for dir_key in ("sources_archived", "sources_incoming"):
+                    d_rel = cfg.get("paths", {}).get(dir_key)
+                    if d_rel:
+                        cand = root / d_rel / bn
+                        if cand.is_file():
+                            sz = cand.stat().st_size
+                            break
+                indexed_docs.append({
+                    "doc_id": d.get("doc_id"),
+                    "basename": bn,
+                    "source_file": sf,
+                    "chunk_count": d.get("chunk_count"),
+                    "edition_year": d.get("edition_year"),
+                    "size": sz,
+                    "indexed": True,
+                })
+        except Exception:
+            pass
+
+    pending = []
+    for f in incoming_files + archived_files:
+        if f["basename"] not in indexed_basenames:
+            pending.append({
+                "basename": f["basename"],
+                "path": f["path"],
+                "size": f["size"],
+                "indexed": False,
+            })
+
+    rebuild_progress = None
+    if _INGEST_STATE.get("running") and "rebuild" in (_INGEST_STATE.get("job") or ""):
+        processed = _INGEST_STATE.get("processed_doc_ids", set())
+        current = _INGEST_STATE.get("current_doc")
+        rebuild_progress = {
+            "current_doc": current,
+            "docs_done": _INGEST_STATE.get("docs_done", 0),
+            "docs_total": _INGEST_STATE.get("docs_total"),
+            "processed_basenames": list(processed),
+        }
+        for d in indexed_docs:
+            bn = d["basename"]
+            if bn == current:
+                d["status"] = "processing"
+            elif bn in processed:
+                d["status"] = "processed"
+        for p in pending:
+            if p["basename"] in processed:
+                p["status"] = "processed"
+            elif p["basename"] == current:
+                p["status"] = "processing"
+
+    return {
+        "ok": True,
+        "indexed": indexed_docs,
+        "pending": pending,
+        "indexed_count": len(indexed_docs),
+        "pending_count": len(pending),
+        "rebuild_progress": rebuild_progress,
+    }
 
 
 @app.get("/ui/document-preview")

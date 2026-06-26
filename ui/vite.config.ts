@@ -16,6 +16,8 @@ export default defineConfig({
       // FastAPI server on :3333. Avoids CORS plumbing and keeps the
       // dev experience identical to production (same paths).
       "/ui/status": "http://127.0.0.1:3333",
+      "/ui/documents": "http://127.0.0.1:3333",
+      "/ui/quality": "http://127.0.0.1:3333",
       "/ui/document-preview": "http://127.0.0.1:3333",
       "/api": "http://127.0.0.1:3333",
       "/mcp": "http://127.0.0.1:3333",
