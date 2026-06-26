@@ -839,39 +839,12 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     target_ids = {d for d in doc_ids if d}
     target_filenames = {f for f in (filenames or []) if f}
 
-    # Find docs by doc_id
-    to_rebuild = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids]
-    found_ids = {d["doc_id"] for d in to_rebuild}
+    # Phase 1: find indexed docs by doc_id — delete their .md, resolve source files
+    to_rebuild_indexed = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids]
+    sources_to_parse: list[str] = []
 
-    # Find docs by filename (for pending files not yet in manifest)
-    if target_filenames:
-        # Scan source directories for matching filenames
-        archived_rel = cfg["paths"].get("sources_archived", "sources/archived")
-        incoming_rel = cfg["paths"].get("sources_incoming", "sources/incoming")
-        for dir_rel in [archived_rel, incoming_rel]:
-            dir_path = os.path.join(root, dir_rel)
-            if not os.path.isdir(dir_path):
-                continue
-            for p in list_files_recursive(dir_path, exts=SUPPORTED_EXTS):
-                bn = os.path.basename(p)
-                if bn in target_filenames:
-                    # Check if already in manifest
-                    file_hash = _hash_file(p)
-                    already_in_manifest = any(
-                        isinstance(d, dict) and d.get("sha256") == file_hash
-                        for d in existing_docs
-                    )
-                    if not already_in_manifest:
-                        # This is a pending file - add to sources_to_parse directly
-                        _log("INFO", f"rebuild-docs: found pending file {bn}")
-
-    missing = target_ids - found_ids
-    kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
-
-    _log("INFO", f"rebuild-docs: {len(to_rebuild)} doc(s) to rebuild, {len(missing)} missing")
-
-    # Clean up old .md and blocks for docs being rebuilt
-    for d in to_rebuild:
+    for d in to_rebuild_indexed:
+        # Delete old .md
         md_rel = d.get("md_path", "")
         if md_rel:
             md_abs = os.path.join(root, md_rel)
@@ -880,14 +853,10 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
                     os.remove(md_abs)
                 except OSError:
                     pass
-
-    # Resolve source files for docs being rebuilt
-    sources_to_parse: list[str] = []
-    for d in to_rebuild:
+        # Resolve source file
         sf_rel = d.get("source_file", "")
         if not sf_rel:
             continue
-        # Try multiple locations
         candidates = [sf_rel]
         bn = os.path.basename(sf_rel)
         for dir_key in ("sources_archived", "sources_incoming"):
@@ -900,17 +869,39 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
                 sources_to_parse.append(cand_abs)
                 break
 
-    _PARSE_ORDER = {".md": 0, ".txt": 1, ".docx": 2, ".doc": 3, ".pdf": 4}
-    sources_to_parse.sort(key=lambda s: _PARSE_ORDER.get(os.path.splitext(s)[1].lower(), 99))
+    # Phase 2: find pending files by filename — add directly to sources_to_parse
+    if target_filenames:
+        archived_rel = cfg["paths"].get("sources_archived", "sources/archived")
+        incoming_rel = cfg["paths"].get("sources_incoming", "sources/incoming")
+        for dir_rel in [archived_rel, incoming_rel]:
+            dir_path = os.path.join(root, dir_rel)
+            if not os.path.isdir(dir_path):
+                continue
+            for p in list_files_recursive(dir_path, exts=SUPPORTED_EXTS):
+                if os.path.basename(p) in target_filenames:
+                    sources_to_parse.append(p)
+                    _log("INFO", f"rebuild-docs: found pending file {os.path.basename(p)}")
+
+    # Remove duplicates
+    sources_to_parse = list(dict.fromkeys(sources_to_parse))
+
+    _log("INFO", f"rebuild-docs: {len(to_rebuild_indexed)} indexed + {len(sources_to_parse) - len(to_rebuild_indexed)} pending = {len(sources_to_parse)} to parse")
+
+    if not sources_to_parse:
+        return {"requested": len(target_ids) + len(target_filenames), "rebuilt": 0, "missing": len(target_ids) - len(to_rebuild_indexed)}
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
+
+    _PARSE_ORDER = {".md": 0, ".txt": 1, ".docx": 2, ".doc": 3, ".pdf": 4}
+    sources_to_parse.sort(key=lambda s: _PARSE_ORDER.get(os.path.splitext(s)[1].lower(), 99))
 
     new_docs, new_chunks, _ = _ingest_sources(
         cfg, root, sources_to_parse, docs_md, target, overlap
     )
 
-    # Merge
+    # Merge: keep docs not being rebuilt, add newly parsed docs
+    kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
     all_docs = kept_docs + new_docs
 
     kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
@@ -951,7 +942,7 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
-    return {"requested": len(target_ids), "rebuilt": len(new_docs), "missing": len(missing)}
+    return {"requested": len(target_ids) + len(target_filenames), "rebuilt": len(new_docs), "missing": 0}
 
 
 def _rebuild_faiss_after_delete(cfg: dict[str, Any], deleted_doc_ids: set) -> dict[str, Any]:
