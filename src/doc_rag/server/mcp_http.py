@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote as _url_quote
 from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Request, Response, UploadFile
@@ -869,6 +870,84 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"type": "text", "text": f"File not found: {filename}"}]
 
 
+def _doc_search_docs_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search documents and return document-level results with download links."""
+    query = str(arguments.get("query", "")).strip()
+    if not query:
+        return [{"type": "text", "text": "Empty query. Provide `query` string."}]
+
+    top_k_raw = arguments.get("top_k", 10)
+    try:
+        top_k = int(top_k_raw)
+    except Exception:
+        top_k = 10
+
+    from doc_rag.server.retrieval import doc_search
+
+    results = doc_search(query=query, top_k=max(top_k * 3, 30), namespace="default", filters=None)
+
+    if not results:
+        return [{"type": "text", "text": "No results."}]
+
+    seen_docs: dict[str, dict[str, Any]] = {}
+    for r in results:
+        source_file = r.get("source_file", "")
+        if not source_file:
+            continue
+        bn = os.path.basename(source_file)
+        if bn in seen_docs:
+            old = seen_docs[bn]
+            if (r.get("score") or 0) > (old.get("best_score") or 0):
+                old["best_score"] = r.get("score")
+                old["best_section"] = r.get("section_path", "")
+                old["best_preview"] = str(r.get("text", ""))[:200]
+            old["match_count"] = old.get("match_count", 0) + 1
+            continue
+        seen_docs[bn] = {
+            "filename": bn,
+            "source_file": source_file,
+            "doc_id": r.get("doc_id", ""),
+            "best_score": r.get("score"),
+            "best_section": r.get("section_path", ""),
+            "best_preview": str(r.get("text", ""))[:200],
+            "match_count": 1,
+        }
+
+    docs = sorted(seen_docs.values(), key=lambda d: d.get("best_score") or 0, reverse=True)[:top_k]
+
+    if not docs:
+        return [{"type": "text", "text": "No documents found."}]
+
+    base_url = os.environ.get("DOC_RAG_HTTP_HOST", "http://127.0.0.1:3333")
+    host = os.environ.get("DOC_RAG_HTTP_HOST", "")
+    port = os.environ.get("DOC_RAG_HTTP_PORT", "3333")
+    if host and not host.startswith("http"):
+        base_url = f"http://{host}:{port}"
+
+    lines = [f"Found {len(docs)} document(s):\n"]
+    for i, d in enumerate(docs, 1):
+        score = d.get("best_score")
+        score_s = f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"
+        section = d.get("best_section", "")
+        preview = d.get("best_preview", "")
+        download_url = f"{base_url}/api/v1/download?filename={_url_quote(d['filename'])}"
+
+        header = f"[{i}] {d['filename']}"
+        if d.get("doc_id"):
+            header += f" (doc_id={d['doc_id']})"
+        header += f"  score={score_s}  matches={d.get('match_count', 1)}"
+        if section:
+            header += f"  §{section}"
+
+        block = header
+        if preview:
+            block += f"\n  {preview}"
+        block += f"\n  Download: {download_url}"
+        lines.append(block)
+
+    return [{"type": "text", "text": "\n\n".join(lines)}]
+
+
 def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     """Handle a single JSON-RPC message.
 
@@ -917,6 +996,18 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                     "required": ["filename"],
                 },
             },
+            {
+                "name": "doc_search_docs",
+                "description": "Search documents by query and return document-level results with download links. Returns unique documents (not chunks) with relevance scores and URLs to download source files.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query text"},
+                        "top_k": {"type": "integer", "default": 10, "description": "Max number of documents to return"},
+                    },
+                    "required": ["query"],
+                },
+            },
         ]
         return 200, _ok(req_id, {"tools": tools})
 
@@ -925,7 +1016,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
         name = params.get("name", "")
         arguments = params.get("arguments") or {}
 
-        if name not in ("doc_search", "doc_download"):
+        if name not in ("doc_search", "doc_download", "doc_search_docs"):
             _metrics.record_mcp_request(
                 tool=name or "unknown", status="unknown_tool", duration_seconds=0.0
             )
@@ -941,6 +1032,8 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                 content = doc_search_tool(arguments)
             elif name == "doc_download":
                 content = _doc_download_tool(arguments)
+            elif name == "doc_search_docs":
+                content = _doc_search_docs_tool(arguments)
             _metrics.record_mcp_request(name, "ok", time.time() - started)
             return 200, _ok(req_id, {"content": content, "isError": False})
         except Exception as exc:
@@ -2751,6 +2844,33 @@ async def ui_document_preview(request: Request, doc_id: str = "", key: str = "")
     if not _ui_key_ok(request, key):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse(document_preview(doc_id))
+
+
+@app.get("/api/v1/download")
+async def api_v1_download(request: Request, filename: str = "") -> Response:
+    """Download a source document by filename."""
+    if not filename:
+        return JSONResponse({"error": "filename is required"}, status_code=400)
+    root = _root_dir()
+    cfg_path = _config_path()
+    try:
+        with cfg_path.open(encoding="utf-8") as f:
+            import yaml
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    paths = cfg.get("paths", {}) or {}
+    archived_rel = paths.get("sources_archived", "sources/archived")
+    incoming_rel = paths.get("sources_incoming", "sources/incoming")
+    for dir_rel in [archived_rel, incoming_rel]:
+        dir_path = root / dir_rel
+        if not dir_path.is_dir():
+            continue
+        for p in dir_path.rglob("*"):
+            if p.is_file() and p.name == filename:
+                from starlette.responses import FileResponse
+                return FileResponse(str(p), filename=filename)
+    return JSONResponse({"error": f"File not found: {filename}"}, status_code=404)
 
 
 @app.post("/ui/upload")
