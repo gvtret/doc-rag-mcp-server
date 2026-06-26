@@ -824,6 +824,50 @@ def _sse_frame(msg: dict[str, Any]) -> str:
     return f"data: {payload}\n\n"
 
 
+def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    """Download a source document by filename."""
+    import base64
+    filename = arguments.get("filename", "")
+    if not filename:
+        return [{"type": "text", "text": "Error: filename is required"}]
+
+    root = _root_dir()
+    cfg_path = _config_path()
+    try:
+        with cfg_path.open(encoding="utf-8") as f:
+            import yaml
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+
+    paths = cfg.get("paths", {}) or {}
+    archived_rel = paths.get("sources_archived", "sources/archived")
+    incoming_rel = paths.get("sources_incoming", "sources/incoming")
+
+    # Search in archived and incoming directories
+    for dir_rel in [archived_rel, incoming_rel]:
+        dir_path = root / dir_rel
+        if not dir_path.is_dir():
+            continue
+        for p in dir_path.rglob("*"):
+            if p.is_file() and p.name == filename:
+                try:
+                    data = p.read_bytes()
+                    b64 = base64.b64encode(data).decode("ascii")
+                    return [{
+                        "type": "file",
+                        "file": {
+                            "name": filename,
+                            "mimeType": "application/octet-stream",
+                            "data": b64,
+                        },
+                    }]
+                except Exception as e:
+                    return [{"type": "text", "text": f"Error reading file: {e}"}]
+
+    return [{"type": "text", "text": f"File not found: {filename}"}]
+
+
 def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     """Handle a single JSON-RPC message.
 
@@ -862,18 +906,14 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                 },
             },
             {
-                "name": "doc_generate",
-                "description": "RAG generate: search documents and generate an answer with citations using an LLM.",
+                "name": "doc_download",
+                "description": "Download a source document by filename. Returns the file content as base64-encoded data.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Question to answer"},
-                        "top_k": {"type": "integer", "default": 5, "description": "Number of context chunks to retrieve"},
-                        "namespace": {"type": "string", "default": "default", "description": "Collection namespace"},
-                        "max_tokens": {"type": "integer", "description": "Override max tokens for LLM response"},
-                        "max_context_tokens": {"type": "integer", "default": 6000, "description": "Max tokens budget for retrieved context sent to LLM"},
+                        "filename": {"type": "string", "description": "Filename of the document to download (e.g. 'СТО_34.01-5.1-006-2023v4.pdf')"},
                     },
-                    "required": ["query"],
+                    "required": ["filename"],
                 },
             },
         ]
@@ -884,7 +924,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
         name = params.get("name", "")
         arguments = params.get("arguments") or {}
 
-        if name not in ("doc_search", "doc_generate"):
+        if name not in ("doc_search", "doc_download"):
             _metrics.record_mcp_request(
                 tool=name or "unknown", status="unknown_tool", duration_seconds=0.0
             )
@@ -898,9 +938,8 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
             if name == "doc_search":
                 from doc_rag.server.search_tool import doc_search_tool
                 content = doc_search_tool(arguments)
-            else:
-                from doc_rag.server.generate_tool import doc_generate_tool
-                content = doc_generate_tool(arguments)
+            elif name == "doc_download":
+                content = _doc_download_tool(arguments)
             _metrics.record_mcp_request(name, "ok", time.time() - started)
             return 200, _ok(req_id, {"content": content, "isError": False})
         except Exception as exc:
