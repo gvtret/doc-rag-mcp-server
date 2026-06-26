@@ -209,7 +209,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each allDocs as d, i (d.doc_id ?? d.basename + i)}
+          {#each allDocs as d, i (`${d.doc_id ?? d.basename}-${i}`)}
             <tr class:selected-row={selected.has(d.doc_id ?? "")}>
               <td class="check">
                 <input
@@ -248,7 +248,7 @@
               </td>
             </tr>
           {/each}
-          {#each pendingDocs as d, i (d.path ?? d.basename + i)}
+          {#each pendingDocs as d, i (`${d.path ?? d.basename}-${i}`)}
             <tr class="pending-row">
               <td class="check">
                 <input

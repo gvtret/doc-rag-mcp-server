@@ -754,7 +754,8 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
     )
 
     # Merge: keep existing docs that were skipped, add newly parsed docs
-    kept_docs = [d for d in existing_docs if d.get("sha256") in to_skip_hashes]
+    # Deduplicate by sha256 — existing_by_hash keeps one entry per hash
+    kept_docs = [d for d in existing_by_hash.values() if d.get("sha256") in to_skip_hashes]
     all_docs = kept_docs + new_docs
 
     # Merge chunks: load existing chunks for kept docs, add new chunks
@@ -766,6 +767,18 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
         kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
         all_chunks = kept_chunks + new_chunks
+
+    # Safety: deduplicate docs by doc_id (keep last occurrence)
+    seen_ids: set[str] = set()
+    deduped_docs: list[dict] = []
+    for d in reversed(all_docs):
+        did = d.get("doc_id", "")
+        if did and did not in seen_ids:
+            seen_ids.add(did)
+            deduped_docs.append(d)
+    if len(deduped_docs) != len(all_docs):
+        _log("WARN", f"rebuild: removed {len(all_docs) - len(deduped_docs)} duplicate doc entries")
+    all_docs = list(reversed(deduped_docs))
 
     dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
     if dedup_thresh > 0.0:
@@ -902,6 +915,18 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     # Merge: keep docs not being rebuilt, add newly parsed docs
     kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
     all_docs = kept_docs + new_docs
+
+    # Deduplicate by doc_id (keep last)
+    _seen: set[str] = set()
+    _deduped: list[dict] = []
+    for d in reversed(all_docs):
+        _did = d.get("doc_id", "")
+        if _did and _did not in _seen:
+            _seen.add(_did)
+            _deduped.append(d)
+    if len(_deduped) != len(all_docs):
+        _log("WARN", f"rebuild-docs: removed {len(all_docs) - len(_deduped)} duplicate doc entries")
+    all_docs = list(reversed(_deduped))
 
     kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
     existing_chunks = _load_existing_chunks(chunks_path)
