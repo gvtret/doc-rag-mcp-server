@@ -199,13 +199,13 @@
               />
             </th>
             <th class="num">##</th>
-            <th>FILENAME</th>
+            <th>ФАЙЛ</th>
             <th>DOC_ID</th>
             <th class="num">РАЗМЕР</th>
-            <th class="num">CHUNKS</th>
-            <th class="num">YEAR</th>
-            <th>STATUS</th>
-            <th>QUALITY</th>
+            <th class="num">ЧАНКИ</th>
+            <th class="num">ГОД</th>
+            <th>СТАТУС</th>
+            <th>КАЧЕСТВО</th>
           </tr>
         </thead>
         <tbody>
@@ -238,7 +238,7 @@
                   {@const q = qualityMap[d.doc_id]}
                   <span
                     class="q-badge q-{qualityColor(q.score)}"
-                    title="score: {q.score.toFixed(2)} · warnings: {q.warning_count}"
+                    title="точность: {q.score.toFixed(2)} · предупреждения: {q.warning_count}"
                   >
                     {q.score >= 0.8 ? "OK" : q.score >= 0.5 ? "WARN" : "ERR"}
                   </span>

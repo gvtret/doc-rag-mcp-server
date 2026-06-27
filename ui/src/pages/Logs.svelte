@@ -47,7 +47,7 @@
         class:active={tab === "ingest"}
         onclick={() => (tab = "ingest")}
       >
-        Ingest Log
+        Лог загрузки
       </button>
       <button
         type="button"
@@ -55,7 +55,7 @@
         class:active={tab === "http"}
         onclick={() => (tab = "http")}
       >
-        HTTP Log
+        HTTP лог
       </button>
     </div>
 
@@ -83,7 +83,7 @@
         class:active-btn={paused}
         onclick={() => (paused = !paused)}
       >
-        {paused ? "▶ Resume" : "⏸ Pause"}
+        {paused ? "▶ Продолжить" : "⏸ Пауза"}
       </button>
     </div>
   </div>
@@ -99,12 +99,12 @@
   </div>
 
   <div class="status-bar mono">
-    <span class="muted">lines: {activeLines.length}</span>
+    <span class="muted">строк: {activeLines.length}</span>
     <span class="sep">·</span>
-    <span class="muted">source: {tab === "ingest" ? "log_tail" : "http_log_tail"}</span>
+    <span class="muted">источник: {tab === "ingest" ? "log_tail" : "http_log_tail"}</span>
     {#if paused}
       <span class="sep">·</span>
-      <span class="warn-text">paused</span>
+      <span class="warn-text">пауза</span>
     {/if}
   </div>
 </section>

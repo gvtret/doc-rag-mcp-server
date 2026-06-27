@@ -20,7 +20,7 @@
 <aside class="sidebar" aria-label="Главное меню">
   <div class="brand">
     <span class="logo">doc-rag</span>
-    <span class="ver">v3.1</span>
+    <span class="ver">v4.1</span>
   </div>
   <nav>
     <ul>

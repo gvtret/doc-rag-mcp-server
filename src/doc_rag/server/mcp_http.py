@@ -2861,7 +2861,7 @@ async def ui_document_preview(request: Request, doc_id: str = "", key: str = "")
 async def api_v1_download(request: Request, filename: str = "") -> Response:
     """Download a source document by filename."""
     if not filename:
-        return JSONResponse({"error": "filename is required"}, status_code=400)
+        return JSONResponse({"error": "требуется имя файла"}, status_code=400)
     root = _root_dir()
     cfg_path = _config_path()
     try:
@@ -2881,7 +2881,7 @@ async def api_v1_download(request: Request, filename: str = "") -> Response:
             if p.is_file() and p.name == filename:
                 from starlette.responses import FileResponse
                 return FileResponse(str(p), filename=filename)
-    return JSONResponse({"error": f"File not found: {filename}"}, status_code=404)
+    return JSONResponse({"error": f"Файл не найден: {filename}"}, status_code=404)
 
 
 @app.post("/ui/upload")
@@ -2948,7 +2948,7 @@ async def ui_rebuild_docs(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"ok": False, "error": "invalid JSON body"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "невалидный JSON"}, status_code=400)
     doc_ids = body.get("doc_ids") if isinstance(body, dict) else None
     filenames = body.get("filenames") if isinstance(body, dict) else None
     if not isinstance(doc_ids, list):
@@ -2958,7 +2958,7 @@ async def ui_rebuild_docs(request: Request) -> JSONResponse:
     doc_ids = [str(d) for d in doc_ids if d]
     filenames = [str(f) for f in filenames if f]
     if not doc_ids and not filenames:
-        return JSONResponse({"ok": False, "error": "doc_ids or filenames required"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "требуются doc_ids или filenames"}, status_code=400)
     asyncio.create_task(_run_rebuild_docs_background(doc_ids, filenames))
     total = len(doc_ids) + len(filenames)
     return JSONResponse({"ok": True, "message": f"rebuild-docs запущен для {total} документ(ов)"})
@@ -2988,7 +2988,7 @@ async def ui_delete(request: Request, key: str = Form(""), doc_ids: str = Form("
         return _busy_response()
     ids = [s.strip() for s in (doc_ids or "").split(",") if s.strip()]
     if not ids:
-        return JSONResponse({"ok": False, "error": "no doc_ids provided"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "doc_ids не указаны"}, status_code=400)
     try:
         result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
     except Exception as exc:
