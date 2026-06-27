@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -772,18 +773,23 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
     new_docs: list[dict] = []
     new_chunks: list[dict] = []
     processed: list[str] = []
+    total_files = len(sources_to_parse)
+    t_start = time.time()
 
-    for src in sources_to_parse:
+    for file_idx, src in enumerate(sources_to_parse, 1):
         rel_src = os.path.relpath(src, root)
+        file_size = os.path.getsize(src)
+        _log("INFO", f"[{file_idx}/{total_files}] parse: {rel_src} ({file_size / 1024:.0f} KB)")
+        t_file = time.time()
         try:
             file_hash = _hash_file(src)
             base = os.path.basename(src)
             doc_id = safe_slug(os.path.splitext(base)[0])[:80] + "_" + file_hash[:10]
 
-            _log("INFO", f"parse: {rel_src}")
             parsed = parse_document(cfg, src)
             md_text = parsed["markdown"]
             blocks = parsed.get("blocks") or []
+            _log("INFO", f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)")
 
             md_path = os.path.join(docs_md, f"{doc_id}.md")
             with open(md_path, "w", encoding="utf-8") as f:
@@ -853,12 +859,18 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
 
             new_chunks.extend(file_chunks)
             processed.append(src)
+            elapsed = time.time() - t_file
             _log(
                 "INFO",
-                f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(file_chunks)})",
+                f"[{file_idx}/{total_files}] ok: {rel_src} -> doc_id={doc_id} "
+                f"(chunks={len(file_chunks)}, md={len(md_text)} chars, {elapsed:.1f}s)",
             )
         except Exception as e:
-            _log("ERROR", f"failed: {rel_src}: {e}")
+            elapsed = time.time() - t_file
+            _log("ERROR", f"[{file_idx}/{total_files}] failed: {rel_src} ({elapsed:.1f}s): {e}")
+
+    total_elapsed = time.time() - t_start
+    _log("INFO", f"rebuild: parsed {len(new_docs)}/{total_files} files in {total_elapsed:.1f}s")
 
     # Phase 2: Merge with existing (force=False path)
     kept_docs = [d for d in existing_by_hash.values() if d.get("sha256") in to_skip_hashes]
@@ -1033,18 +1045,23 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     # Phase 1: Parse files one-by-one, persist chunks incrementally
     new_docs: list[dict] = []
     new_chunks: list[dict] = []
+    total_files = len(sources_to_parse)
+    t_start = time.time()
 
-    for src in sources_to_parse:
+    for file_idx, src in enumerate(sources_to_parse, 1):
         rel_src = os.path.relpath(src, root)
+        file_size = os.path.getsize(src)
+        _log("INFO", f"[{file_idx}/{total_files}] parse: {rel_src} ({file_size / 1024:.0f} KB)")
+        t_file = time.time()
         try:
             file_hash = _hash_file(src)
             base = os.path.basename(src)
             doc_id = safe_slug(os.path.splitext(base)[0])[:80] + "_" + file_hash[:10]
 
-            _log("INFO", f"parse: {rel_src}")
             parsed = parse_document(cfg, src)
             md_text = parsed["markdown"]
             blocks = parsed.get("blocks") or []
+            _log("INFO", f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)")
 
             md_path = os.path.join(docs_md, f"{doc_id}.md")
             with open(md_path, "w", encoding="utf-8") as f:
@@ -1119,12 +1136,18 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
                 json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
 
             new_chunks.extend(file_chunks)
+            elapsed = time.time() - t_file
             _log(
                 "INFO",
-                f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(file_chunks)})",
+                f"[{file_idx}/{total_files}] ok: {rel_src} -> doc_id={doc_id} "
+                f"(chunks={len(file_chunks)}, md={len(md_text)} chars, {elapsed:.1f}s)",
             )
         except Exception as e:
-            _log("ERROR", f"failed: {rel_src}: {e}")
+            elapsed = time.time() - t_file
+            _log("ERROR", f"[{file_idx}/{total_files}] failed: {rel_src} ({elapsed:.1f}s): {e}")
+
+    total_elapsed = time.time() - t_start
+    _log("INFO", f"rebuild-docs: parsed {len(new_docs)}/{total_files} files in {total_elapsed:.1f}s")
 
     # Phase 2: Merge with existing
     kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
