@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 from doc_rag.raglib.blocks import Block, blocks_to_markdown
 from doc_rag.raglib.filetype_detect import detect_supported_extension
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("doc_rag")
 
 _BACKEND_BY_EXT: dict[str, str] = {
     ".pdf": "docling",
