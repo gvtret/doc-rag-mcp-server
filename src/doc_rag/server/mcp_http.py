@@ -1384,6 +1384,7 @@ def _coerce_like(existing: Any, value: Any) -> Any:
 _FIELD_CONSTRAINTS: dict[str, dict[str, Any]] = {
     "parsing.pdf_backend": {"options": ["docling", "auto", "cascade"]},
     "parsing.docx_backend": {"options": ["python-docx", "docling"]},
+    "parsing.quality_fallback_threshold": {"type": "float", "min": 0.0, "max": 1.0},
     "parsing.min_chars_per_page": {"type": "int", "min": 0},
     "sectioning.min_heading_len": {"type": "int", "min": 1},
     "sectioning.max_heading_len": {"type": "int", "min": 1},

@@ -18,6 +18,9 @@ parsing:
   # структурный, дороже по времени и памяти.
   docx_backend: "python-docx"
   normalize_whitespace: true
+  # Порог качества для fallback на Unstructured. Если score Docling < порога,
+  # автоматически пробует Unstructured и берёт лучший результат. 0 = отключено.
+  quality_fallback_threshold: 0.5
   # Порог «почти пустой страницы» для метрик покрытия (извлечённый текст).
   min_chars_per_page: 20
   # Год редакции в manifest: ручные карты и эвристика по имени файла.
