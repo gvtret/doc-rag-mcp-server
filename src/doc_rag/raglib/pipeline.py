@@ -1195,22 +1195,14 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
 
     _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
 
-    # Rebuild vector index from all chunks for consistency
+    # Incremental index update — add only new chunks
     try:
         vi = _get_vector_index(cfg)
-        if all_chunks:
-            _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
-            for _fname in ("faiss.index", "index_meta.json"):
-                _p = os.path.join(_index_dir, _fname)
-                if os.path.exists(_p):
-                    try:
-                        os.remove(_p)
-                    except OSError as _e:
-                        _log("WARN", f"could not remove stale index file {_fname}: {_e}")
-            vi.reset()
-            vi.build(all_chunks, force=True, log=print)
+        if new_chunks:
+            _log("INFO", f"index: adding {len(new_chunks)} new chunks incrementally")
+            vi.build(new_chunks, force=False, log=print)
         else:
-            _log("INFO", "rebuild-docs: no chunks — index unchanged")
+            _log("INFO", "rebuild-docs: no new chunks — index unchanged")
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
