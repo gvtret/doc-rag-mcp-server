@@ -577,6 +577,17 @@ def ingest(config_path: str) -> None:
                         )
                     appended_chunks += len(chunks)
 
+                    # Per-file index update
+                    try:
+                        vi = _get_vector_index(cfg)
+                        file_chunk_dicts = [
+                            {"doc_id": doc_id, "chunk_id": f"{doc_id}:{idx}", "text": c}
+                            for idx, c in enumerate(chunks)
+                        ]
+                        vi.build(file_chunk_dicts, force=False, log=print)
+                    except Exception:
+                        pass
+
                     cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
                     ed_y = resolve_edition_year(
                         cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash
@@ -665,6 +676,14 @@ def _write_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
 
 
+def _append_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
+    """Append chunks to chunks.jsonl (create if missing)."""
+    ensure_dir(os.path.dirname(chunks_path))
+    with open(chunks_path, "a", encoding="utf-8") as f:
+        for it in chunks:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+
+
 def rebuild(config_path: str, *, force: bool = False) -> None:
     """Rebuild chunks/embeddings/index.
 
@@ -747,28 +766,113 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
+    chunks_path = os.path.join(chunks_dir, "chunks.jsonl")
 
-    # Parse only the files that need it
-    new_docs, new_chunks, processed = _ingest_sources(
-        cfg, root, sources_to_parse, docs_md, target, overlap
-    )
+    # Phase 1: Parse files one-by-one, persist chunks incrementally
+    new_docs: list[dict] = []
+    new_chunks: list[dict] = []
+    processed: list[str] = []
 
-    # Merge: keep existing docs that were skipped, add newly parsed docs
-    # Deduplicate by sha256 — existing_by_hash keeps one entry per hash
+    for src in sources_to_parse:
+        rel_src = os.path.relpath(src, root)
+        try:
+            file_hash = _hash_file(src)
+            base = os.path.basename(src)
+            doc_id = safe_slug(os.path.splitext(base)[0])[:80] + "_" + file_hash[:10]
+
+            _log("INFO", f"parse: {rel_src}")
+            parsed = parse_document(cfg, src)
+            md_text = parsed["markdown"]
+            blocks = parsed.get("blocks") or []
+
+            md_path = os.path.join(docs_md, f"{doc_id}.md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(md_text)
+
+            blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
+
+            quality_report = None
+            if blocks:
+                from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
+
+                quality_dir = os.path.join(root, "build", "quality")
+                quality_report = run_quality_checks(doc_id, blocks)
+                persist_quality_report(quality_dir, quality_report)
+
+            chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
+            if chunking_strategy == "recursive" and blocks:
+                from doc_rag.raglib.chunker_recursive import chunk_recursive
+
+                rc_chunks = chunk_recursive(blocks, target_tokens=target)
+                file_chunks: list[dict] = []
+                for idx, c in enumerate(rc_chunks):
+                    entry: dict[str, Any] = {
+                        "doc_id": doc_id,
+                        "chunk_id": f"{doc_id}:{idx}",
+                        "text": c["text"],
+                    }
+                    if c.get("section_path"):
+                        entry["section_path"] = c["section_path"]
+                    if c.get("is_table"):
+                        entry["is_table"] = True
+                    if c.get("is_table_summary"):
+                        entry["is_table_summary"] = True
+                    file_chunks.append(entry)
+                chunks_text = [c["text"] for c in rc_chunks]
+            else:
+                chunks_text = _chunk_text(md_text, target, overlap)
+                file_chunks = [
+                    {"doc_id": doc_id, "chunk_id": f"{doc_id}:{idx}", "text": c}
+                    for idx, c in enumerate(chunks_text)
+                ]
+
+            # Per-file persistence: append chunks immediately
+            _append_chunks(chunks_path, file_chunks)
+
+            cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+            ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
+            new_docs.append({
+                "doc_id": doc_id,
+                "source_file": rel_src,
+                "md_path": os.path.relpath(md_path, root),
+                "blocks_path": blocks_rel,
+                "sha256": file_hash,
+                "chunk_count": len(file_chunks),
+                "title_hint": os.path.splitext(base)[0],
+                "edition_year": ed_y,
+                "coverage": cov,
+                **(
+                    {
+                        "quality_score": quality_report.score,
+                        "quality_warning_count": len(quality_report.warnings),
+                    }
+                    if quality_report is not None
+                    else {}
+                ),
+            })
+
+            new_chunks.extend(file_chunks)
+            processed.append(src)
+            _log(
+                "INFO",
+                f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(file_chunks)})",
+            )
+        except Exception as e:
+            _log("ERROR", f"failed: {rel_src}: {e}")
+
+    # Phase 2: Merge with existing (force=False path)
     kept_docs = [d for d in existing_by_hash.values() if d.get("sha256") in to_skip_hashes]
     all_docs = kept_docs + new_docs
 
-    # Merge chunks: load existing chunks for kept docs, add new chunks
-    chunks_path = os.path.join(chunks_dir, "chunks.jsonl")
+    # Chunks are already in chunks.jsonl from per-file appends.
+    # Just load and dedup — no need to merge new_chunks again.
     if force or not kept_docs:
         all_chunks = new_chunks
     else:
-        existing_chunks = _load_existing_chunks(chunks_path)
-        kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
-        kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
-        all_chunks = kept_chunks + new_chunks
+        all_chunks = _load_existing_chunks(chunks_path)
+    original_chunk_count = len(all_chunks)
 
-    # Safety: deduplicate docs by doc_id (keep last occurrence)
+    # Phase 3: Dedup
     seen_ids: set[str] = set()
     deduped_docs: list[dict] = []
     for d in reversed(all_docs):
@@ -780,7 +884,6 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         _log("WARN", f"rebuild: removed {len(all_docs) - len(deduped_docs)} duplicate doc entries")
     all_docs = list(reversed(deduped_docs))
 
-    # Deduplicate chunks by chunk_id (keep last)
     seen_cids: set[str] = set()
     deduped_chunks: list[dict] = []
     for c in reversed(all_chunks):
@@ -798,10 +901,12 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
         _log("INFO", f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})")
 
+    # If dedup changed the set, rewrite chunks.jsonl
+    if len(all_chunks) != original_chunk_count:
+        _write_chunks(chunks_path, all_chunks)
+
+    # Phase 4: Write manifest
     manifest = _manifest_shell(cfg, all_docs)
-
-    _write_chunks(chunks_path, all_chunks)
-
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
@@ -811,16 +916,18 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         f"written: {os.path.relpath(manifest_path, root)} (docs={len(manifest['documents'])})",
     )
 
+    # Phase 5: Archive
     archive_enabled = bool(cfg.get("sources", {}).get("archive_after_ingest", True))
     if archive_enabled and processed:
         _archive_or_dedup_sources(cfg, root, processed)
     elif not archive_enabled:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
-    # Update vector index — only force-rebuild when new chunks were parsed
+    # Phase 6: Update vector index
     try:
         vi = _get_vector_index(cfg)
-        if new_chunks:
+        if force:
+            # force=True: full rebuild from scratch
             _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
             for _fname in ("faiss.index", "index_meta.json"):
                 _p = os.path.join(_index_dir, _fname)
@@ -834,6 +941,9 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
                 chunks = _load_existing_chunks(chunks_path)
                 if chunks:
                     vi.build(chunks, force=True, log=print)
+        elif new_chunks:
+            # force=False with new chunks: incremental update
+            vi.build(new_chunks, force=False, log=print)
         else:
             _log("INFO", "rebuild: no new chunks — index unchanged")
     except Exception as e:
@@ -920,15 +1030,100 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     _PARSE_ORDER = {".md": 0, ".txt": 1, ".docx": 2, ".doc": 3, ".pdf": 4}
     sources_to_parse.sort(key=lambda s: _PARSE_ORDER.get(os.path.splitext(s)[1].lower(), 99))
 
-    new_docs, new_chunks, _ = _ingest_sources(
-        cfg, root, sources_to_parse, docs_md, target, overlap
-    )
+    # Phase 1: Parse files one-by-one, persist chunks incrementally
+    new_docs: list[dict] = []
+    new_chunks: list[dict] = []
 
-    # Merge: keep docs not being rebuilt, add newly parsed docs
+    for src in sources_to_parse:
+        rel_src = os.path.relpath(src, root)
+        try:
+            file_hash = _hash_file(src)
+            base = os.path.basename(src)
+            doc_id = safe_slug(os.path.splitext(base)[0])[:80] + "_" + file_hash[:10]
+
+            _log("INFO", f"parse: {rel_src}")
+            parsed = parse_document(cfg, src)
+            md_text = parsed["markdown"]
+            blocks = parsed.get("blocks") or []
+
+            md_path = os.path.join(docs_md, f"{doc_id}.md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(md_text)
+
+            blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
+
+            quality_report = None
+            if blocks:
+                from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
+
+                quality_dir = os.path.join(root, "build", "quality")
+                quality_report = run_quality_checks(doc_id, blocks)
+                persist_quality_report(quality_dir, quality_report)
+
+            chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
+            if chunking_strategy == "recursive" and blocks:
+                from doc_rag.raglib.chunker_recursive import chunk_recursive
+
+                rc_chunks = chunk_recursive(blocks, target_tokens=target)
+                file_chunks: list[dict] = []
+                for idx, c in enumerate(rc_chunks):
+                    entry: dict[str, Any] = {
+                        "doc_id": doc_id,
+                        "chunk_id": f"{doc_id}:{idx}",
+                        "text": c["text"],
+                    }
+                    if c.get("section_path"):
+                        entry["section_path"] = c["section_path"]
+                    if c.get("is_table"):
+                        entry["is_table"] = True
+                    if c.get("is_table_summary"):
+                        entry["is_table_summary"] = True
+                    file_chunks.append(entry)
+                chunks_text = [c["text"] for c in rc_chunks]
+            else:
+                chunks_text = _chunk_text(md_text, target, overlap)
+                file_chunks = [
+                    {"doc_id": doc_id, "chunk_id": f"{doc_id}:{idx}", "text": c}
+                    for idx, c in enumerate(chunks_text)
+                ]
+
+            # Per-file persistence: append chunks immediately
+            _append_chunks(chunks_path, file_chunks)
+
+            cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+            ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
+            new_docs.append({
+                "doc_id": doc_id,
+                "source_file": rel_src,
+                "md_path": os.path.relpath(md_path, root),
+                "blocks_path": blocks_rel,
+                "sha256": file_hash,
+                "chunk_count": len(file_chunks),
+                "title_hint": os.path.splitext(base)[0],
+                "edition_year": ed_y,
+                "coverage": cov,
+                **(
+                    {
+                        "quality_score": quality_report.score,
+                        "quality_warning_count": len(quality_report.warnings),
+                    }
+                    if quality_report is not None
+                    else {}
+                ),
+            })
+
+            new_chunks.extend(file_chunks)
+            _log(
+                "INFO",
+                f"ok: {rel_src} -> {os.path.relpath(md_path, root)} (chunks={len(file_chunks)})",
+            )
+        except Exception as e:
+            _log("ERROR", f"failed: {rel_src}: {e}")
+
+    # Phase 2: Merge with existing
     kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
     all_docs = kept_docs + new_docs
 
-    # Deduplicate by doc_id (keep last)
     _seen: set[str] = set()
     _deduped: list[dict] = []
     for d in reversed(all_docs):
@@ -941,11 +1136,10 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     all_docs = list(reversed(_deduped))
 
     kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
-    existing_chunks = _load_existing_chunks(chunks_path)
-    kept_chunks = [c for c in existing_chunks if c.get("doc_id") in kept_doc_ids]
-    all_chunks = kept_chunks + new_chunks
+    # Chunks already in chunks.jsonl from per-file appends — just load and dedup
+    all_chunks = _load_existing_chunks(chunks_path)
+    original_chunk_count = len(all_chunks)
 
-    # Deduplicate chunks by chunk_id
     _sc: set[str] = set()
     _dc: list[dict] = []
     for c in reversed(all_chunks):
@@ -962,9 +1156,11 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
         doc_src_map = {d["doc_id"]: d.get("source_file", "") for d in all_docs}
         all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
 
-    manifest = _manifest_shell(cfg, all_docs)
+    # If dedup changed the set, rewrite chunks.jsonl
+    if len(all_chunks) != original_chunk_count:
+        _write_chunks(chunks_path, all_chunks)
 
-    _write_chunks(chunks_path, all_chunks)
+    manifest = _manifest_shell(cfg, all_docs)
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
@@ -973,10 +1169,8 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     # Incremental index update (add new chunks only)
     try:
         vi = _get_vector_index(cfg)
-        if os.path.exists(chunks_path):
-            chunks = _load_existing_chunks(chunks_path)
-            if chunks:
-                vi.build(chunks, force=False, log=print)
+        if new_chunks:
+            vi.build(new_chunks, force=False, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
