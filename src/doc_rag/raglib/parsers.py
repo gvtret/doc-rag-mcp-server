@@ -337,12 +337,11 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
         if quality_threshold > 0 and backend_blocks:
             try:
                 from doc_rag.raglib.quality import run_quality_checks
-                from doc_rag.raglib.blocks import Block as _Block
 
                 tmp_blocks = backend_blocks
                 report = run_quality_checks("tmp", tmp_blocks)
                 if report.score < quality_threshold:
-                    logger.info(
+                    logger.warning(
                         "quality cascade: Docling score %.2f < %.2f, trying Unstructured on %s",
                         report.score, quality_threshold, os.path.basename(path),
                     )
@@ -351,7 +350,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
                         u_text, u_blocks, u_stats = parse_pdf_unstructured(path)
                         u_report = run_quality_checks("tmp", u_blocks)
                         if u_report.score > report.score:
-                            logger.info(
+                            logger.warning(
                                 "quality cascade: Unstructured score %.2f > %.2f, using Unstructured",
                                 u_report.score, report.score,
                             )
@@ -360,14 +359,14 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
                             raw_stats = u_stats
                             source_backend = "unstructured"
                         else:
-                            logger.info(
+                            logger.warning(
                                 "quality cascade: Unstructured score %.2f <= %.2f, keeping Docling",
                                 u_report.score, report.score,
                             )
                     except RuntimeError:
-                        logger.debug("quality cascade: Unstructured not installed, keeping Docling")
+                        logger.warning("quality cascade: Unstructured not installed, keeping Docling")
             except Exception as e:
-                logger.debug("quality cascade check failed: %s", e)
+                logger.warning("quality cascade check failed: %s", e)
 
         extract_stats = _finalize_pdf_stats(raw_stats, min_chars=min_thr)
     elif effective_ext == ".docx":
