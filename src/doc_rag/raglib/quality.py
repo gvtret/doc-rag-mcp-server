@@ -164,9 +164,9 @@ def _check_tables(blocks: list[Block]) -> list[Warning]:
         if inconsistent and len(inconsistent) > len(col_counts) * 0.3:
             warnings.append(
                 Warning(
-                    severity="warn",
+                    severity="info",
                     code="mismatched_columns",
-                    message=f"table {b.block_id}: mismatched column counts",
+                    message=f"table {b.block_id}: mismatched column counts ({most_common} vs {set(inconsistent)})",
                     block_id=b.block_id,
                     page=b.page,
                 )

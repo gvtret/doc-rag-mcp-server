@@ -206,6 +206,38 @@ _CODE_LABELS: frozenset[str] = frozenset({"code"})
 _CAPTION_LABELS: frozenset[str] = frozenset({"caption"})
 
 
+def _normalize_table_text(text: str) -> str:
+    """Normalize pipe-delimited table text: pad all rows to the same column count.
+
+    Handles tables where rows have different numbers of columns by adding
+    empty cells to shorter rows. Preserves original spacing.
+    """
+    lines = [line for line in text.split("\n") if line.strip()]
+    if not lines:
+        return text
+
+    pipe_lines = [line for line in lines if "|" in line]
+    if not pipe_lines:
+        return text
+
+    # Find max column count across all pipe-delimited rows
+    max_cols = max(len(line.split("|")) for line in pipe_lines)
+
+    # Normalize each row to max_cols, preserving original spacing
+    normalized = []
+    for line in lines:
+        if "|" not in line:
+            normalized.append(line)
+            continue
+        parts = line.split("|")
+        # Pad with empty strings to reach max_cols
+        while len(parts) < max_cols:
+            parts.append("")
+        normalized.append("|".join(parts))
+
+    return "\n".join(normalized)
+
+
 def _item_to_block(item: Any, hier_level: int, idx: int) -> Block | None:
     """Translate one Docling item into a Block, or None to skip.
 
@@ -241,6 +273,7 @@ def _item_to_block(item: Any, hier_level: int, idx: int) -> Block | None:
         )
     if label in _TABLE_LABELS:
         table_text, cells = _table_to_text(item)
+        table_text = _normalize_table_text(table_text)
         metadata: dict[str, Any] = {}
         if cells is not None:
             metadata["cells"] = cells
