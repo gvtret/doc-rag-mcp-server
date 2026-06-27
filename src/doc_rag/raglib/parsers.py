@@ -334,15 +334,23 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
             source_backend = "docling"
 
         # Quality cascade: if score < threshold, try Unstructured as fallback
+        logger.warning(
+            "quality cascade: threshold=%.2f, backend_blocks=%s",
+            quality_threshold, bool(backend_blocks),
+        )
         if quality_threshold > 0 and backend_blocks:
             try:
                 from doc_rag.raglib.quality import run_quality_checks
 
                 tmp_blocks = backend_blocks
                 report = run_quality_checks("tmp", tmp_blocks)
+                logger.warning(
+                    "quality cascade: Docling score=%.2f, warnings=%d",
+                    report.score, len(report.warnings),
+                )
                 if report.score < quality_threshold:
                     logger.warning(
-                        "quality cascade: Docling score %.2f < %.2f, trying Unstructured on %s",
+                        "quality cascade: score %.2f < %.2f, trying Unstructured on %s",
                         report.score, quality_threshold, os.path.basename(path),
                     )
                     try:
