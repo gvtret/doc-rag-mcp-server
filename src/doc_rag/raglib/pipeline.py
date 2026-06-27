@@ -1112,6 +1112,12 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
                 ),
             })
 
+            # Incremental manifest update: write after each file so UI sees progress
+            _kept = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
+            _inc_manifest = _manifest_shell(cfg, _kept + new_docs)
+            with open(manifest_path, "w", encoding="utf-8") as _mf:
+                json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
+
             new_chunks.extend(file_chunks)
             _log(
                 "INFO",
@@ -1166,11 +1172,22 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
 
     _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
 
-    # Incremental index update (add new chunks only)
+    # Rebuild vector index from all chunks for consistency
     try:
         vi = _get_vector_index(cfg)
-        if new_chunks:
-            vi.build(new_chunks, force=False, log=print)
+        if all_chunks:
+            _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+            for _fname in ("faiss.index", "index_meta.json"):
+                _p = os.path.join(_index_dir, _fname)
+                if os.path.exists(_p):
+                    try:
+                        os.remove(_p)
+                    except OSError as _e:
+                        _log("WARN", f"could not remove stale index file {_fname}: {_e}")
+            vi.reset()
+            vi.build(all_chunks, force=True, log=print)
+        else:
+            _log("INFO", "rebuild-docs: no chunks — index unchanged")
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
