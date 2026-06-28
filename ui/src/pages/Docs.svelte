@@ -371,13 +371,24 @@
     <p>Сервис автоматически проверяет каждый документ при индексации. Результаты —
       <button class="link-btn" onclick={() => { appState.page = "config"; }}>Конфигурация</button>
       (бейджи в таблице документов) и <code>/ui/quality</code>.</p>
+    <h3>Бейджи качества</h3>
+    <table class="doc-table">
+      <thead><tr><th>Бейдж</th><th>Score</th><th>Значение</th></tr></thead>
+      <tbody>
+        <tr><td><span class="q-badge q-ok">OK</span></td><td>≥ 0.8</td><td>Документ нормально распарсен</td></tr>
+        <tr><td><span class="q-badge q-warn">WARN</span></td><td>0.5 – 0.8</td><td>Есть проблемы с качеством, но контент индексируется</td></tr>
+        <tr><td><span class="q-badge q-err">ERR</span></td><td>&lt; 0.5</td><td>Серьёзные проблемы с парсингом</td></tr>
+      </tbody>
+    </table>
+    <p>Score вычисляется как <code>1.0 - penalty</code>, где penalty зависит от severity: error = 0.15, warn = 0.05, info = 0.01 за каждое предупреждение.</p>
     <h3>Типы проверок</h3>
     <table class="doc-table">
       <thead><tr><th>Код</th><th>Описание</th><th>Уровень</th></tr></thead>
       <tbody>
-        <tr><td><code>empty_pages</code></td><td>Пустые страницы.</td><td>warn</td></tr>
+        <tr><td><code>empty_pages</code></td><td>Пустые страницы.</td><td>info</td></tr>
         <tr><td><code>low_text_density</code></td><td>Страницы с подозрительно низкой плотностью текста.</td><td>info</td></tr>
-        <tr><td><code>broken_table</code></td><td>Битые таблицы (пустые ячейки, несовпадение столбцов).</td><td>warn</td></tr>
+        <tr><td><code>broken_table</code></td><td>Битые таблицы (пустые ячейки &gt; 40%).</td><td>warn</td></tr>
+        <tr><td><code>mismatched_columns</code></td><td>Таблицы с разным количеством столбцов.</td><td>info</td></tr>
         <tr><td><code>formula_garbage</code></td><td>Мусор в формулах (неизвестные Unicode-блоки).</td><td>warn</td></tr>
         <tr><td><code>unreadable_chars</code></td><td>Высокий % нечитаемых символов.</td><td>warn</td></tr>
         <tr><td><code>duplicate_headers</code></td><td>Дублирующиеся заголовки/колонтитулы.</td><td>info</td></tr>
