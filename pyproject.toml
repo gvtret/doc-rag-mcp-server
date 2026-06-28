@@ -96,12 +96,15 @@ metrics = [
 # Unstructured (hi_res) — second-tier PDF fallback for the cascade
 # parser (pdf_backend: cascade). Heavy dependency (~2 GB); only
 # needed when cascade mode is enabled.
+# Note: unstructured[hi-res] doesn't properly declare pdfminer etc.
+# as dependencies, so we list them explicitly.
 unstructured = [
   "unstructured>=0.15",
   "pdfminer.six",
   "pi-heif",
   "unstructured-inference",
   "pdf2image",
+  "timm",
 ]
 
 
