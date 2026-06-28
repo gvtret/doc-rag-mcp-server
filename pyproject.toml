@@ -105,6 +105,8 @@ unstructured = [
   "unstructured-inference",
   "pdf2image",
   "timm",
+  "unstructured-pytesseract",
+  "pytesseract",
 ]
 
 

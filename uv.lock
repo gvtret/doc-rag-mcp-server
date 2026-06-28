@@ -919,11 +919,13 @@ unstructured = [
     { name = "pdf2image" },
     { name = "pdfminer-six" },
     { name = "pi-heif" },
+    { name = "pytesseract" },
     { name = "timm" },
     { name = "unstructured", version = "0.18.32", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "unstructured", version = "0.23.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "unstructured-inference", version = "1.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "unstructured-inference", version = "1.6.13", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "unstructured-pytesseract" },
 ]
 
 [package.metadata]
@@ -939,6 +941,7 @@ requires-dist = [
     { name = "pdfminer-six", marker = "extra == 'unstructured'" },
     { name = "pi-heif", marker = "extra == 'unstructured'" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20" },
+    { name = "pytesseract", marker = "extra == 'unstructured'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1" },
     { name = "python-docx", specifier = ">=1.1.0" },
@@ -954,6 +957,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'embeddings'", specifier = ">=4.0,<5.8" },
     { name = "unstructured", marker = "extra == 'unstructured'", specifier = ">=0.15" },
     { name = "unstructured-inference", marker = "extra == 'unstructured'" },
+    { name = "unstructured-pytesseract", marker = "extra == 'unstructured'" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.27" },
 ]
 provides-extras = ["server", "faiss", "embeddings", "dev", "metrics", "unstructured"]
@@ -3437,6 +3441,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pytesseract"
+version = "0.3.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/a6/7d679b83c285974a7cb94d739b461fa7e7a9b17a3abfd7bf6cbc5c2394b0/pytesseract-0.3.13.tar.gz", hash = "sha256:4bf5f880c99406f52a3cfc2633e42d9dc67615e69d8a509d74867d3baddb5db9", size = 17689, upload-time = "2024-08-16T02:33:56.762Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/33/8312d7ce74670c9d39a532b2c246a853861120486be9443eebf048043637/pytesseract-0.3.13-py3-none-any.whl", hash = "sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34", size = 14705, upload-time = "2024-08-16T02:36:10.09Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -5650,6 +5667,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2e/ce/1e58008b8416884edfa6d18d65b635cde892189512d2e7531f91553b34d0/unstructured_inference-1.6.13.tar.gz", hash = "sha256:4efa2f3f517370aa09166c669cdc1addee71531e95bfbec7e6e3be66be90c147", size = 50137, upload-time = "2026-06-11T22:27:33.146Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/c0/6598b1420605382e7ed879ff7e1d51e12cc7a82e46971c7a61c3740c77db/unstructured_inference-1.6.13-py3-none-any.whl", hash = "sha256:73b727260e4a43133276727c371b57f7d4d92c68e8a7529a28e9576755356524", size = 57451, upload-time = "2026-06-11T22:27:31.91Z" },
+]
+
+[[package]]
+name = "unstructured-pytesseract"
+version = "0.3.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/b1/4b3a976b76549f22c3f5493a622603617cbe08804402978e1dac9c387997/unstructured.pytesseract-0.3.15.tar.gz", hash = "sha256:4b81bc76cfff4e2ef37b04863f0e48bd66184c0b39c3b2b4e017483bca1a7394", size = 15703, upload-time = "2025-03-05T00:59:17.516Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/6d/adb955ecf60811a3735d508974bbb5358e7745b635dc001329267529c6f2/unstructured.pytesseract-0.3.15-py3-none-any.whl", hash = "sha256:a3f505c5efb7ff9f10379051a7dd6aa624b3be6b0f023ed6767cc80d0b1613d1", size = 14992, upload-time = "2025-03-05T00:59:15.962Z" },
 ]
 
 [[package]]
