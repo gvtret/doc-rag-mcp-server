@@ -429,7 +429,57 @@ def _ingest_sources(
         except Exception as e:
             _log("ERROR", f"failed: {rel_src}: {e}")
 
+    # Post-process chunks to improve search quality
+    original_count = len(all_chunks)
+    all_chunks = _postprocess_chunks(all_chunks)
+    if len(all_chunks) < original_count:
+        _log("INFO", f"postprocess: removed {original_count - len(all_chunks)} low-quality/noise chunks")
+
     return manifest_documents, all_chunks, processed_sources
+
+
+def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) -> list[dict[str, Any]]:
+    """Post-process chunks to improve search quality.
+
+    - Remove chunks with too little useful text
+    - Clean unreadable characters (OCR artifacts)
+    - Remove duplicate header/footer patterns
+    """
+    if not chunks:
+        return chunks
+
+    result: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+
+    for chunk in chunks:
+        text = chunk.get("text", "")
+
+        # Skip chunks with too little content
+        if len(text.strip()) < min_text_len:
+            continue
+
+        # Clean unreadable characters (OCR artifacts)
+        cleaned = re.sub(r'[\ufffd\x00-\x08\x0e-\x1f]', '', text)
+        cleaned = re.sub(r'[^\w\s.,;:!?()\-+/=<>%§°±×÷†‡∞≈≠≤≥\[\]{}|/\\\"\'`~@#&*^]', '', cleaned)
+
+        # Collapse multiple spaces/newlines
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+
+        if len(cleaned) < min_text_len:
+            continue
+
+        # Skip duplicate texts (same content appears in multiple chunks)
+        text_hash = hashlib.md5(cleaned.encode()).hexdigest()
+        if text_hash in seen_texts:
+            continue
+        seen_texts.add(text_hash)
+
+        chunk = dict(chunk)
+        chunk["text"] = cleaned
+        result.append(chunk)
+
+    return result
 
 
 def _load_existing_manifest(manifest_path: str) -> dict:
