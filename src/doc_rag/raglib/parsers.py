@@ -332,7 +332,6 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
 
                 tmp_blocks = backend_blocks
                 report = run_quality_checks("tmp", tmp_blocks)
-                print(f"[doc-rag][WARN] quality cascade: Docling score={report.score:.2f}, warnings={len(report.warnings)}", file=os.sys.stderr)
                 if report.score < quality_threshold:
                     print(f"[doc-rag][WARN] quality cascade: score {report.score:.2f} < {quality_threshold}, trying Unstructured on {os.path.basename(path)}", file=os.sys.stderr)
                     try:
@@ -346,7 +345,7 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
                             raw_stats = u_stats
                             source_backend = "unstructured"
                         else:
-                            print(f"[doc-rag][WARN] quality cascade: Unstructured score {u_report.score:.2f} <= {report.score:.2f}, keeping Docling", file=os.sys.stderr)
+                            print(f"[doc-rag][INFO] quality cascade: Unstructured score {u_report.score:.2f} <= {report.score:.2f}, keeping Docling", file=os.sys.stderr)
                     except RuntimeError:
                         print("[doc-rag][WARN] quality cascade: Unstructured not installed, keeping Docling", file=os.sys.stderr)
             except Exception as e:
