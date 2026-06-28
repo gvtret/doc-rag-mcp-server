@@ -437,6 +437,9 @@ def _docling_stats(doc: Any, blocks: list[Block], result: Any = None) -> dict[st
 def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     """Parse a PDF or DOCX through Docling.
 
+    For large PDFs (>5MB or >500 pages), splits into chunks of 100 pages
+    to avoid OOM. Processes each chunk separately and merges results.
+
     Returns:
         (text, blocks, stats)
 
@@ -453,6 +456,34 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
         RuntimeError: if the `[docling]` extra is not installed, with an
             actionable installation hint.
     """
+    import os
+
+    # Check if file exists and is large enough to warrant chunking
+    try:
+        file_size_mb = os.path.getsize(path) / (1024 * 1024)
+    except (OSError, TypeError):
+        file_size_mb = 0
+
+    # Check page count for large files
+    page_count = 0
+    if file_size_mb > 5:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(path)
+            page_count = len(reader.pages)
+        except Exception:
+            pass
+
+    # If large (>5MB or >500 pages), process in chunks
+    if file_size_mb > 5 or page_count > 500:
+        return _parse_pdf_chunked(path, max_pages_per_chunk=100)
+
+    # Normal single-pass processing
+    return _parse_pdf_single(path)
+
+
+def _parse_pdf_single(path: str) -> tuple[str, list[Block], dict[str, Any]]:
+    """Parse a PDF in a single pass."""
     converter = _get_converter()
     result = converter.convert(path)
     doc = getattr(result, "document", result)
@@ -473,3 +504,82 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
 
     stats = _docling_stats(doc, blocks, result=result)
     return text, blocks, stats
+
+
+def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, list[Block], dict[str, Any]]:
+    """Parse a large PDF by splitting into page chunks.
+
+    Each chunk is processed separately to avoid OOM. Results are merged.
+    """
+    import io
+    import os
+    import tempfile
+
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(path)
+    total_pages = len(reader.pages)
+    all_text_parts: list[str] = []
+    all_blocks: list[Block] = []
+    total_ocr_pages = 0
+    total_ocr_scores: list[float] = []
+
+    chunk_start = 0
+    chunk_idx = 0
+    while chunk_start < total_pages:
+        chunk_end = min(chunk_start + max_pages_per_chunk, total_pages)
+        chunk_idx += 1
+
+        print(
+            f"[doc-rag][INFO] chunk {chunk_idx}: pages {chunk_start + 1}-{chunk_end}/{total_pages}",
+            file=os.sys.stderr,
+        )
+
+        # Create a temporary PDF with just these pages
+        writer = PdfWriter()
+        for i in range(chunk_start, chunk_end):
+            writer.add_page(reader.pages[i])
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp_path = tmp.name
+            writer.write(tmp)
+
+        try:
+            chunk_text, chunk_blocks, chunk_stats = _parse_pdf_single(tmp_path)
+
+            all_text_parts.append(chunk_text)
+            # Re-number pages in blocks to global page numbers
+            for b in chunk_blocks:
+                if b.page is not None:
+                    b.page = b.page + chunk_start
+            all_blocks.extend(chunk_blocks)
+
+            # Accumulate OCR stats
+            ocr_pages = chunk_stats.get("ocr_pages", [])
+            ocr_scores = chunk_stats.get("ocr_mean_score", 0)
+            total_ocr_pages += len(ocr_pages)
+            if ocr_scores:
+                total_ocr_scores.extend([ocr_scores] * len(ocr_pages))
+
+        finally:
+            os.unlink(tmp_path)
+
+        chunk_start = chunk_end
+
+    text = "\n\n".join(all_text_parts)
+
+    # Build merged stats
+    block_counts: dict[str, int] = {}
+    for b in all_blocks:
+        block_counts[b.type] = block_counts.get(b.type, 0) + 1
+
+    stats: dict[str, Any] = {
+        "pages": total_pages,
+        "blocks_by_type": block_counts,
+    }
+    if total_ocr_pages:
+        stats["ocr_pages_count"] = total_ocr_pages
+        stats["ocr_pages"] = list(range(1, total_pages + 1))
+        stats["ocr_mean_score"] = round(sum(total_ocr_scores) / len(total_ocr_scores), 4) if total_ocr_scores else 0
+
+    return text, all_blocks, stats
