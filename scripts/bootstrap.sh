@@ -80,6 +80,17 @@ if [[ "${ans_metrics}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   EXTRA_ARGS+=("--extra" "metrics")
 fi
 
+# Unstructured — second-tier PDF fallback for quality cascade
+if [[ "${NONINTERACTIVE}" == "1" ]]; then
+  ans_unstructured="${DOC_RAG_BOOTSTRAP_UNSTRUCTURED:-N}"
+else
+  read -r -p "[doc-rag] Install Unstructured (PDF quality cascade fallback)? [y/N] " ans_unstructured || true
+  ans_unstructured="${ans_unstructured:-N}"
+fi
+if [[ "${ans_unstructured}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+  EXTRA_ARGS+=("--extra" "unstructured")
+fi
+
 # --- Sync ---------------------------------------------------------------------
 SYNC_ARGS=()
 if [[ "${FROZEN}" == "1" ]]; then

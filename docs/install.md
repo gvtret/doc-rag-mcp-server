@@ -52,6 +52,7 @@ Extras the bootstrap exposes:
 - `embeddings` — `torch` + `sentence-transformers` (CPU; default: Y)
 - `dev` — `pytest`, `pytest-cov`, `httpx`, `ruff` (default: N)
 - `metrics` — `prometheus-client` (default: N)
+- `unstructured` — PDF quality cascade fallback (default: N). When enabled, if Docling scores below `parsing.quality_fallback_threshold` (0.5), automatically retries with Unstructured.
 
 `server` (FastAPI + Uvicorn + python-multipart) is always installed —
 nothing else makes sense without the HTTP layer.
@@ -64,6 +65,7 @@ DOC_RAG_BOOTSTRAP_FAISS=Y \
 DOC_RAG_BOOTSTRAP_EMBEDDINGS=Y \
 DOC_RAG_BOOTSTRAP_DEV=N \
 DOC_RAG_BOOTSTRAP_METRICS=N \
+DOC_RAG_BOOTSTRAP_UNSTRUCTURED=N \
 DOC_RAG_BOOTSTRAP_INGEST=N \
 bash scripts/bootstrap.sh
 ```
@@ -78,6 +80,7 @@ uv sync --frozen --extra server --extra faiss --extra embeddings --extra dev
 ```
 
 Add `--extra metrics` for the Prometheus exporter.
+Add `--extra unstructured` for PDF quality cascade fallback.
 
 Run anything with the venv via `uv run`:
 
@@ -185,6 +188,15 @@ chunking:
   target_tokens: 512
   overlap_tokens: 64
 ```
+
+### PDF quality cascade
+
+```yaml
+parsing:
+  quality_fallback_threshold: 0.5  # 0 = disabled
+```
+
+When Docling scores below this threshold, automatically retries with Unstructured (if installed) and keeps the better result.
 
 ### Source archiving
 

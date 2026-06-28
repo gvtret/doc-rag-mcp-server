@@ -97,7 +97,11 @@ metrics = [
 # parser (pdf_backend: cascade). Heavy dependency (~2 GB); only
 # needed when cascade mode is enabled.
 unstructured = [
-  "unstructured[hi-res]>=0.15",
+  "unstructured>=0.15",
+  "pdfminer.six",
+  "pi-heif",
+  "unstructured-inference",
+  "pdf2image",
 ]
 
 
