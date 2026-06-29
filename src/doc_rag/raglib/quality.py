@@ -114,6 +114,33 @@ def _has_duplicate_headers(blocks: list[Block], threshold: int = 3) -> list[str]
     return dupes
 
 
+def remove_duplicate_headers(blocks: list[Block], threshold: int = 3) -> list[Block]:
+    """Remove blocks that are duplicate headers/footers (repeated on many pages).
+
+    This improves quality scores by eliminating repeated text that would
+    otherwise pollute the index and lower the quality score.
+    """
+    dupes = set(_has_duplicate_headers(blocks, threshold))
+    if not dupes:
+        return blocks
+
+    cleaned: list[Block] = []
+    removed = 0
+    for b in blocks:
+        text_lower = b.text.strip().lower()
+        if text_lower in dupes and b.type in ("heading", "paragraph"):
+            removed += 1
+            continue
+        cleaned.append(b)
+
+    if removed:
+        import logging
+        logging.getLogger("doc_rag").warning(
+            "quality: removed %d duplicate header/footer blocks", removed
+        )
+    return cleaned
+
+
 def _low_density_pages(by_page: dict[int, list[Block]], threshold: int = 5) -> list[int]:
     """Pages with suspiciously few total characters."""
     low: list[int] = []

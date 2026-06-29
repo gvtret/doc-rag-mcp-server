@@ -360,12 +360,18 @@ def _ingest_sources(
 
             blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
-            quality_report = None
+            # Clean blocks before quality check: remove duplicate headers/footers
+            cleaned_blocks = blocks
             if blocks:
+                from doc_rag.raglib.quality import remove_duplicate_headers
+                cleaned_blocks = remove_duplicate_headers(blocks)
+
+            quality_report = None
+            if cleaned_blocks:
                 from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
 
                 quality_dir = os.path.join(root, "build", "quality")
-                quality_report = run_quality_checks(doc_id, blocks)
+                quality_report = run_quality_checks(doc_id, cleaned_blocks)
                 persist_quality_report(quality_dir, quality_report)
 
             chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
@@ -865,12 +871,18 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
 
             blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
-            quality_report = None
+            # Clean blocks before quality check: remove duplicate headers/footers
+            cleaned_blocks = blocks
             if blocks:
+                from doc_rag.raglib.quality import remove_duplicate_headers
+                cleaned_blocks = remove_duplicate_headers(blocks)
+
+            quality_report = None
+            if cleaned_blocks:
                 from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
 
                 quality_dir = os.path.join(root, "build", "quality")
-                quality_report = run_quality_checks(doc_id, blocks)
+                quality_report = run_quality_checks(doc_id, cleaned_blocks)
                 persist_quality_report(quality_dir, quality_report)
 
             chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
@@ -1137,12 +1149,18 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
 
             blocks_rel = _persist_blocks(_blocks_dir(cfg), root, doc_id, blocks)
 
-            quality_report = None
+            # Clean blocks before quality check: remove duplicate headers/footers
+            cleaned_blocks = blocks
             if blocks:
+                from doc_rag.raglib.quality import remove_duplicate_headers
+                cleaned_blocks = remove_duplicate_headers(blocks)
+
+            quality_report = None
+            if cleaned_blocks:
                 from doc_rag.raglib.quality import persist_quality_report, run_quality_checks
 
                 quality_dir = os.path.join(root, "build", "quality")
-                quality_report = run_quality_checks(doc_id, blocks)
+                quality_report = run_quality_checks(doc_id, cleaned_blocks)
                 persist_quality_report(quality_dir, quality_report)
 
             chunking_strategy = (cfg.get("chunking") or {}).get("strategy", "fixed")
