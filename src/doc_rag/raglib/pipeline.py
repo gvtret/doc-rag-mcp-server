@@ -441,12 +441,21 @@ def _ingest_sources(
 def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) -> list[dict[str, Any]]:
     """Post-process chunks to improve search quality.
 
+    - Remove duplicate header/footer patterns
     - Remove chunks with too little useful text
     - Clean unreadable characters (OCR artifacts)
-    - Remove duplicate header/footer patterns
+    - Deduplicate identical chunks
     """
     if not chunks:
         return chunks
+
+    # Phase 1: Detect duplicate headers/footers (text repeated on 3+ chunks)
+    header_counts: dict[str, int] = {}
+    for chunk in chunks:
+        text = chunk.get("text", "").strip()
+        if 3 <= len(text) <= 100:
+            header_counts[text] = header_counts.get(text, 0) + 1
+    dupes = {text for text, count in header_counts.items() if count >= 3}
 
     result: list[dict[str, Any]] = []
     seen_texts: set[str] = set()
@@ -454,7 +463,13 @@ def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) ->
     for chunk in chunks:
         text = chunk.get("text", "")
 
-        # Skip chunks with too little content
+        # Remove duplicate headers/footers from chunk text
+        if dupes:
+            lines = text.split("\n")
+            lines = [line for line in lines if line.strip() not in dupes]
+            text = "\n".join(lines)
+
+        # Skip chunks with too little content after header removal
         if len(text.strip()) < min_text_len:
             continue
 
@@ -478,6 +493,9 @@ def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) ->
         chunk = dict(chunk)
         chunk["text"] = cleaned
         result.append(chunk)
+
+    if dupes:
+        _log("INFO", f"postprocess: removed {len(dupes)} duplicate header/footer patterns")
 
     return result
 
