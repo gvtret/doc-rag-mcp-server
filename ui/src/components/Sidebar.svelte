@@ -1,15 +1,16 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { t } from "../lib/i18n";
   import type { PageKey } from "../lib/types";
 
-  type MenuItem = { key: PageKey; label: string; hint?: string };
+  type MenuItem = { key: PageKey; labelKey: string; hintKey: string };
 
-  const items: MenuItem[] = [
-    { key: "documents", label: "Документы", hint: "Индексированный корпус" },
-    { key: "config", label: "Конфигурация", hint: "Парсинг, чанки, эмбеддинги" },
-    { key: "manage", label: "Управление", hint: "Загрузка, пересборка, аварийные" },
-    { key: "logs", label: "Логи", hint: "Лог загрузки, HTTP лог" },
-    { key: "docs", label: "Документация", hint: "API, параметры, архитектура" },
+  const itemDefs: MenuItem[] = [
+    { key: "documents", labelKey: "sidebar.documents", hintKey: "sidebar.documents_hint" },
+    { key: "config", labelKey: "sidebar.config", hintKey: "sidebar.config_hint" },
+    { key: "manage", labelKey: "sidebar.manage", hintKey: "sidebar.manage_hint" },
+    { key: "logs", labelKey: "sidebar.logs", hintKey: "sidebar.logs_hint" },
+    { key: "docs", labelKey: "sidebar.docs", hintKey: "sidebar.docs_hint" },
   ];
 
   function select(key: PageKey) {
@@ -24,21 +25,19 @@
   </div>
   <nav>
     <ul>
-      {#each items as item (item.key)}
+      {#each itemDefs as item (item.key)}
         <li>
           <button
             type="button"
             class="nav-btn"
             class:active={appState.page === item.key}
             onclick={() => select(item.key)}
-            title={item.hint}
+            title={t(item.hintKey)}
           >
             <span class="caret">{appState.page === item.key ? ">" : " "}</span>
-            <span class="nav-label">{item.label}</span>
+            <span class="nav-label">{t(item.labelKey)}</span>
           </button>
-          {#if item.hint}
-            <div class="nav-hint">{item.hint}</div>
-          {/if}
+          <div class="nav-hint">{t(item.hintKey)}</div>
         </li>
       {/each}
     </ul>
@@ -54,8 +53,6 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    /* Independent scroll so the global footer never gets pushed off
-       by a hypothetical long sidebar. */
     overflow-y: auto;
     border-right: 1px solid var(--border-subtle);
   }

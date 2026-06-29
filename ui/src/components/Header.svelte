@@ -1,24 +1,27 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { t } from "../lib/i18n";
+  import LangSwitcher from "./LangSwitcher.svelte";
   import type { PageKey } from "../lib/types";
 
-  const titles: Record<PageKey, string> = {
-    documents: "Документы",
-    config: "Конфигурация",
-    manage: "Управление",
-    logs: "Логи",
-    docs: "Документация",
+  const titleKeys: Record<PageKey, string> = {
+    documents: "sidebar.documents",
+    config: "sidebar.config",
+    manage: "sidebar.manage",
+    logs: "sidebar.logs",
+    docs: "sidebar.docs",
   };
 </script>
 
 <header class="page-header">
   <h1>
     <span class="prompt">//</span>
-    {titles[appState.page]}
+    {t(titleKeys[appState.page])}
   </h1>
   <div class="submenu-slot" aria-label="Подменю страницы">
     <!-- v2.2.2+: per-page submenu lands here -->
   </div>
+  <LangSwitcher />
 </header>
 
 <style>

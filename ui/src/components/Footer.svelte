@@ -1,31 +1,32 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { t } from "../lib/i18n";
 
   const health = $derived.by(() => {
     const h = appState.health;
     if (!h) return { label: "?", level: "unknown" as const };
-    if (h.ready) return { label: "ready", level: "ok" as const };
-    if (h.has_manifest) return { label: "degraded", level: "warn" as const };
-    return { label: "down", level: "error" as const };
+    if (h.ready) return { label: t("health.ready"), level: "ok" as const };
+    if (h.has_manifest) return { label: t("health.degraded"), level: "warn" as const };
+    return { label: t("health.down"), level: "error" as const };
   });
 
   const searchMode = $derived.by(() => {
     const idx = appState.status?.indexed;
     if (!idx) return "?";
-    if (idx.semantic_search_ready) return "semantic";
-    if (idx.lexical_search_ready) return "lexical*";
-    return "none";
+    if (idx.semantic_search_ready) return t("search.semantic");
+    if (idx.lexical_search_ready) return t("search.lexical");
+    return t("search.off");
   });
 
   const currentOp = $derived.by(() => {
     const s = appState.status;
-    if (!s?.running) return { label: "idle", detail: "" };
+    if (!s?.running) return { label: t("footer.idle"), detail: "" };
     const parts: string[] = [];
     if (s.current_doc) parts.push(s.current_doc);
     if (typeof s.docs_done === "number" && s.docs_total != null) {
       parts.push(`${s.docs_done}/${s.docs_total}`);
     }
-    return { label: s.job || "busy", detail: parts.join(" · ") };
+    return { label: s.job || t("footer.running"), detail: parts.join(" · ") };
   });
 
   const eta = $derived(appState.status?.eta_human ?? null);
@@ -63,17 +64,17 @@
 <footer class="page-footer">
   <span class="cell">
     <span class="dot dot-{health.level}" aria-hidden="true"></span>
-    <span class="k">HEALTH</span>
+    <span class="k">{t("footer.health")}</span>
     <span class="v">{health.label}</span>
   </span>
 
   <span class="cell">
-    <span class="k">SEARCH</span>
+    <span class="k">{t("footer.search")}</span>
     <span class="v">{searchMode}</span>
   </span>
 
   <span class="cell">
-    <span class="k">JOB</span>
+    <span class="k">{t("footer.job")}</span>
     <span class="v {appState.status?.running ? 'running' : ''}">
       {currentOp.label}
     </span>
@@ -91,7 +92,7 @@
 
   {#if lastOp}
     <span class="cell">
-      <span class="k">LAST</span>
+      <span class="k">{t("footer.last")}</span>
       <span class="v">{lastOp.name}</span>
       {#if lastOp.ok !== null}
         <span class="dot dot-{lastOp.ok ? 'ok' : 'error'}"></span>
@@ -103,7 +104,7 @@
   {/if}
 
   <span class="cell">
-    <span class="k">DOCS</span>
+    <span class="k">{t("footer.docs")}</span>
     <span class="v">{docCount ?? "—"}</span>
   </span>
 
