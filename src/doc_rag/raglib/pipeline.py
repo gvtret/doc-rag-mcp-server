@@ -964,13 +964,16 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         all_chunks = _load_existing_chunks(chunks_path)
     original_chunk_count = len(all_chunks)
 
-    # Phase 3: Dedup
+    # Phase 3: Dedup by doc_id AND sha256
     seen_ids: set[str] = set()
+    seen_hashes: set[str] = set()
     deduped_docs: list[dict] = []
     for d in reversed(all_docs):
         did = d.get("doc_id", "")
-        if did and did not in seen_ids:
+        h = d.get("sha256", "")
+        if did and did not in seen_ids and h not in seen_hashes:
             seen_ids.add(did)
+            seen_hashes.add(h)
             deduped_docs.append(d)
     if len(deduped_docs) != len(all_docs):
         _log("WARN", f"rebuild: removed {len(all_docs) - len(deduped_docs)} duplicate doc entries")
@@ -1239,12 +1242,15 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
     all_docs = kept_docs + new_docs
 
-    _seen: set[str] = set()
+    _seen_ids: set[str] = set()
+    _seen_hashes: set[str] = set()
     _deduped: list[dict] = []
     for d in reversed(all_docs):
         _did = d.get("doc_id", "")
-        if _did and _did not in _seen:
-            _seen.add(_did)
+        _h = d.get("sha256", "")
+        if _did and _did not in _seen_ids and _h not in _seen_hashes:
+            _seen_ids.add(_did)
+            _seen_hashes.add(_h)
             _deduped.append(d)
     if len(_deduped) != len(all_docs):
         _log("WARN", f"rebuild-docs: removed {len(all_docs) - len(_deduped)} duplicate doc entries")
