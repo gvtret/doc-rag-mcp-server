@@ -69,6 +69,8 @@ _TOOL_SEM = asyncio.Semaphore(int(os.environ.get("DOC_RAG_MAX_CONCURRENCY", "4")
 
 _RL_LOCK = asyncio.Lock()
 _RL_STATE: dict[str, tuple[float, float]] = {}
+_RL_LAST_CLEANUP: float = 0.0
+_RL_TTL: float = 300.0  # Evict entries older than 5 minutes
 
 
 def _rate_limit_params() -> tuple[float, float]:
@@ -85,13 +87,21 @@ def _rate_limit_params() -> tuple[float, float]:
 
 
 async def _rate_limit_allow(key: str) -> bool:
-    """Simple token bucket per key (usually client IP)."""
+    """Simple token bucket per key (usually client IP) with TTL eviction."""
+    global _RL_LAST_CLEANUP
     rps, burst = _rate_limit_params()
     if rps <= 0:
         return True
 
     now = time.time()
     async with _RL_LOCK:
+        # Periodic cleanup of stale entries
+        if now - _RL_LAST_CLEANUP > _RL_TTL:
+            stale = [k for k, (_, last) in _RL_STATE.items() if now - last > _RL_TTL]
+            for k in stale:
+                del _RL_STATE[k]
+            _RL_LAST_CLEANUP = now
+
         tokens, last = _RL_STATE.get(key, (burst, now))
         # Refill
         tokens = min(burst, tokens + (now - last) * rps)
