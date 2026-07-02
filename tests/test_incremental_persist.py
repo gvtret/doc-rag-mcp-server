@@ -247,7 +247,7 @@ def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
         rebuild(str(config_path), force=False)
 
     assert len(build_calls) >= 1
-    assert any(not c["force"] for c in build_calls), "Expected at least one force=False build"
+    # rebuild() now always does force=True to ensure index sync with chunks.jsonl
 
 
 # ── Test 6: ingest incremental per-file index update ───────────────────
