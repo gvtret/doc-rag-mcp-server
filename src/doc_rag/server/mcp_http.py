@@ -56,6 +56,7 @@ from doc_rag.server.logging_setup import (
     set_request_id,
 )
 from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
+from doc_rag.raglib.utils import ensure_dir
 
 # Configure structured logging on import. Idempotent; honours
 # DOC_RAG_LOG_LEVEL and DOC_RAG_LOG_FORMAT env vars.
@@ -109,14 +110,15 @@ def _api_key_required() -> str | None:
 
 
 def _check_api_key(request: Request) -> bool:
+    import hmac
     required = _api_key_required()
     if not required:
         return True
     hdr = (request.headers.get("authorization") or "").strip()
     if hdr.lower().startswith("bearer "):
-        return hdr.split(" ", 1)[1].strip() == required
+        return hmac.compare_digest(hdr.split(" ", 1)[1].strip(), required)
     xk = (request.headers.get("x-api-key") or "").strip()
-    return xk == required
+    return hmac.compare_digest(xk, required)
 
 
 def _root_dir() -> Path:
@@ -1801,49 +1803,6 @@ def _ocr_badge_html(coverage: Any) -> str:
     return f'<span class="ocr-badge" title="{html.escape(title, quote=True)}">OCR</span>'
 
 
-def _quality_badge_html(doc_id: str, quality_map: dict[str, Any]) -> str:
-    """Inline quality badge (OK/WARN/ERR) for the document table."""
-    q = quality_map.get(doc_id)
-    if not q or not isinstance(q, dict):
-        return ""
-    score = q.get("score")
-    warnings = q.get("warning_count", 0)
-    if score is None:
-        return ""
-    score_f = float(score)
-    if score_f >= 0.9:
-        color = "#2e7d32"
-        label = "OK"
-    elif score_f >= 0.7:
-        color = "#f57f17"
-        label = "WARN"
-    else:
-        color = "#c62828"
-        label = "ERR"
-    title = f"Score: {score_f:.2f}, warnings: {warnings}"
-    return f'<span class="quality-badge" style="color:{color};font-weight:600" title="{html.escape(title, quote=True)}">{label}</span>'
-
-
-def _load_quality_map() -> dict[str, Any]:
-    """Load quality summary and return doc_id → entry mapping."""
-    try:
-        root = os.environ.get("DOC_RAG_ROOT", "")
-        if not root:
-            root = str(_config_path().parent.parent)
-        summary_path = os.path.join(root, "build", "quality", "summary.json")
-        if os.path.exists(summary_path):
-            with open(summary_path, encoding="utf-8") as f:
-                qdata = json.load(f)
-            result: dict[str, Any] = {}
-            for doc_entry in qdata.get("documents", []):
-                if isinstance(doc_entry, dict):
-                    result[doc_entry.get("doc_id", "")] = doc_entry
-            return result
-    except Exception:
-        pass
-    return {}
-
-
 def _load_quality_summary() -> dict[str, Any]:
     """Load full quality summary dict for the /ui/quality endpoint."""
     try:
@@ -2859,8 +2818,10 @@ async def ui_document_preview(request: Request, doc_id: str = "", key: str = "")
 
 
 @app.get("/api/v1/download")
-async def api_v1_download(request: Request, filename: str = "") -> Response:
+async def api_v1_download(request: Request, filename: str = "", key: str = "") -> Response:
     """Download a source document by filename."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not filename:
         return JSONResponse({"error": "требуется имя файла"}, status_code=400)
     root = _root_dir()
