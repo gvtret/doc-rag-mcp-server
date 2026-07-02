@@ -11,7 +11,7 @@
   "health.degraded": "деградация",
   "health.down": "недоступен",
   "search.semantic": "семантический",
-  "search.lexical": "лекарственный",
+  "search.lexical": "лексический",
   "search.off": "выкл",
   "sidebar.documents": "Документы",
   "sidebar.documents_hint": "Индексированный корпус",
