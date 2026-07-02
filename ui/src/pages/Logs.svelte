@@ -1,5 +1,6 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { t } from "../lib/i18n";
 
   type Tab = "ingest" | "http";
   let tab = $state<Tab>("ingest");
@@ -47,7 +48,7 @@
         class:active={tab === "ingest"}
         onclick={() => (tab = "ingest")}
       >
-        Лог загрузки
+        {t("logs.ingest_log")}
       </button>
       <button
         type="button"
@@ -55,13 +56,13 @@
         class:active={tab === "http"}
         onclick={() => (tab = "http")}
       >
-        HTTP лог
+        {t("logs.http_log")}
       </button>
     </div>
 
     <div class="controls">
       <label class="ctrl-label">
-        Уровень:
+        {t("logs.level")}
         <select bind:value={levelFilter}>
           {#each levels as lv (lv)}
             <option value={lv}>{lv}</option>
@@ -69,7 +70,7 @@
         </select>
       </label>
       <label class="ctrl-label">
-        Строк:
+        {t("logs.lines")}
         <select bind:value={lineCount}>
           <option value={50}>50</option>
           <option value={100}>100</option>
@@ -83,14 +84,14 @@
         class:active-btn={paused}
         onclick={() => (paused = !paused)}
       >
-        {paused ? "▶ Продолжить" : "⏸ Пауза"}
+        {paused ? t("logs.resume") : t("logs.pause")}
       </button>
     </div>
   </div>
 
   <div class="log-container" bind:this={container}>
     {#if activeLines.length === 0}
-      <p class="muted empty">Нет строк для отображения.</p>
+      <p class="muted empty">{t("logs.no_lines")}</p>
     {:else}
       {#each activeLines as line, i (i)}
         <div class="line {lineClass(line)}">{line}</div>
@@ -99,12 +100,12 @@
   </div>
 
   <div class="status-bar mono">
-    <span class="muted">строк: {activeLines.length}</span>
+    <span class="muted">{t("logs.lines")} {activeLines.length}</span>
     <span class="sep">·</span>
-    <span class="muted">источник: {tab === "ingest" ? "log_tail" : "http_log_tail"}</span>
+    <span class="muted">{t("logs.source")} {tab === "ingest" ? "log_tail" : "http_log_tail"}</span>
     {#if paused}
       <span class="sep">·</span>
-      <span class="warn-text">пауза</span>
+      <span class="warn-text">{t("logs.pause")}</span>
     {/if}
   </div>
 </section>
@@ -137,7 +138,8 @@
     border-radius: 3px 3px 0 0;
     padding: 6px 14px;
     font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
     cursor: pointer;
   }
   .tab:hover {
@@ -161,7 +163,8 @@
     gap: 4px;
     font-size: 0.8rem;
     color: var(--text-muted);
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
   }
   .ctrl-label select {
     background: var(--bg-elevated);
@@ -179,7 +182,8 @@
     border-radius: 3px;
     padding: 4px 10px;
     font-size: 0.8rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
     cursor: pointer;
   }
   .btn:hover {
@@ -197,7 +201,8 @@
     border: 1px solid var(--border-strong);
     border-radius: 3px;
     padding: 8px 12px;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+      Menlo, Consolas, monospace;
     font-size: 0.78rem;
     line-height: 1.5;
   }

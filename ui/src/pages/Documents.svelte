@@ -1,5 +1,6 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
+  import { t } from "../lib/i18n";
   import {
     fetchQuality,
     fetchAllDocuments,
@@ -65,7 +66,6 @@
 
   async function doRebuildSelected() {
     if (busy || running || selected.size === 0) return;
-    // Collect doc_ids from indexed docs AND filenames from pending docs
     const selectedDocIds: string[] = [];
     const selectedFilenames: string[] = [];
     for (const key of selected) {
@@ -79,12 +79,7 @@
     }
     const total = selectedDocIds.length + selectedFilenames.length;
     if (total === 0) return;
-    if (
-      !confirm(
-        `Пересобрать ${total} документ(ов)? Их текущий индекс будет перезаписан.`,
-      )
-    )
-      return;
+    if (!confirm(t("documents.rebuild_confirm", { n: total }))) return;
     busy = true;
     banner = null;
     try {
@@ -92,11 +87,11 @@
       if (r.ok) {
         banner = {
           tone: "info",
-          text: r.message ?? `Пересборка запущена для ${total} документ(ов).`,
+          text: r.message ?? t("documents.rebuild_started", { n: total }),
         };
         selected = new Set();
       } else {
-        banner = { tone: "err", text: r.error ?? "Ошибка" };
+        banner = { tone: "err", text: r.error ?? t("manage.error") };
       }
     } catch (e) {
       banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
@@ -119,41 +114,41 @@
 
   {#if indexed?.error}
     <p class="error">
-      Не удалось прочитать индекс: <code>{indexed.error}</code>
+      {t("documents.error_read_index")} <code>{indexed.error}</code>
     </p>
   {:else if loading}
-    <p class="muted">Загрузка…</p>
+    <p class="muted">{t("documents.loading")}</p>
   {:else}
     <div class="summary mono">
-      <span>в индексе: <strong class="ok">{allDocs.length}</strong></span>
+      <span>{t("documents.indexed")} <strong class="ok">{allDocs.length}</strong></span>
       <span class="sep">·</span>
-      <span>в очереди: <strong class={pendingDocs.length > 0 ? "warn" : ""}>{pendingDocs.length}</strong></span>
+      <span>{t("documents.pending")} <strong class={pendingDocs.length > 0 ? "warn" : ""}>{pendingDocs.length}</strong></span>
       <span class="sep">·</span>
       <span>
-        лекс.: <strong class={indexed?.lexical_search_ready ? "ok" : "warn"}>
-          {indexed?.lexical_search_ready ? "активен" : "выкл"}
+        {t("documents.lexical")} <strong class={indexed?.lexical_search_ready ? "ok" : "warn"}>
+          {indexed?.lexical_search_ready ? t("documents.active") : t("search.off")}
         </strong>
       </span>
       <span class="sep">·</span>
       <span>
-        сем.: <strong class={indexed?.semantic_search_ready ? "ok" : "warn"}>
-          {indexed?.semantic_search_ready ? "активен" : "выкл"}
+        {t("documents.semantic")} <strong class={indexed?.semantic_search_ready ? "ok" : "warn"}>
+          {indexed?.semantic_search_ready ? t("documents.active") : t("search.off")}
         </strong>
       </span>
       {#if running}
         <span class="sep">·</span>
-        <span class="warn">ingest/rebuild…</span>
+        <span class="warn">{t("footer.running")}…</span>
       {/if}
       {#if indexed?.pipeline_version}
         <span class="sep">·</span>
-        <span class="muted">пайплайн {indexed.pipeline_version}</span>
+        <span class="muted">{t("documents.pipeline")} {indexed.pipeline_version}</span>
       {/if}
     </div>
 
     {#if rebuildProgress}
       <div class="progress-bar">
         <div class="progress-info mono">
-          <span>Обработка: <strong>{rebuildProgress.current_doc ?? "…"}</strong></span>
+          <span>{t("manage.info_running")} <strong>{rebuildProgress.current_doc ?? "…"}</strong></span>
           <span>{rebuildProgress.docs_done} / {rebuildProgress.docs_total ?? "?"}</span>
         </div>
         {#if rebuildProgress.docs_total && rebuildProgress.docs_total > 0}
@@ -168,21 +163,21 @@
     {/if}
 
     {#if allDocs.length === 0 && pendingDocs.length === 0}
-      <p class="muted">Пока ни одного документа.</p>
+      <p class="muted">{t("documents.no_documents")}</p>
     {:else}
       {#if selected.size > 0}
         <div class="toolbar">
-          <span class="muted">Выбрано: {selected.size}</span>
+          <span class="muted">{t("documents.selected")} {selected.size}</span>
           <button
             type="button"
             class="btn"
             disabled={busy || running}
             onclick={() => void doRebuildSelected()}
           >
-            Пересобрать выбранные
+            {t("documents.rebuild_selected")}
           </button>
           <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>
-            Сбросить
+            {t("documents.reset")}
           </button>
         </div>
       {/if}
@@ -199,13 +194,13 @@
               />
             </th>
             <th class="num">##</th>
-            <th>ФАЙЛ</th>
-            <th>DOC_ID</th>
-            <th class="num">РАЗМЕР</th>
-            <th class="num">ЧАНКИ</th>
-            <th class="num">ГОД</th>
-            <th>СТАТУС</th>
-            <th>КАЧЕСТВО</th>
+            <th>{t("documents.column_file")}</th>
+            <th>{t("documents.column_doc_id")}</th>
+            <th class="num">{t("documents.column_size")}</th>
+            <th class="num">{t("documents.column_chunks")}</th>
+            <th class="num">{t("documents.column_year")}</th>
+            <th>{t("documents.column_status")}</th>
+            <th>{t("documents.column_quality")}</th>
           </tr>
         </thead>
         <tbody>
@@ -226,11 +221,11 @@
               <td class="num">{d.edition_year ?? "—"}</td>
               <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-ok'}">
                 {#if d.status === "processing"}
-                  пересборка…
+                  {t("documents.status_processing")}
                 {:else if d.status === "processed"}
-                  обработан
+                  {t("documents.status_processed")}
                 {:else}
-                  в индексе
+                  {t("documents.status_indexed")}
                 {/if}
               </span></td>
               <td>
@@ -265,11 +260,11 @@
               <td class="num muted">—</td>
               <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-pending'}">
                 {#if d.status === "processing"}
-                  обработка…
+                  {t("documents.status_processing")}
                 {:else if d.status === "processed"}
-                  обработан
+                  {t("documents.status_processed")}
                 {:else}
-                  в очереди
+                  {t("documents.status_pending")}
                 {/if}
               </span></td>
               <td><span class="muted">—</span></td>
