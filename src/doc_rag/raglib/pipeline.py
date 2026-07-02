@@ -38,9 +38,22 @@ SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".md", ".txt"}
 
 
 def load_config(config_path: str) -> dict[str, Any]:
-    cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
+    """Load and validate config.yaml.
+
+    Raises ValueError if required keys are missing or types are wrong.
+    """
+    with open(config_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
     root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
     cfg["_root"] = root
+
+    # Validate required paths
+    paths = cfg.get("paths") or {}
+    required_paths = ["sources_incoming", "docs_md_dir", "chunks_dir", "manifest_path"]
+    missing = [k for k in required_paths if not paths.get(k)]
+    if missing:
+        raise ValueError(f"config.yaml: missing paths: {', '.join(missing)}")
+
     return cfg
 
 
@@ -1525,8 +1538,13 @@ def clean_orphans(config_path: str) -> dict[str, Any]:
             did = d.get("doc_id") if isinstance(d, dict) else None
             if isinstance(did, str):
                 known_ids.add(did)
-    except Exception:
-        pass
+    except Exception as e:
+        _log("ERROR", f"clean_orphans: cannot read manifest: {e}")
+        return {"orphan_md": 0, "orphan_blocks": 0, "error": str(e)}
+
+    if not known_ids:
+        _log("WARN", "clean_orphans: manifest is empty, aborting to prevent data loss")
+        return {"orphan_md": 0, "orphan_blocks": 0, "error": "manifest empty"}
 
     orphan_md = 0
     docs_md = os.path.join(root, paths["docs_md_dir"])

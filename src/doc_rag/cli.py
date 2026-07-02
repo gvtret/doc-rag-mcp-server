@@ -22,14 +22,19 @@ from doc_rag.raglib.pipeline import (
 from doc_rag.server.http_server import run as run_http
 
 
+def _resolve_server_url(cfg: dict) -> str:
+    """Resolve base URL from config, defaulting to localhost."""
+    host = cfg.get("server", {}).get("host", "0.0.0.0")
+    port = cfg.get("server", {}).get("port", 3333)
+    if host in ("0.0.0.0", ""):
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
 def _server_running(cfg: dict) -> bool:
     """Check if the HTTP server is reachable on localhost."""
     try:
-        host = cfg.get("server", {}).get("host", "0.0.0.0")
-        port = cfg.get("server", {}).get("port", 3333)
-        if host in ("0.0.0.0", ""):
-            host = "127.0.0.1"
-        url = f"http://{host}:{port}/health/live"
+        url = f"{_resolve_server_url(cfg)}/health/live"
         urllib.request.urlopen(url, timeout=2)
         return True
     except Exception:
@@ -38,11 +43,7 @@ def _server_running(cfg: dict) -> bool:
 
 def _api_post(cfg: dict, path: str, body: dict | None = None) -> dict:
     """POST to the running server. Returns parsed JSON or a stub dict."""
-    host = cfg.get("server", {}).get("host", "0.0.0.0")
-    port = cfg.get("server", {}).get("port", 3333)
-    if host in ("0.0.0.0", ""):
-        host = "127.0.0.1"
-    url = f"http://{host}:{port}{path}"
+    url = f"{_resolve_server_url(cfg)}{path}"
     data = json.dumps(body or {}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     resp = urllib.request.urlopen(req, timeout=30)
@@ -55,11 +56,7 @@ def _api_post(cfg: dict, path: str, body: dict | None = None) -> dict:
 
 def _wait_for_job(cfg: dict, timeout: int = 3600) -> None:
     """Poll /ui/status until the background job finishes."""
-    host = cfg.get("server", {}).get("host", "0.0.0.0")
-    port = cfg.get("server", {}).get("port", 3333)
-    if host in ("0.0.0.0", ""):
-        host = "127.0.0.1"
-    url = f"http://{host}:{port}/ui/status"
+    url = f"{_resolve_server_url(cfg)}/ui/status"
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -154,7 +151,10 @@ def main() -> None:
         return
     if args.cmd == "serve":
         cfg = load_config(cfg_path)
-        run_http(cfg["server"]["host"], int(cfg["server"]["port"]))
+        server_cfg = cfg.get("server", {})
+        host = server_cfg.get("host", "0.0.0.0")
+        port = int(server_cfg.get("port", 3333))
+        run_http(host, port)
         return
     if args.cmd == "delete":
         result = delete_documents(cfg_path, args.doc_ids)
