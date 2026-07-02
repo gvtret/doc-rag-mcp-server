@@ -87,16 +87,29 @@ class VectorIndex:
     def _batch_size(self) -> int:
         return int(self._cfg.get("embeddings", {}).get("batch_size", 32))
 
-    def _encode(self, texts: list[str]) -> np.ndarray:
+    def _encode(self, texts: list[str], max_retries: int = 3) -> np.ndarray:
+        """Encode texts to vectors with retry logic."""
         embedder = self._ensure_embedder()
         if embedder is None:
             raise RuntimeError("sentence-transformers not installed")
-        return embedder.encode(
-            texts,
-            batch_size=self._batch_size(),
-            show_progress_bar=False,
-            normalize_embeddings=self._normalize(),
-        ).astype(np.float32)
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return embedder.encode(
+                    texts,
+                    batch_size=self._batch_size(),
+                    show_progress_bar=False,
+                    normalize_embeddings=self._normalize(),
+                ).astype(np.float32)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    logger.warning("Embedding attempt %d failed: %s, retrying...", attempt + 1, e)
+
+        raise RuntimeError(f"Embedding failed after {max_retries} attempts: {last_error}")
 
     def build(self, chunks: list[dict[str, Any]], force: bool = False, log=print) -> bool:
         """Build or update the index from chunk dicts.
