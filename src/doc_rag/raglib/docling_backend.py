@@ -437,7 +437,7 @@ def _docling_stats(doc: Any, blocks: list[Block], result: Any = None) -> dict[st
 def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     """Parse a PDF or DOCX through Docling.
 
-    For large PDFs (>5MB or >500 pages), splits into chunks of 100 pages
+    For large PDFs (>3MB or >200 pages), splits into chunks of 50 pages
     to avoid OOM. Processes each chunk separately and merges results.
 
     Returns:
@@ -466,7 +466,7 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
 
     # Check page count for large files
     page_count = 0
-    if file_size_mb > 5:
+    if file_size_mb > 3:
         try:
             from pypdf import PdfReader
             reader = PdfReader(path)
@@ -474,9 +474,9 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
         except Exception:
             pass
 
-    # If large (>5MB or >500 pages), process in chunks
-    if file_size_mb > 5 or page_count > 500:
-        return _parse_pdf_chunked(path, max_pages_per_chunk=100)
+    # If large (>3MB or >200 pages), process in chunks
+    if file_size_mb > 3 or page_count > 200:
+        return _parse_pdf_chunked(path, max_pages_per_chunk=50)
 
     # Normal single-pass processing
     return _parse_pdf_single(path)
@@ -534,6 +534,19 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
             f"[doc-rag][INFO] chunk {chunk_idx}: pages {chunk_start + 1}-{chunk_end}/{total_pages}",
             file=os.sys.stderr,
         )
+
+        # Check available memory before processing
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            if mem.available < 500 * 1024 * 1024:  # Less than 500MB free
+                print(
+                    f"[doc-rag][WARN] chunk {chunk_idx}: low memory ({mem.available / 1024 / 1024:.0f}MB free), skipping remaining chunks",
+                    file=os.sys.stderr,
+                )
+                break
+        except ImportError:
+            pass  # psutil not installed, skip memory check
 
         # Create a temporary PDF with just these pages
         writer = PdfWriter()
