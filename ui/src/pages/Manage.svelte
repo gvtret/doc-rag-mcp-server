@@ -294,14 +294,6 @@
       </button>
       <button
         type="button"
-        class="btn"
-        disabled={busy || running}
-        onclick={() => void doCleanOrphans()}
-      >
-        Удалить потерянные
-      </button>
-      <button
-        type="button"
         class="btn danger"
         disabled={busy || running}
         onclick={() => void doWipe()}
@@ -314,7 +306,7 @@
         disabled={busy || running}
         onclick={() => void doCleanOrphans()}
       >
-        Удалить потеряные
+        Удалить потерянные
       </button>
       <button
         type="button"

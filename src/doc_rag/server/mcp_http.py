@@ -2933,8 +2933,6 @@ async def ui_rebuild_skip_index(request: Request, key: str = Form("")) -> Respon
     asyncio.create_task(_run_rebuild_background(force=True, skip_index=True))
     kq = f"?key={key}" if key else ""
     return RedirectResponse(url=f"/ui{kq}", status_code=303)
-    kq = f"?key={key}" if key else ""
-    return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
 
 @app.post("/ui/rebuild-docs")
