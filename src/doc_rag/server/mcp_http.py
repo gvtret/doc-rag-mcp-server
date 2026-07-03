@@ -1197,7 +1197,7 @@ def _readiness_state() -> dict[str, Any]:
     checks: dict[str, bool] = {}
 
     # FAISS index file
-    index_faiss = os.path.join(root, "build", "index.faiss")
+    index_faiss = os.path.join(root, "build", "index", "faiss.index")
     checks["faiss_index"] = os.path.isfile(index_faiss)
 
     # Disk space (at least 1 GB free)
