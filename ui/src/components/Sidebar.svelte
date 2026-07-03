@@ -7,6 +7,7 @@
 
   const itemDefs: MenuItem[] = [
     { key: "documents", labelKey: "sidebar.documents", hintKey: "sidebar.documents_hint" },
+    { key: "stats", labelKey: "sidebar.stats", hintKey: "sidebar.stats_hint" },
     { key: "config", labelKey: "sidebar.config", hintKey: "sidebar.config_hint" },
     { key: "manage", labelKey: "sidebar.manage", hintKey: "sidebar.manage_hint" },
     { key: "logs", labelKey: "sidebar.logs", hintKey: "sidebar.logs_hint" },

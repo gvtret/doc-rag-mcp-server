@@ -15,6 +15,8 @@
   "search.off": "выкл",
   "sidebar.documents": "Документы",
   "sidebar.documents_hint": "Индексированный корпус",
+  "sidebar.stats": "Статистика",
+  "sidebar.stats_hint": "Детальная статистика по документам",
   "sidebar.config": "Конфигурация",
   "sidebar.config_hint": "Парсинг, чанки, эмбеддинги",
   "sidebar.manage": "Управление",

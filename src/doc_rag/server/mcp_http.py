@@ -2691,6 +2691,87 @@ async def ui_quality(request: Request, key: str = "") -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+@app.get("/ui/doc-stats")
+async def ui_doc_stats(request: Request, key: str = "") -> JSONResponse:
+    """Return detailed statistics for all documents."""
+    if not _ui_key_ok(request, key):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        root = _root_dir()
+        cfg_path = _config_path()
+        with cfg_path.open(encoding="utf-8") as f:
+            import yaml
+            cfg = yaml.safe_load(f) or {}
+        paths = cfg.get("paths", {}) or {}
+        manifest_path = root / paths.get("manifest_path", "build/manifest.json")
+        quality_dir = root / "build" / "quality"
+
+        stats = []
+        if manifest_path.is_file():
+            with manifest_path.open(encoding="utf-8") as f:
+                manifest = json.load(f)
+            for d in manifest.get("documents", []):
+                doc_id = d.get("doc_id", "")
+                source_file = d.get("source_file", "")
+                bn = os.path.basename(source_file)
+
+                # Get quality data
+                quality = {}
+                q_path = quality_dir / f"{doc_id}.json"
+                if q_path.is_file():
+                    try:
+                        with q_path.open(encoding="utf-8") as f:
+                            quality = json.load(f)
+                    except Exception:
+                        pass
+
+                # Get file size
+                sz = 0
+                for dir_key in ("sources_archived", "sources_incoming"):
+                    d_rel = cfg.get("paths", {}).get(dir_key)
+                    if d_rel:
+                        cand = root / d_rel / bn
+                        if cand.is_file():
+                            sz = cand.stat().st_size
+                            break
+
+                # Get chunks count from chunks.jsonl
+                chunks_path = root / paths.get("chunks_dir", "build/chunks_jsonl") / "chunks.jsonl"
+                chunk_count = 0
+                if chunks_path.is_file():
+                    try:
+                        with chunks_path.open(encoding="utf-8") as f:
+                            for line in f:
+                                if doc_id in line:
+                                    chunk_count += 1
+                    except Exception:
+                        pass
+
+                # Get blocks count from quality
+                blocks = quality.get("blocks", {})
+                total_blocks = sum(blocks.values())
+
+                stats.append({
+                    "doc_id": doc_id,
+                    "filename": bn,
+                    "source_file": source_file,
+                    "size_bytes": sz,
+                    "size_mb": round(sz / 1024 / 1024, 2),
+                    "chunk_count": chunk_count or d.get("chunk_count", 0),
+                    "quality_score": quality.get("score", d.get("quality_score", 0)),
+                    "quality_warnings": quality.get("warning_count", d.get("quality_warning_count", 0)),
+                    "pages": quality.get("pages", 0),
+                    "blocks": blocks,
+                    "total_blocks": total_blocks,
+                    "edition_year": d.get("edition_year"),
+                    "coverage": d.get("coverage", {}),
+                })
+
+        return JSONResponse({"ok": True, "documents": stats, "count": len(stats)})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/ui/documents")
 async def ui_documents(request: Request, key: str = "") -> JSONResponse:
     """List ALL source files (incoming + archived) cross-referenced with manifest.

@@ -6,6 +6,7 @@
 
   const titleKeys: Record<PageKey, string> = {
     documents: "sidebar.documents",
+    stats: "sidebar.stats",
     config: "sidebar.config",
     manage: "sidebar.manage",
     logs: "sidebar.logs",
