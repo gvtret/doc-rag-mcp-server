@@ -78,6 +78,26 @@
     }
   }
 
+  async function doRebuildIndex() {
+    if (busy || running) return;
+    if (!confirm("Пересобрать только индекс из chunks.jsonl?")) return;
+    busy = true;
+    banner = null;
+    try {
+      const fd = new FormData();
+      const r = await fetch("/ui/rebuild-index", { method: "POST", body: fd, credentials: "same-origin" });
+      if (r.ok) {
+        banner = { tone: "info", text: "Пересборка индекса запущена." };
+      } else {
+        banner = { tone: "err", text: `HTTP ${r.status}` };
+      }
+    } catch (e) {
+      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
   async function doWipe() {
     if (busy || running) return;
     const confirm1 = confirm("Удалить ВСЕ документы и индекс? Это действие необратимо.");
@@ -227,6 +247,30 @@
         onclick={() => void doRebuild()}
       >
         Пересобрать индекс
+      </button>
+      <button
+        type="button"
+        class="btn"
+        disabled={busy || running}
+        onclick={() => void doRebuildIndex()}
+      >
+        Пересобрать только индекс
+      </button>
+      <button
+        type="button"
+        class="btn danger"
+        disabled={busy || running}
+        onclick={() => void doWipe()}
+      >
+        Очистить индекс
+      </button>
+      <button
+        type="button"
+        class="btn"
+        disabled={busy || running}
+        onclick={() => void doCleanOrphans()}
+      >
+        Удалить потерянные
       </button>
       <button
         type="button"

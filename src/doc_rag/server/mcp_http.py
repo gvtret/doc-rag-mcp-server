@@ -2913,6 +2913,18 @@ async def ui_rebuild(request: Request, key: str = Form("")) -> Response:
     return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
 
+@app.post("/ui/rebuild-index")
+async def ui_rebuild_index(request: Request, key: str = Form("")) -> Response:
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    asyncio.create_task(_run_index_job_background(
+        "rebuild-index",
+        lambda: rebuild_index(str(_config_path()))
+    ))
+    kq = f"?key={key}" if key else ""
+    return RedirectResponse(url=f"/ui{kq}", status_code=303)
+
+
 @app.post("/ui/rebuild-docs")
 async def ui_rebuild_docs(request: Request) -> JSONResponse:
     if not _ui_key_ok(request, request.query_params.get("key", "")):
