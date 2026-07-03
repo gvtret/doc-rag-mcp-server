@@ -956,6 +956,14 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
 
             new_chunks.extend(file_chunks)
             processed.append(src)
+
+            # Incremental manifest update: write after each file so UI sees progress
+            # and crash recovery is possible
+            _kept = [d for d in existing_by_hash.values() if d.get("sha256") in to_skip_hashes]
+            _inc_manifest = _manifest_shell(cfg, _kept + new_docs)
+            with open(manifest_path, "w", encoding="utf-8") as _mf:
+                json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
+
             elapsed = time.time() - t_file
             _log(
                 "INFO",

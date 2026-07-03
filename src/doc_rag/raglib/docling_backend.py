@@ -476,7 +476,9 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
 
     # If large (>3MB or >200 pages), process in chunks
     if file_size_mb > 3 or page_count > 200:
-        return _parse_pdf_chunked(path, max_pages_per_chunk=50)
+        # Use smaller chunks for very large files to reduce memory pressure
+        chunk_size = 25 if file_size_mb > 8 else 50
+        return _parse_pdf_chunked(path, max_pages_per_chunk=chunk_size)
 
     # Normal single-pass processing
     return _parse_pdf_single(path)
@@ -539,7 +541,7 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
         try:
             import psutil
             mem = psutil.virtual_memory()
-            if mem.available < 500 * 1024 * 1024:  # Less than 500MB free
+            if mem.available < 1024 * 1024 * 1024:  # Less than 1GB free
                 print(
                     f"[doc-rag][WARN] chunk {chunk_idx}: low memory ({mem.available / 1024 / 1024:.0f}MB free), skipping remaining chunks",
                     file=os.sys.stderr,
@@ -547,6 +549,10 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
                 break
         except ImportError:
             pass  # psutil not installed, skip memory check
+
+        # Force garbage collection before processing to free memory
+        import gc
+        gc.collect()
 
         # Create a temporary PDF with just these pages
         writer = PdfWriter()
@@ -576,6 +582,9 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
 
         finally:
             os.unlink(tmp_path)
+
+        # Force garbage collection after processing to free memory
+        gc.collect()
 
         chunk_start = chunk_end
 
