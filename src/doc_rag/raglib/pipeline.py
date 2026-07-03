@@ -772,13 +772,17 @@ def _append_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
 
 
-def rebuild(config_path: str, *, force: bool = False) -> None:
+def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) -> None:
     """Rebuild chunks/embeddings/index.
 
     By default (incremental), skips files already present in the manifest
     whose .md file still exists on disk — so an interrupted rebuild
     resumes where it left off.  Pass ``force=True`` (or CLI ``--force``)
     for a full wipe-and-reparse.
+
+    If skip_index=True, only parses and chunks files without building
+    the vector index. Useful for local GPU processing where results
+    are uploaded to the server for indexing.
     """
     cfg = load_config(config_path)
     root = cfg["_root"]
@@ -1032,6 +1036,46 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
         _log("INFO", "archiving disabled (sources.archive_after_ingest=false).")
 
     # Phase 6: Rebuild index from all chunks to ensure sync
+    if skip_index:
+        _log("INFO", "rebuild: skip_index=True — index not rebuilt (local processing mode)")
+    else:
+        try:
+            vi = _get_vector_index(cfg)
+            _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
+            for _fname in ("faiss.index", "index_meta.json"):
+                _p = os.path.join(_index_dir, _fname)
+                if os.path.exists(_p):
+                    try:
+                        os.remove(_p)
+                    except OSError as _e:
+                        _log("WARN", f"could not remove stale index file {_fname}: {_e}")
+            vi.reset()
+            if os.path.exists(chunks_path):
+                chunks = _load_existing_chunks(chunks_path)
+                if chunks:
+                    vi.build(chunks, force=True, log=print)
+            else:
+                _log("INFO", "rebuild: no chunks — index unchanged")
+        except Exception as e:
+            _log("WARN", f"index rebuild skipped: {e}")
+
+
+def rebuild_index(config_path: str) -> None:
+    """Rebuild only the vector index from existing chunks.jsonl.
+
+    Use after local parsing with --skip-index to build the FAISS index
+    from the uploaded chunks.
+    """
+    cfg = load_config(config_path)
+    root = cfg["_root"]
+    chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+
+    if not os.path.exists(chunks_path):
+        _log("ERROR", f"rebuild_index: {chunks_path} not found")
+        return
+
+    _log("INFO", "rebuild_index: rebuilding vector index from chunks.jsonl")
+
     try:
         vi = _get_vector_index(cfg)
         _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
@@ -1040,17 +1084,19 @@ def rebuild(config_path: str, *, force: bool = False) -> None:
             if os.path.exists(_p):
                 try:
                     os.remove(_p)
-                except OSError as _e:
-                    _log("WARN", f"could not remove stale index file {_fname}: {_e}")
+                except OSError:
+                    pass
         vi.reset()
-        if os.path.exists(chunks_path):
-            chunks = _load_existing_chunks(chunks_path)
-            if chunks:
-                vi.build(chunks, force=True, log=print)
+
+        chunks = _load_existing_chunks(chunks_path)
+        _log("INFO", f"rebuild_index: {len(chunks)} chunks loaded")
+        if chunks:
+            vi.build(chunks, force=True, log=print)
+            _log("INFO", f"rebuild_index: done, {vi.size} vectors in index")
         else:
-            _log("INFO", "rebuild: no chunks — index unchanged")
+            _log("WARN", "rebuild_index: no chunks found")
     except Exception as e:
-        _log("WARN", f"index rebuild skipped: {e}")
+        _log("ERROR", f"rebuild_index failed: {e}")
 
 
 def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | None = None) -> dict[str, Any]:

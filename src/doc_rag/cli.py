@@ -17,6 +17,7 @@ from doc_rag.raglib.pipeline import (
     load_config,
     rebuild,
     rebuild_docs,
+    rebuild_index,
     wipe_index,
 )
 from doc_rag.server.http_server import run as run_http
@@ -88,6 +89,9 @@ def main() -> None:
 
     p_rebuild_docs = sub.add_parser("rebuild-docs", help="Rebuild specific documents by doc_id")
     p_rebuild_docs.add_argument("doc_ids", nargs="+", help="doc_id(s) to rebuild")
+
+    sub.add_parser("rebuild-index", help="Rebuild vector index from existing chunks.jsonl")
+
     sub.add_parser("serve", help="Start local HTTP retrieval server (debug)")
 
     p_delete = sub.add_parser("delete", help="Remove one or more documents by doc_id")
@@ -148,6 +152,9 @@ def main() -> None:
             result = rebuild_docs(cfg_path, args.doc_ids)
             json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
             sys.stdout.write("\n")
+        return
+    if args.cmd == "rebuild-index":
+        rebuild_index(cfg_path)
         return
     if args.cmd == "serve":
         cfg = load_config(cfg_path)
