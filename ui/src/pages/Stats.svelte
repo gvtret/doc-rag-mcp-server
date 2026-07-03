@@ -17,6 +17,24 @@
     coverage: any;
   }
 
+  const BLOCK_TYPES = [
+    { key: "heading",     label: "Заголовки",      color: "#6b9bd2", desc: "Названия разделов и подразделов" },
+    { key: "paragraph",   label: "Абзацы текста",  color: "#8bab6e", desc: "Основной текст документа" },
+    { key: "table",       label: "Таблицы",         color: "#d4a76a", desc: "Структурированные данные в строках и столбцах" },
+    { key: "list_item",   label: "Списки",          color: "#b07cc4", desc: "Нумерованные и маркированные списки" },
+    { key: "figure",      label: "Рисунки",         color: "#d47a7a", desc: "Изображения, схемы, графики" },
+    { key: "code",        label: "Код",              color: "#7ac4c4", desc: "Программный код и технические примеры" },
+    { key: "formula",     label: "Формулы",         color: "#c4b47a", desc: "Математические и инженерные формулы" },
+    { key: "page_footer", label: "Колонтитулы",     color: "#999",    desc: "Номера страниц, шапки/подвалы" },
+  ];
+
+  const BLOCK_COLOR_MAP: Record<string, string> = {};
+  const BLOCK_LABEL_MAP: Record<string, string> = {};
+  for (const bt of BLOCK_TYPES) {
+    BLOCK_COLOR_MAP[bt.key] = bt.color;
+    BLOCK_LABEL_MAP[bt.key] = bt.label;
+  }
+
   let docs = $state<DocStat[]>([]);
   let loading = $state(true);
   let sortBy = $state<"filename" | "score" | "chunks" | "size">("filename");
@@ -79,6 +97,35 @@
   function totalBlocks() { return docs.reduce((s, d) => s + d.total_blocks, 0); }
   function totalSize() { return docs.reduce((s, d) => s + d.size_bytes, 0); }
   function avgScore() { return docs.length ? (docs.reduce((s, d) => s + d.quality_score, 0) / docs.length) : 0; }
+
+  function blockBarSegments(blocks: Record<string, number>): { color: string; pct: number; label: string; count: number }[] {
+    const total = Object.values(blocks).reduce((s, v) => s + v, 0);
+    if (total === 0) return [];
+    const segments: { color: string; pct: number; label: string; count: number }[] = [];
+    for (const bt of BLOCK_TYPES) {
+      const count = blocks[bt.key] || 0;
+      if (count > 0) {
+        segments.push({ color: bt.color, pct: (count / total) * 100, label: bt.label, count });
+      }
+    }
+    for (const [key, count] of Object.entries(blocks)) {
+      if (count > 0 && !BLOCK_TYPES.find(bt => bt.key === key)) {
+        segments.push({ color: "#666", pct: (count / total) * 100, label: key, count });
+      }
+    }
+    return segments;
+  }
+
+  // Global block type distribution for summary
+  let globalBlockDist = $derived(() => {
+    const dist: Record<string, number> = {};
+    for (const d of docs) {
+      for (const [k, v] of Object.entries(d.blocks)) {
+        dist[k] = (dist[k] || 0) + v;
+      }
+    }
+    return dist;
+  });
 </script>
 
 <section>
@@ -99,6 +146,19 @@
       <span>Средний score: <strong class={avgScore() >= 0.8 ? "ok" : "warn"}>{avgScore().toFixed(2)}</strong></span>
     </div>
 
+    <!-- Legend -->
+    <div class="legend">
+      {#each BLOCK_TYPES as bt}
+        {@const gDist = globalBlockDist()}
+        {#if (gDist[bt.key] || 0) > 0}
+          <span class="legend-item">
+            <span class="legend-dot" style="background:{bt.color}"></span>
+            <span class="legend-label" title={bt.desc}>{bt.label}</span>
+          </span>
+        {/if}
+      {/each}
+    </div>
+
     <table class="stats-table">
       <thead>
         <tr>
@@ -116,8 +176,8 @@
           <th class="sortable" onclick={() => toggleSort("score")}>
             Score {sortBy === "score" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
           </th>
-          <th>Warnings</th>
-          <th>Блоки по типам</th>
+          <th>Проблемы</th>
+          <th class="blocks-col">Состав блоков</th>
         </tr>
       </thead>
       <tbody>
@@ -133,27 +193,61 @@
                 {d.quality_score.toFixed(2)}
               </span>
             </td>
-            <td class="num">{d.quality_warnings}</td>
+            <td class="num">{d.quality_warnings || "—"}</td>
             <td class="blocks-cell">
-              {#each Object.entries(d.blocks) as [type, count]}
-                {#if count > 0}
-                  <span class="block-tag">{type}: {count}</span>
-                {/if}
-              {/each}
+              <div class="block-bar" title={Object.entries(d.blocks).filter(([,v]) => v > 0).map(([k,v]) => `${BLOCK_LABEL_MAP[k] || k}: ${v}`).join(", ")}>
+                {#each blockBarSegments(d.blocks) as seg}
+                  <div
+                    class="block-segment"
+                    style="width:{seg.pct}%;background:{seg.color}"
+                    title="{seg.label}: {seg.count} ({seg.pct.toFixed(0)}%)"
+                  ></div>
+                {/each}
+              </div>
+              <span class="blocks-total">{d.total_blocks}</span>
             </td>
           </tr>
           {#if selectedDoc?.doc_id === d.doc_id}
             <tr class="detail-row">
               <td colspan="8">
                 <div class="detail-box">
-                  <div><strong>doc_id:</strong> {d.doc_id}</div>
-                  <div><strong>sha256:</strong> <code>{/* d.sha256 would need to be in API */ ""}</code></div>
-                  <div><strong>Путь:</strong> {d.source_file}</div>
-                  <div><strong>Размер:</strong> {formatSize(d.size_bytes)}</div>
-                  <div><strong>Чанков:</strong> {d.chunk_count}</div>
-                  <div><strong>Блоков:</strong> {d.total_blocks} ({Object.entries(d.blocks).map(([k,v]) => `${k}:${v}`).join(", ")})</div>
-                  <div><strong>Страниц:</strong> {d.pages || "—"}</div>
-                  <div><strong>Score:</strong> {d.quality_score.toFixed(2)} ({d.quality_warnings} warnings)</div>
+                  <div class="detail-meta">
+                    <div><strong>doc_id:</strong> {d.doc_id}</div>
+                    <div><strong>Исходный файл:</strong> {d.source_file}</div>
+                    <div><strong>Размер:</strong> {formatSize(d.size_bytes)} · <strong>Страниц:</strong> {d.pages || "—"} · <strong>Чанков:</strong> {d.chunk_count}</div>
+                    <div><strong>Score:</strong> {d.quality_score.toFixed(2)} · <strong>Предупреждений:</strong> {d.quality_warnings || 0}</div>
+                  </div>
+
+                  <div class="detail-blocks-title">Состав документа по типам блоков:</div>
+                  <div class="detail-bars">
+                    {#each BLOCK_TYPES as bt}
+                      {@const count = d.blocks[bt.key] || 0}
+                      {#if count > 0}
+                        {@const pct = d.total_blocks > 0 ? (count / d.total_blocks) * 100 : 0}
+                        <div class="detail-bar-row">
+                          <span class="detail-bar-label">{bt.label}</span>
+                          <div class="detail-bar-track">
+                            <div class="detail-bar-fill" style="width:{pct}%;background:{bt.color}"></div>
+                          </div>
+                          <span class="detail-bar-count">{count}</span>
+                          <span class="detail-bar-pct">{pct.toFixed(0)}%</span>
+                        </div>
+                      {/if}
+                    {/each}
+                    {#each Object.entries(d.blocks) as [key, count]}
+                      {#if count > 0 && !BLOCK_TYPES.find(bt => bt.key === key)}
+                        {@const pct = d.total_blocks > 0 ? (count / d.total_blocks) * 100 : 0}
+                        <div class="detail-bar-row">
+                          <span class="detail-bar-label">{key}</span>
+                          <div class="detail-bar-track">
+                            <div class="detail-bar-fill" style="width:{pct}%;background:#666"></div>
+                          </div>
+                          <span class="detail-bar-count">{count}</span>
+                          <span class="detail-bar-pct">{pct.toFixed(0)}%</span>
+                        </div>
+                      {/if}
+                    {/each}
+                  </div>
                 </div>
               </td>
             </tr>
@@ -168,12 +262,26 @@
   section { padding: 16px 24px; }
   h2 { margin: 0 0 12px; font-size: 1rem; }
   .summary {
-    display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+    display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;
     color: var(--text-secondary); font-size: 0.85rem;
   }
   .summary .sep { color: var(--text-faint); }
   .summary .ok { color: var(--accent-ok); }
   .summary .warn { color: var(--accent-warn); }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 4px; font-size: 0.78rem; color: var(--text-secondary);
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+  }
+  .legend-label { cursor: help; }
+
+  /* Table */
   .stats-table {
     width: 100%; border-collapse: collapse; background: var(--bg-elevated);
     border: 1px solid var(--border-subtle); font-size: 0.82rem;
@@ -189,18 +297,51 @@
   .stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
   .sortable { cursor: pointer; user-select: none; }
   .sortable:hover { color: var(--text-primary); }
-  .blocks-cell { display: flex; flex-wrap: wrap; gap: 3px; }
-  .block-tag {
-    display: inline-block; padding: 1px 4px; font-size: 0.7rem;
-    background: var(--bg-base); border-radius: 2px; color: var(--text-muted);
-    font-family: ui-monospace, monospace;
+  .blocks-col { min-width: 200px; }
+
+  /* Stacked bar in table */
+  .blocks-cell { display: flex; align-items: center; gap: 6px; }
+  .block-bar {
+    flex: 1; height: 14px; display: flex; border-radius: 2px; overflow: hidden;
+    background: var(--bg-base);
   }
+  .block-segment { height: 100%; min-width: 1px; }
+  .blocks-total {
+    font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--text-muted);
+    min-width: 28px; text-align: right;
+  }
+
+  /* Detail row */
   .detail-row td { padding: 0; }
   .detail-box {
-    padding: 12px 16px; background: var(--bg-base); border-top: 1px solid var(--border-subtle);
+    padding: 14px 18px; background: var(--bg-base); border-top: 1px solid var(--border-subtle);
     font-size: 0.82rem; line-height: 1.6;
   }
-  .detail-box code { font-size: 0.75rem; word-break: break-all; }
+  .detail-meta { margin-bottom: 12px; }
+  .detail-blocks-title {
+    font-weight: 600; margin-bottom: 8px; font-size: 0.8rem; color: var(--text-primary);
+  }
+  .detail-bars { display: flex; flex-direction: column; gap: 4px; }
+  .detail-bar-row {
+    display: flex; align-items: center; gap: 8px; font-size: 0.78rem;
+  }
+  .detail-bar-label {
+    width: 120px; text-align: right; color: var(--text-secondary); flex-shrink: 0;
+  }
+  .detail-bar-track {
+    flex: 1; height: 12px; background: var(--bg-elevated); border-radius: 2px; overflow: hidden;
+  }
+  .detail-bar-fill { height: 100%; border-radius: 2px; transition: width 0.2s; }
+  .detail-bar-count {
+    width: 36px; text-align: right; font-family: ui-monospace, monospace;
+    font-size: 0.72rem; color: var(--text-primary);
+  }
+  .detail-bar-pct {
+    width: 32px; text-align: right; font-family: ui-monospace, monospace;
+    font-size: 0.72rem; color: var(--text-muted);
+  }
+
+  /* Quality badge */
   .q-badge {
     display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600;
     border-radius: 2px; font-family: ui-monospace, monospace;

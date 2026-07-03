@@ -1318,7 +1318,6 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
         _log("WARN", f"rebuild-docs: removed {len(all_docs) - len(_deduped)} duplicate doc entries")
     all_docs = list(reversed(_deduped))
 
-    kept_doc_ids = {d["doc_id"] for d in kept_docs if d.get("doc_id")}
     # Chunks already in chunks.jsonl from per-file appends — just load and dedup
     all_chunks = _load_existing_chunks(chunks_path)
     original_chunk_count = len(all_chunks)

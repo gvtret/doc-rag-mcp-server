@@ -46,8 +46,12 @@ from doc_rag.raglib.pipeline import (
     delete_documents as _pipeline_delete_documents,
 )
 from doc_rag.raglib.pipeline import (
+    rebuild_index as _pipeline_rebuild_index,
+)
+from doc_rag.raglib.pipeline import (
     wipe_index as _pipeline_wipe_index,
 )
+from doc_rag.raglib.utils import ensure_dir
 from doc_rag.server import metrics as _metrics
 from doc_rag.server.logging_setup import (
     configure_logging,
@@ -56,7 +60,6 @@ from doc_rag.server.logging_setup import (
     set_request_id,
 )
 from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
-from doc_rag.raglib.utils import ensure_dir
 
 # Configure structured logging on import. Idempotent; honours
 # DOC_RAG_LOG_LEVEL and DOC_RAG_LOG_FORMAT env vars.
@@ -3000,7 +3003,7 @@ async def ui_rebuild_index(request: Request, key: str = Form("")) -> Response:
         return PlainTextResponse("Unauthorized", status_code=401)
     asyncio.create_task(_run_index_job_background(
         "rebuild-index",
-        lambda: rebuild_index(str(_config_path()))
+        lambda: _pipeline_rebuild_index(str(_config_path()))
     ))
     kq = f"?key={key}" if key else ""
     return RedirectResponse(url=f"/ui{kq}", status_code=303)
