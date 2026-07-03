@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-rag"
-version = "4.2.0"
+version = "5.0.0"
 description = "Local-first RAG over your engineering documents, with an MCP server for Cursor and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -146,11 +146,23 @@ select = [
   "B",   # flake8-bugbear
   "UP",  # pyupgrade
   "W",   # pycodestyle warnings
+  "S",   # bandit security
 ]
 ignore = [
   "E501",  # line too long — formatter handles wrapping where it can
   "B008",  # function call in default arg (FastAPI uses this pattern)
   "E402",  # module-level import after docstring/__future__ — intentional ordering
+  "S603",  # subprocess call — checked in context
+  "S607",  # partial executable path — intentional
+  "S604",  # shell=True — intentional for restart command
+  "S110",  # try-except-pass — common in graceful fallback paths
+  "S112",  # try-except-continue — common in batch processing loops
+  "S310",  # urllib.request.urlopen — LAN only, no untrusted URLs
+  "S608",  # string-based SQL — no actual SQL, false positive on query strings
+  "S104",  # binding 0.0.0.0 — standard for LAN server
+  "S101",  # assert — acceptable in test-adjacent code and invariants
+  "S602",  # subprocess shell=True — intentional for restart command
+  "S324",  # md5 — used for dedup hashing, not security
 ]
 
 [tool.ruff.format]

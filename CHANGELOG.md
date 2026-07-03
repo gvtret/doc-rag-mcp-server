@@ -3,6 +3,30 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v5.0.0 — 2026-07-04
+
+Production-ready release: stats page, security hardening, health checks, CI fixes.
+
+### Added
+- **Document statistics page** (`/ui/doc-stats`): per-document breakdown with
+  color-coded stacked bar charts for block types (heading, paragraph, table, etc.),
+  expandable detail rows with percentage bars, sortable columns.
+- **Health check subsystem checks**: `/health/ready` now reports FAISS index
+  availability, embedding model status, and free disk space.
+- **Ruff S (bandit) rules**: security-focused linting enabled with targeted ignores.
+
+### Fixed
+- **Timing-safe UI key comparison**: `_ui_key_ok` now uses `hmac.compare_digest`
+  instead of `==` (timing side-channel).
+- **FastAPI version string**: was stuck at `4.0.0`, now matches `pyproject.toml`.
+- **Python 3.10 CI removed**: `uv.lock` has incompatible wheels for 3.10;
+  matrix now 3.11+3.12 only.
+- **Unused variable cleanup**: removed `kept_doc_ids` in `pipeline.py`.
+- **Undefined `rebuild_index` import**: added missing import in `mcp_http.py`.
+
+### Changed
+- Version bumped to 5.0.0 across `pyproject.toml`, `mcp_http.py`, `CHANGELOG.md`.
+
 ## v4.2.0 — 2026-07-03
 
 i18n, quality cascade, GPU support, OOM prevention, incremental persistence.

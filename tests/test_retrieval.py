@@ -46,3 +46,42 @@ def test_document_preview_rejects_empty_doc_id() -> None:
     out = document_preview("")
     assert out.get("ok") is False
     assert "empty" in str(out.get("error", "")).lower()
+
+
+def test_load_config_rejects_invalid_index_backend(tmp_path, monkeypatch) -> None:
+    """load_config raises ValueError for invalid index.backend."""
+    import yaml
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"index": {"backend": "mongodb"}}))
+
+    monkeypatch.setattr("doc_rag.server.retrieval.project_root", lambda: str(tmp_path))
+    # Clear cache
+    monkeypatch.setattr("doc_rag.server.retrieval._CFG_CACHE", {})
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="Invalid index.backend"):
+        from doc_rag.server.retrieval import load_config as _lc
+        _lc()
+
+
+def test_load_config_rejects_invalid_retrieval_mode(tmp_path, monkeypatch) -> None:
+    """load_config raises ValueError for invalid mcp.retrieval_mode."""
+    import yaml
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"mcp": {"retrieval_mode": "vector_only"}}))
+
+    monkeypatch.setattr("doc_rag.server.retrieval.project_root", lambda: str(tmp_path))
+    monkeypatch.setattr("doc_rag.server.retrieval._CFG_CACHE", {})
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="Invalid mcp.retrieval_mode"):
+        from doc_rag.server.retrieval import load_config as _lc
+        _lc()

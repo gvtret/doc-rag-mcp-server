@@ -54,6 +54,20 @@ def load_config() -> dict[str, Any]:
         cfg: dict[str, Any] = yaml.safe_load(f) or {}
     cfg["_root"] = root
 
+    # Validate critical config values
+    valid_backends = {"faiss", "qdrant", "pgvector"}
+    backend = (cfg.get("index") or {}).get("backend", "faiss")
+    if backend not in valid_backends:
+        raise ValueError(
+            f"Invalid index.backend '{backend}'; expected one of {valid_backends}"
+        )
+    valid_modes = {"semantic", "lexical", "hybrid"}
+    mode = (cfg.get("mcp") or {}).get("retrieval_mode", "semantic")
+    if mode not in valid_modes:
+        raise ValueError(
+            f"Invalid mcp.retrieval_mode '{mode}'; expected one of {valid_modes}"
+        )
+
     if st is not None:
         _CFG_CACHE["root"] = root
         _CFG_CACHE["mtime"] = st.st_mtime

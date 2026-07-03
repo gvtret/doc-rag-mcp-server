@@ -355,3 +355,73 @@ def test_ui_env_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, t
     c = TestClient(app)
     assert c.get("/ui/env").status_code == 401
     assert c.post("/ui/env/save", data={"updates": "{}"}).status_code == 401
+
+
+def test_ui_key_ok_uses_timing_safe_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_ui_key_ok must use hmac.compare_digest, not ==, to prevent timing attacks."""
+    pytest.importorskip("fastapi")
+    from unittest.mock import patch, MagicMock
+
+    monkeypatch.setenv("DOC_RAG_API_KEY", "real-secret-key")
+    from doc_rag.server.mcp_http import _ui_key_ok
+
+    request = MagicMock()
+    request.headers = {}
+
+    # Correct key should pass
+    assert _ui_key_ok(request, "real-secret-key") is True
+
+    # Wrong key should fail
+    assert _ui_key_ok(request, "wrong-key") is False
+
+    # Verify hmac.compare_digest is called (not ==)
+    import hmac as _hmac
+
+    with patch("hmac.compare_digest", wraps=_hmac.compare_digest) as mock_cmp:
+        _ui_key_ok(request, "real-secret-key")
+        mock_cmp.assert_called()
+
+
+def test_doc_stats_endpoint() -> None:
+    """GET /ui/doc-stats returns document statistics when build dir exists."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    r = c.get("/ui/doc-stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert "documents" in data
+    assert "count" in data
+
+
+def test_health_ready_includes_subsystem_checks() -> None:
+    """GET /health/ready returns 'checks' dict with faiss_index and disk_space."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    r = c.get("/health/ready")
+    data = r.json()
+    assert "checks" in data
+    assert "faiss_index" in data["checks"]
+    assert "disk_space" in data["checks"]
+    assert isinstance(data["checks"]["faiss_index"], bool)
+    assert isinstance(data["checks"]["disk_space"], bool)
+    assert "reasons" in data
+    assert isinstance(data["reasons"], list)
+
+
+def test_health_live_returns_ok() -> None:
+    """GET /health/live always returns 200."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from doc_rag.server.mcp_http import app
+
+    c = TestClient(app)
+    r = c.get("/health/live")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"

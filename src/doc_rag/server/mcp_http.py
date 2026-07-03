@@ -305,11 +305,13 @@ def _ui_key_ok(request: Request, key: str) -> bool:
 
     Rationale: plain HTML forms cannot set Authorization headers.
     """
+    import hmac as _hmac
+
     required = _api_key_required()
     if not required:
         return True
     k = (key or "").strip()
-    if k and k == required:
+    if k and _hmac.compare_digest(k, required):
         return True
     # Also allow header-based auth if caller can set it.
     return _check_api_key(request)
@@ -977,7 +979,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "4.2.0"},
+            "serverInfo": {"name": "doc-rag", "version": "5.0.0"},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -1093,7 +1095,7 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="4.0.0")
+app = FastAPI(title="doc-rag MCP HTTP", version="5.0.0")
 
 
 def _mount_ui_next(app: FastAPI) -> None:
@@ -1181,12 +1183,33 @@ async def _http_log_mw(request: Request, call_next):
 
 
 def _readiness_state() -> dict[str, Any]:
-    """Compute current readiness — manifest present, no background job running."""
+    """Compute current readiness — manifest present, no background job running.
+
+    Additionally checks subsystem health: FAISS index, disk space.
+    """
     root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
     manifest_abs = os.path.join(root, "build", "manifest.json")
     has_manifest = os.path.isfile(manifest_abs)
     job_running = bool(_INGEST_STATE.get("running"))
     job_name = _INGEST_STATE.get("job") if job_running else None
+
+    # Subsystem checks
+    checks: dict[str, bool] = {}
+
+    # FAISS index file
+    index_faiss = os.path.join(root, "build", "index.faiss")
+    checks["faiss_index"] = os.path.isfile(index_faiss)
+
+    # Disk space (at least 1 GB free)
+    try:
+        import shutil
+
+        usage = shutil.disk_usage(root)
+        checks["disk_space"] = usage.free >= 1024 ** 3
+    except Exception:
+        checks["disk_space"] = True  # don't block on check failure
+
+    all_checks_ok = all(checks.values())
     ready = has_manifest and not job_running
     reasons: list[str] = []
     if not has_manifest:
@@ -1198,6 +1221,7 @@ def _readiness_state() -> dict[str, Any]:
         "has_manifest": has_manifest,
         "job_running": job_running,
         "job": job_name,
+        "checks": checks,
         "reasons": reasons,
     }
 
@@ -1256,7 +1280,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "4.2.0",
+            "version": "5.0.0",
             "ready": state["ready"],
             "reasons": state["reasons"],
         }

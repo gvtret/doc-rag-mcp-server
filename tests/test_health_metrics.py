@@ -47,6 +47,9 @@ def test_health_ready_200_with_manifest(tmp_corpus_root: Path):
     body = r.json()
     assert body["ready"] is True
     assert body["reasons"] == []
+    # Subsystem checks are informational — present in every response
+    assert "checks" in body
+    assert "disk_space" in body["checks"]
 
 
 def test_legacy_health_keeps_returning_200(tmp_corpus_root: Path):
