@@ -98,6 +98,26 @@
     }
   }
 
+  async function doRebuildSkipIndex() {
+    if (busy || running) return;
+    if (!confirm("Полная пересборка БЕЗ индекса? (для локальной обработки на GPU)")) return;
+    busy = true;
+    banner = null;
+    try {
+      const fd = new FormData();
+      const r = await fetch("/ui/rebuild-skip-index", { method: "POST", body: fd, credentials: "same-origin" });
+      if (r.ok) {
+        banner = { tone: "info", text: "Пересборка запущена (без индекса)." };
+      } else {
+        banner = { tone: "err", text: `HTTP ${r.status}` };
+      }
+    } catch (e) {
+      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
   async function doWipe() {
     if (busy || running) return;
     const confirm1 = confirm("Удалить ВСЕ документы и индекс? Это действие необратимо.");
@@ -255,6 +275,14 @@
         onclick={() => void doRebuildIndex()}
       >
         Пересобрать только индекс
+      </button>
+      <button
+        type="button"
+        class="btn"
+        disabled={busy || running}
+        onclick={() => void doRebuildSkipIndex()}
+      >
+        Пересборка без индекса (GPU)
       </button>
       <button
         type="button"

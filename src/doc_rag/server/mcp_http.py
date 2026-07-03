@@ -629,7 +629,7 @@ def _sync_run_ingest_with_ui_logging() -> None:
         tee.finish()
 
 
-def _sync_run_rebuild_with_ui_logging(force: bool = False) -> None:
+def _sync_run_rebuild_with_ui_logging(force: bool = False, skip_index: bool = False) -> None:
     from doc_rag.raglib.pipeline import rebuild
 
     stderr = getattr(sys, "stderr", None) or sys.__stderr__
@@ -637,7 +637,7 @@ def _sync_run_rebuild_with_ui_logging(force: bool = False) -> None:
     old_stderr = sys.stderr
     sys.stderr = tee
     try:
-        rebuild(str(_config_path()), force=force)
+        rebuild(str(_config_path()), force=force, skip_index=skip_index)
     finally:
         sys.stderr = old_stderr
         tee.finish()
@@ -706,8 +706,8 @@ async def _run_ingest_background() -> None:
     await _run_index_job_background("ingest", _sync_run_ingest_with_ui_logging)
 
 
-async def _run_rebuild_background(force: bool = False) -> None:
-    await _run_index_job_background("rebuild", lambda: _sync_run_rebuild_with_ui_logging(force=force))
+async def _run_rebuild_background(force: bool = False, skip_index: bool = False) -> None:
+    await _run_index_job_background("rebuild", lambda: _sync_run_rebuild_with_ui_logging(force=force, skip_index=skip_index))
 
 
 def _sync_run_rebuild_docs_with_ui_logging(doc_ids: list[str], filenames: list[str]) -> None:
@@ -2921,6 +2921,18 @@ async def ui_rebuild_index(request: Request, key: str = Form("")) -> Response:
         "rebuild-index",
         lambda: rebuild_index(str(_config_path()))
     ))
+    kq = f"?key={key}" if key else ""
+    return RedirectResponse(url=f"/ui{kq}", status_code=303)
+
+
+@app.post("/ui/rebuild-skip-index")
+async def ui_rebuild_skip_index(request: Request, key: str = Form("")) -> Response:
+    """Full rebuild: parse + chunk only, no vector index (for local GPU processing)."""
+    if not _ui_key_ok(request, key):
+        return PlainTextResponse("Unauthorized", status_code=401)
+    asyncio.create_task(_run_rebuild_background(force=True, skip_index=True))
+    kq = f"?key={key}" if key else ""
+    return RedirectResponse(url=f"/ui{kq}", status_code=303)
     kq = f"?key={key}" if key else ""
     return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
