@@ -3,6 +3,45 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v4.2.0 — 2026-07-03
+
+i18n, quality cascade, GPU support, OOM prevention, incremental persistence.
+
+### Added
+- **i18n system**: RU/EN language switching with localStorage persistence.
+  Language switcher in header. New files: `ui/src/lib/i18n/{ru,en}.json`.
+- **Quality cascade**: When Docling scores below `parsing.quality_fallback_threshold`
+  (default 0.5), automatically retries with Unstructured and keeps the better result.
+- **`rebuild --skip-index`**: Parse and chunk without building vector index.
+  For local GPU processing — upload results to server, then rebuild index.
+- **`rebuild-index` CLI command**: Rebuild only the FAISS index from chunks.jsonl.
+- **`POST /ui/rebuild-index`** and **`POST /ui/rebuild-skip-index`** endpoints.
+- **Manage page buttons**: "Полная пересборка", "Только индекс", "Только парсинг/чанкинг".
+- **Chunk postprocessing**: Remove duplicate headers/footers, OCR artifacts, short chunks.
+- **Block-level header dedup**: Remove repeated headers before quality check.
+- **Table normalization**: Pad mismatched column counts.
+- **Quality badge thresholds documented** in Docs page.
+- **Incremental manifest persistence**: Manifest written after each file in rebuild.
+- **Memory check before chunk processing**: Skip remaining chunks if <1GB free.
+- **Embedding retry**: Exponential backoff (1s, 2s, 4s) on encoding failures.
+
+### Fixed
+- **Dedup by sha256**: Documents with same content but different filenames now deduplicated.
+- **Index sync**: `rebuild()` and `rebuild_docs()` always rebuild index from all chunks.
+- **`/api/v1/download` auth**: Added missing authorization check.
+- **`ensure_dir` import**: Fixed NameError when writing rebuild lock file.
+- **Rate limiter TTL**: Evict stale entries to prevent memory leak.
+- **Clean orphans safety**: Abort if manifest is empty or unreadable.
+- **Config validation**: `load_config()` validates required paths.
+- **CLI `_resolve_server_url`**: Extracted helper, safe dict access.
+- **Duplicate functions removed**: `_quality_badge_html`, `_load_quality_map`.
+- **hmac.compare_digest**: Timing-safe secret comparison.
+
+### Changed
+- **Quality scoring**: `mismatched_columns` severity changed from warn to info.
+- **Chunking threshold**: Large PDFs (>3MB or >200 pages) split into 50-page chunks (was 100).
+- **Memory threshold**: Skip remaining chunks if <1GB free (was 500MB).
+
 ## v4.1.0 — 2026-06-25
 
 Incremental rebuild, selective document rebuild, CLI→UI sync.
