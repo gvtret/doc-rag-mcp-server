@@ -513,7 +513,6 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
 
     Each chunk is processed separately to avoid OOM. Results are merged.
     """
-    import io
     import os
     import tempfile
 

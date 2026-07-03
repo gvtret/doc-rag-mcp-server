@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── search_tool: structured citations ──────────────────────────────────
 
 def test_build_citations_returns_indexed_list() -> None:

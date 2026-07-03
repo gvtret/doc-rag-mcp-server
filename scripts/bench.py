@@ -38,7 +38,6 @@ import argparse
 import json
 import os
 import platform
-import random
 import sys
 import time
 from pathlib import Path
@@ -79,14 +78,23 @@ _SENTENCE_POOL = [
 
 
 def _make_synthetic_chunks(n: int, target_words: int = 80, seed: int = 0) -> list[dict[str, Any]]:
-    rng = random.Random(seed)
+    """Create deterministic synthetic chunks using hashlib for reproducible selection."""
+    import hashlib
+
+    def _pick(idx: int) -> str:
+        h = hashlib.sha256(f"{seed}:{idx}".encode()).digest()
+        return _SENTENCE_POOL[int.from_bytes(h[:4], "big") % len(_SENTENCE_POOL)]
+
+    def _vary(idx: int) -> int:
+        h = hashlib.sha256(f"{seed}:vary:{idx}".encode()).digest()
+        return (int.from_bytes(h[:4], "big") % 11) - 5  # -5..+5
+
     chunks: list[dict[str, Any]] = []
     for i in range(n):
         words: list[str] = []
-        # Splice random sentences until we hit the target word count.
         while len(words) < target_words:
-            words.extend(rng.choice(_SENTENCE_POOL).split())
-        text = " ".join(words[: target_words + rng.randint(-5, 5)])
+            words.extend(_pick(i + len(words)).split())
+        text = " ".join(words[: target_words + _vary(i)])
         chunks.append(
             {
                 "chunk_id": f"doc-{i // 50:04d}:{i % 50:04d}",

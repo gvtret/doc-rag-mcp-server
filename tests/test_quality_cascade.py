@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, call
-
-import pytest
+from unittest.mock import patch
 
 
 def test_quality_cascade_triggers_on_low_score(tmp_path: Path):

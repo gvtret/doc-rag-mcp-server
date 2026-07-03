@@ -33,7 +33,7 @@ def test_resolve_by_sha256():
     assert y == 2024
 
 
-def test_filename_regex():
+def test_filename_regex(tmp_path):
     cfg = {
         "parsing": {
             "edition_year": {
@@ -42,9 +42,10 @@ def test_filename_regex():
             }
         }
     }
+    fake_pdf = tmp_path / "GOST_2021_final.pdf"
     y = resolve_edition_year(
         cfg,
-        abs_path="/tmp/GOST_2021_final.pdf",
+        abs_path=str(fake_pdf),
         rel_path="GOST_2021_final.pdf",
         sha256_hex="b" * 64,
     )

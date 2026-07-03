@@ -1209,7 +1209,6 @@ def _readiness_state() -> dict[str, Any]:
     except Exception:
         checks["disk_space"] = True  # don't block on check failure
 
-    all_checks_ok = all(checks.values())
     ready = has_manifest and not job_running
     reasons: list[str] = []
     if not has_manifest:

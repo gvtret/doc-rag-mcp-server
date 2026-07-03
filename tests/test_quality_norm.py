@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
+
 from doc_rag.raglib.blocks import Block
 from doc_rag.raglib.quality import (
     Warning,
-    QualityReport,
+    _compute_score,
     remove_duplicate_headers,
     run_quality_checks,
-    _compute_score,
 )
 
 

@@ -7,14 +7,9 @@ so that a crash mid-rebuild doesn't lose already-processed documents.
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import textwrap
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
-
-import pytest
 
 
 def _make_root(tmp_path: Path) -> Path:

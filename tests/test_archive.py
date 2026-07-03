@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import textwrap
 from pathlib import Path
-
-import pytest
 
 
 def _sha256(path: Path) -> str:

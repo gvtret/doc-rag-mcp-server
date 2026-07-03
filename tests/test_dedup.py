@@ -11,64 +11,55 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import textwrap
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-
 # ── VectorIndex.build() input dedup ────────────────────────────────────
 
-def test_vector_index_build_dedup_input_chunks() -> None:
+def test_vector_index_build_dedup_input_chunks(tmp_path: Path) -> None:
     """Duplicate chunk_ids in input should not create ghost vectors."""
     from doc_rag.raglib.vector_index import VectorIndex
 
-    root = "/tmp/test_dedup_vi"
+    root = str(tmp_path / "dedup_vi")
     os.makedirs(os.path.join(root, "build/index"), exist_ok=True)
-    try:
-        cfg = {
-            "_root": root,
-            "embeddings": {"model_name": "BAAI/bge-small-en-v1.5", "device": "cpu", "batch_size": 8},
-            "index": {"backend": "faiss"},
-            "paths": {"index_dir": "build/index"},
-        }
-        vi = VectorIndex(cfg)
-        chunks = [
-            {"chunk_id": "doc1:0", "text": "first version"},
-            {"chunk_id": "doc1:0", "text": "second version"},
-            {"chunk_id": "doc1:1", "text": "unique chunk"},
-        ]
-        vi.build(chunks, force=True, log=lambda *a: None)
-        assert vi.size == 2
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
+    cfg = {
+        "_root": root,
+        "embeddings": {"model_name": "BAAI/bge-small-en-v1.5", "device": "cpu", "batch_size": 8},
+        "index": {"backend": "faiss"},
+        "paths": {"index_dir": "build/index"},
+    }
+    vi = VectorIndex(cfg)
+    chunks = [
+        {"chunk_id": "doc1:0", "text": "first version"},
+        {"chunk_id": "doc1:0", "text": "second version"},
+        {"chunk_id": "doc1:1", "text": "unique chunk"},
+    ]
+    vi.build(chunks, force=True, log=lambda *a: None)
+    assert vi.size == 2
 
 
-def test_vector_index_build_incremental_dedup_input() -> None:
+def test_vector_index_build_incremental_dedup_input(tmp_path: Path) -> None:
     """Incremental build should also dedup within the input batch."""
     from doc_rag.raglib.vector_index import VectorIndex
 
-    root = "/tmp/test_dedup_vi_inc"
+    root = str(tmp_path / "dedup_vi_inc")
     os.makedirs(os.path.join(root, "build/index"), exist_ok=True)
-    try:
-        cfg = {
-            "_root": root,
-            "embeddings": {"model_name": "BAAI/bge-small-en-v1.5", "device": "cpu", "batch_size": 8},
-            "index": {"backend": "faiss"},
-            "paths": {"index_dir": "build/index"},
-        }
-        vi = VectorIndex(cfg)
-        vi.build([{"chunk_id": "a:0", "text": "alpha"}], force=True, log=lambda *a: None)
-        assert vi.size == 1
-        vi.build([
-            {"chunk_id": "b:0", "text": "beta"},
-            {"chunk_id": "b:0", "text": "beta dup"},
-        ], force=False, log=lambda *a: None)
-        assert vi.size == 2
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
+    cfg = {
+        "_root": root,
+        "embeddings": {"model_name": "BAAI/bge-small-en-v1.5", "device": "cpu", "batch_size": 8},
+        "index": {"backend": "faiss"},
+        "paths": {"index_dir": "build/index"},
+    }
+    vi = VectorIndex(cfg)
+    vi.build([{"chunk_id": "a:0", "text": "alpha"}], force=True, log=lambda *a: None)
+    assert vi.size == 1
+    vi.build([
+        {"chunk_id": "b:0", "text": "beta"},
+        {"chunk_id": "b:0", "text": "beta dup"},
+    ], force=False, log=lambda *a: None)
+    assert vi.size == 2
 
 
 # ── helpers ────────────────────────────────────────────────────────────

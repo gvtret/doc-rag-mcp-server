@@ -360,7 +360,7 @@ def test_ui_env_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, t
 def test_ui_key_ok_uses_timing_safe_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
     """_ui_key_ok must use hmac.compare_digest, not ==, to prevent timing attacks."""
     pytest.importorskip("fastapi")
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     monkeypatch.setenv("DOC_RAG_API_KEY", "real-secret-key")
     from doc_rag.server.mcp_http import _ui_key_ok
@@ -386,6 +386,7 @@ def test_doc_stats_endpoint() -> None:
     """GET /ui/doc-stats returns document statistics when build dir exists."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from doc_rag.server.mcp_http import app
 
     c = TestClient(app)
@@ -401,6 +402,7 @@ def test_health_ready_includes_subsystem_checks() -> None:
     """GET /health/ready returns 'checks' dict with faiss_index and disk_space."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from doc_rag.server.mcp_http import app
 
     c = TestClient(app)
@@ -419,6 +421,7 @@ def test_health_live_returns_ok() -> None:
     """GET /health/live always returns 200."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from doc_rag.server.mcp_http import app
 
     c = TestClient(app)
