@@ -266,7 +266,7 @@
         disabled={busy || running}
         onclick={() => void doRebuild()}
       >
-        Пересобрать индекс
+        Полная пересборка
       </button>
       <button
         type="button"
@@ -274,7 +274,7 @@
         disabled={busy || running}
         onclick={() => void doRebuildIndex()}
       >
-        Пересобрать только индекс
+        Только индекс
       </button>
       <button
         type="button"
@@ -282,7 +282,7 @@
         disabled={busy || running}
         onclick={() => void doRebuildSkipIndex()}
       >
-        Пересборка без индекса (GPU)
+        Только парсинг/чанкинг
       </button>
       <button
         type="button"
