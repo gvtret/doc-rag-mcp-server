@@ -270,7 +270,7 @@
         bind:this={fileInput}
         type="file"
         multiple
-        accept=".pdf,.docx,.txt,.md,.html,.htm"
+        accept=".pdf,.docx,.doc,.txt,.md"
         class="hidden-input"
         onchange={onFileSelect}
       />

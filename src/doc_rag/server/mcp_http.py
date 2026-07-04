@@ -3060,6 +3060,20 @@ async def ui_upload(
         else:
             errors.append(msg)
 
+    # Return JSON for fetch/XHR requests, 303 for traditional form POSTs.
+    is_xhr = request.headers.get("x-requested-with") == "XMLHttpRequest"
+    if is_xhr:
+        return JSONResponse(
+            {
+                "ok": saved > 0 or len(dups) > 0,
+                "saved": saved,
+                "dups": len(dups),
+                "errors": len(errors),
+                "dup_msg": dups[0] if dups else None,
+                "error_msg": errors[0] if errors else None,
+            }
+        )
+
     qdict: dict[str, str] = {}
     k = (key or "").strip()
     if k:

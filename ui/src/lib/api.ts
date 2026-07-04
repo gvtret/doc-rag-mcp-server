@@ -140,17 +140,29 @@ export async function uploadFiles(
     method: "POST",
     body: fd,
     credentials: "same-origin",
-    redirect: "manual",
+    headers: { "X-Requested-With": "XMLHttpRequest" },
+    redirect: "follow",
     signal,
   });
-  if (r.type === "opaqueredirect" || r.status === 303) {
-    return { ok: true, message: `Загружено файлов: ${files.length}` };
-  }
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     return { ok: false, error: text || `HTTP ${r.status}` };
   }
-  return { ok: true, message: `Загружено файлов: ${files.length}` };
+  try {
+    const data = await r.json();
+    if (data.saved > 0) {
+      return { ok: true, message: `Загружено: ${data.saved} файл(ов)` };
+    }
+    if (data.dups > 0) {
+      return { ok: false, error: data.dup_msg || `${data.dups} файл(ов) уже в индексе` };
+    }
+    if (data.errors > 0) {
+      return { ok: false, error: data.error_msg || `Ошибок: ${data.errors}` };
+    }
+    return { ok: false, error: "Файлы не сохранены" };
+  } catch {
+    return { ok: true, message: `Загружено файлов: ${files.length}` };
+  }
 }
 
 export function rebuildIndex(signal?: AbortSignal): Promise<ManageResult> {

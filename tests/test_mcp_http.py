@@ -428,3 +428,197 @@ def test_health_live_returns_ok() -> None:
     r = c.get("/health/live")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+# ── Upload flow regression tests ─────────────────────────────────────
+
+
+def test_upload_xhr_returns_json_saved(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Upload via XHR should return JSON with saved=1, and file should land in incoming."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+    (tmp_path / "build").mkdir(parents=True)
+
+    content = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\nupload-test-content\n"
+    files = [("files", ("test_upload.pdf", content, "application/pdf"))]
+
+    c = TestClient(app)
+    r = c.post(
+        "/ui/upload",
+        files=files,
+        data={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["saved"] == 1
+    assert data["dups"] == 0
+    assert data["errors"] == 0
+    # Verify file actually landed on disk
+    incoming = tmp_path / "sources" / "incoming"
+    pdfs = list(incoming.glob("*.pdf"))
+    assert len(pdfs) == 1
+
+
+def test_upload_xhr_returns_json_dup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Upload duplicate file (same sha256 as manifest) should return dups=1, saved=0."""
+    pytest.importorskip("fastapi")
+    import hashlib
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+
+    content = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\nalready-indexed\n"
+    sha = hashlib.sha256(content).hexdigest()
+
+    # Mock _find_dup_in_manifest to return match for this sha256
+    def mock_dup(h):
+        if h == sha:
+            return "existing.pdf"
+        return None
+
+    monkeypatch.setattr("doc_rag.server.mcp_http._find_dup_in_manifest", mock_dup)
+
+    files = [("files", ("dup.pdf", content, "application/pdf"))]
+    c = TestClient(app)
+    r = c.post(
+        "/ui/upload",
+        files=files,
+        data={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["saved"] == 0
+    assert data["dups"] == 1
+    incoming = tmp_path / "sources" / "incoming"
+    assert len(list(incoming.glob("*.pdf"))) == 0
+
+
+def test_upload_xhr_rejects_bad_extension(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Upload .exe file should return errors=1, saved=0."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+
+    files = [("files", ("malware.exe", b"MZ\x90\x00", "application/octet-stream"))]
+    c = TestClient(app)
+    r = c.post(
+        "/ui/upload",
+        files=files,
+        data={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["saved"] == 0
+    assert data["errors"] == 1
+
+
+def test_upload_then_ingest_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Upload a file, then run ingest — file should end up in manifest."""
+    pytest.importorskip("fastapi")
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.raglib.pipeline import ingest
+    from doc_rag.server.mcp_http import app
+
+    # Create standard directory layout
+    for d in [
+        "sources/incoming",
+        "build/docs_md",
+        "build/chunks_jsonl",
+        "build/blocks",
+        "build/index",
+        "config",
+    ]:
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+
+    config = tmp_path / "config" / "config.yaml"
+    config.write_text("""\
+paths:
+  sources_incoming: sources/incoming
+  sources_archived: sources/archived
+  docs_md_dir: build/docs_md
+  chunks_dir: build/chunks_jsonl
+  manifest_path: build/manifest.json
+  blocks_dir: build/blocks
+  index_dir: build/index
+parsing:
+  pdf_backend: docling
+chunking:
+  strategy: fixed
+  target_tokens: 512
+  overlap_tokens: 64
+embeddings:
+  model_name: BAAI/bge-small-en-v1.5
+  device: cpu
+""")
+
+    # Upload a simple .txt file (no OCR/parsing needed)
+    content = b"Hello world. This is a test document with some content for chunking."
+    files = [("files", ("test_roundtrip.txt", content, "text/plain"))]
+    c = TestClient(app)
+    r = c.post(
+        "/ui/upload",
+        files=files,
+        data={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    assert r.json()["saved"] == 1
+
+    # Verify file is in incoming
+    incoming = tmp_path / "sources" / "incoming"
+    assert len(list(incoming.glob("*.txt"))) == 1
+
+    # Run ingest (direct call, not via HTTP, to avoid background task complexity)
+    ingest(str(config))
+
+    # Verify file was processed
+    manifest_path = tmp_path / "build" / "manifest.json"
+    assert manifest_path.exists()
+    m = _json.loads(manifest_path.read_text())
+    doc_ids = [d["doc_id"] for d in m["documents"]]
+    assert len(doc_ids) == 1
+
+
+def test_upload_old_form_returns_303(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Upload without XHR header should return 303 redirect (backward compat)."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+
+    content = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\r\nform-upload\n"
+    files = [("files", ("form.pdf", content, "application/pdf"))]
+
+    c = TestClient(app)
+    r = c.post("/ui/upload", files=files, data={}, follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers.get("location", "")
+    assert "up_saved=1" in loc
