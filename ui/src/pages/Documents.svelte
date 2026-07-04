@@ -200,11 +200,18 @@
             type="button"
             class="btn"
             disabled={busy || running}
+            title="Пересобрать выбранные документы заново: парсинг + чанкинг + индексация."
             onclick={() => void doRebuildSelected()}
           >
             {t("documents.rebuild_selected")}
           </button>
-          <button type="button" class="btn danger" disabled={busy || running} onclick={() => void doDeleteSelected()}>
+          <button
+            type="button"
+            class="btn danger"
+            disabled={busy || running}
+            title="Удалить выбранные документы из индекса и манифеста. Необратимо."
+            onclick={() => void doDeleteSelected()}
+          >
             Удалить
           </button>
           <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>

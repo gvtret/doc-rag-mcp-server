@@ -272,6 +272,7 @@
       ondrop={onDrop}
       role="button"
       tabindex="0"
+      title="Поддерживаемые форматы: PDF, DOCX, DOC, TXT, MD. Максимум 100 МБ на файл."
       onclick={() => fileInput?.click()}
       onkeydown={(e) => e.key === "Enter" && fileInput?.click()}
     >
@@ -308,6 +309,7 @@
         type="button"
         class="btn"
         disabled={busy || running}
+        title="Полная пересборка: парсинг + чанкинг + индекс. Все документы обрабатываются заново."
         onclick={() => void doRebuild()}
       >
         Полная пересборка
@@ -316,6 +318,7 @@
         type="button"
         class="btn"
         disabled={busy || running}
+        title="Пересобрать только FAISS-индекс из существующих чанков. Без повторного парсинга документов."
         onclick={() => void doRebuildIndex()}
       >
         Только индекс
@@ -324,6 +327,7 @@
         type="button"
         class="btn"
         disabled={busy || running}
+        title="Полный парсинг и чанкинг без построения индекса. Для обработки на GPU локально, затем загрузки индекса на сервер."
         onclick={() => void doRebuildSkipIndex()}
       >
         Только парсинг/чанкинг
@@ -332,6 +336,7 @@
         type="button"
         class="btn"
         disabled={busy || running}
+        title="Обработать файлы из папки загрузок: парсинг + чанкинг + индексация + архивация."
         onclick={() => void doIngest()}
       >
         Обработать загрузки
@@ -340,6 +345,7 @@
         type="button"
         class="btn danger"
         disabled={busy || running}
+        title="Удалить ВСЕ документы и индекс. Необратимо. Требует ввода DELETE для подтверждения."
         onclick={() => void doWipe()}
       >
         Очистить индекс
@@ -348,6 +354,7 @@
         type="button"
         class="btn"
         disabled={busy || running}
+        title="Найти и удалить документы, которые есть в файловой системе, но отсутствуют в манифесте."
         onclick={() => void doCleanOrphans()}
       >
         Удалить потерянные
@@ -356,6 +363,7 @@
         type="button"
         class="btn danger"
         disabled={busy || running}
+        title="Удалить все файлы из папки загрузок (sources/incoming)."
         onclick={() => void doClearIncoming()}
       >
         Очистить загрузки
@@ -364,6 +372,7 @@
         type="button"
         class="btn warn"
         disabled={busy}
+        title="Перезапустить сервис doc-rag-mcp. Прервёт текущие фоновые задачи."
         onclick={() => void doRestart()}
       >
         Перезапустить сервис

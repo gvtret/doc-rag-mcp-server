@@ -162,22 +162,22 @@
     <table class="stats-table">
       <thead>
         <tr>
-          <th class="sortable" onclick={() => toggleSort("filename")}>
+          <th class="sortable" title="Название файла" onclick={() => toggleSort("filename")}>
             Файл {sortBy === "filename" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
           </th>
-          <th class="num sortable" onclick={() => toggleSort("size")}>
+          <th class="num sortable" title="Размер исходного файла" onclick={() => toggleSort("size")}>
             Размер {sortBy === "size" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
           </th>
-          <th class="num sortable" onclick={() => toggleSort("chunks")}>
+          <th class="num sortable" title="Количество текстовых блоков (чанков) в индексе" onclick={() => toggleSort("chunks")}>
             Чанки {sortBy === "chunks" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
           </th>
-          <th class="num">Блоки</th>
-          <th class="num">Стр.</th>
-          <th class="sortable" onclick={() => toggleSort("score")}>
+          <th class="num" title="Общее количество структурных блоков (абзацы, заголовки, таблицы...)">Блоки</th>
+          <th class="num" title="Количество страниц в документе">Стр.</th>
+          <th class="sortable" title="Показатель качества парсинга от 0 до 1. Зелёный ≥0.8, жёлтый ≥0.5, красный <0.5" onclick={() => toggleSort("score")}>
             Score {sortBy === "score" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
           </th>
-          <th>Проблемы</th>
-          <th class="blocks-col">Состав блоков</th>
+          <th title="Количество предупреждений при парсинге">Проблемы</th>
+          <th class="blocks-col" title="Визуальное распределение блоков по типам (заголовки, абзацы, таблицы...)">Состав блоков</th>
         </tr>
       </thead>
       <tbody>
