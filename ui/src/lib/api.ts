@@ -128,7 +128,7 @@ export interface ManageResult {
   error?: string;
   saved?: number;
   result?: any;
-  dups?: number;
+  removed_chunks?: number;
 }
 
 export async function uploadFiles(
@@ -224,6 +224,10 @@ export type AllDocumentsResponse = {
 
 export function fetchAllDocuments(signal?: AbortSignal): Promise<AllDocumentsResponse> {
   return getJSON<AllDocumentsResponse>("/ui/documents", signal);
+}
+
+export function deleteDocuments(docIds: string[], signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/delete", { doc_ids: docIds.join(",") }, signal);
 }
 
 export function rebuildDocs(docIds: string[], filenames: string[] = [], signal?: AbortSignal): Promise<ManageResult> {

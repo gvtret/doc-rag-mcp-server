@@ -5,6 +5,7 @@
     fetchQuality,
     fetchAllDocuments,
     rebuildDocs,
+    deleteDocuments,
     type QualityDoc,
     type AllDocument,
     type ManageResult,
@@ -100,6 +101,33 @@
     }
   }
 
+  async function doDeleteSelected() {
+    if (busy || running || selected.size === 0) return;
+    const docIds: string[] = [];
+    for (const key of selected) {
+      const idxDoc = allDocs.find((d) => d.doc_id === key);
+      if (idxDoc?.doc_id) docIds.push(idxDoc.doc_id);
+    }
+    if (docIds.length === 0) return;
+    if (!confirm(`Удалить ${docIds.length} документ(ов) из индекса? Это действие необратимо.`)) return;
+    busy = true;
+    banner = null;
+    try {
+      const r: ManageResult = await deleteDocuments(docIds);
+      if (r.ok) {
+        banner = { tone: "ok", text: `Удалено: ${r.deleted?.length ?? 0} документ(ов).` };
+        selected = new Set();
+        await refresh();
+      } else {
+        banner = { tone: "err", text: r.error ?? t("manage.error") };
+      }
+    } catch (e) {
+      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
   function qualityColor(score: number): string {
     if (score >= 0.8) return "ok";
     if (score >= 0.5) return "warn";
@@ -175,6 +203,9 @@
             onclick={() => void doRebuildSelected()}
           >
             {t("documents.rebuild_selected")}
+          </button>
+          <button type="button" class="btn danger" disabled={busy || running} onclick={() => void doDeleteSelected()}>
+            Удалить
           </button>
           <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>
             {t("documents.reset")}
@@ -358,6 +389,13 @@
   }
   .btn.secondary {
     color: var(--text-muted);
+  }
+  .btn.danger {
+    border-color: var(--accent-error);
+    color: var(--accent-error);
+  }
+  .btn.danger:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.1);
   }
   .summary {
     display: flex;
