@@ -51,6 +51,16 @@ COPY --from=ui-builder /ui/dist /app/ui/dist
 
 RUN uv sync --frozen --extra server
 
+# Fix rapidocr 3.8.x missing arch_config.yaml (packaging bug).
+# See: https://github.com/gvtret/doc-rag-mcp-server/issues/13
+RUN if [ -f scripts/rapidocr/arch_config.yaml ]; then \
+      DEST=$(find /app/.venv -path "*/rapidocr/inference_engine/pytorch/networks" -type d 2>/dev/null | head -1); \
+      if [ -n "$DEST" ] && [ ! -f "$DEST/arch_config.yaml" ]; then \
+        cp scripts/rapidocr/arch_config.yaml "$DEST/arch_config.yaml" && \
+        echo "[doc-rag] patched rapidocr: installed arch_config.yaml"; \
+      fi; \
+    fi
+
 EXPOSE 3333
 
 # Default: Streamable HTTP MCP endpoint on /mcp

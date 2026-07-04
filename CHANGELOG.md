@@ -23,6 +23,11 @@ Production-ready release: stats page, security hardening, health checks, CI fixe
   matrix now 3.11+3.12 only.
 - **Unused variable cleanup**: removed `kept_doc_ids` in `pipeline.py`.
 - **Undefined `rebuild_index` import**: added missing import in `mcp_http.py`.
+- **Docker: rapidocr arch_config.yaml patch**: Dockerfile now copies the
+  bundled arch_config.yaml into the venv after install, fixing OCR failures
+  in Docker when rapidocr torch engine is triggered (issue #13).
+- **Troubleshooting docs**: added rapidocr 3.8.2 arch_config.yaml section
+  to `docs/troubleshooting.md`.
 
 ### Changed
 - Version bumped to 5.0.0 across `pyproject.toml`, `mcp_http.py`, `CHANGELOG.md`.

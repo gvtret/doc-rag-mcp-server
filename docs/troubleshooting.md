@@ -104,6 +104,14 @@ text:
 3. **Truly empty pages.** RapidOCR returns nothing if a page is blank
    or all-graphics-no-text. Verify by exporting a page to PNG and
    running RapidOCR by hand.
+4. **arch_config.yaml missing (rapidocr 3.8.2).** rapidocr 3.8.2 is a
+   yanked release that ships without `arch_config.yaml`. If OCR fails
+   with `No such file or directory: '.../arch_config.yaml'`, the
+   bootstrap script should have patched it automatically. If running
+   without bootstrap (e.g. manual Docker build), either downgrade:
+   `uv pip install rapidocr==3.8.1`, or copy
+   `scripts/rapidocr/arch_config.yaml` into the venv's
+   `rapidocr/inference_engine/pytorch/networks/` directory.
 
 ## "pdf_backend is no longer supported"
 
