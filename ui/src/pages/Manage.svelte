@@ -7,6 +7,7 @@
     cleanOrphans,
     clearIncoming,
     restartService,
+    ingest,
   } from "../lib/api";
 
   type Banner = { tone: "ok" | "err" | "info"; text: string } | null;
@@ -110,6 +111,25 @@
         banner = { tone: "info", text: "Пересборка запущена (без индекса)." };
       } else {
         banner = { tone: "err", text: `HTTP ${r.status}` };
+      }
+    } catch (e) {
+      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function doIngest() {
+    if (busy || running) return;
+    if (!confirm("Обработать файлы из папки загрузок?")) return;
+    busy = true;
+    banner = null;
+    try {
+      const r = await ingest();
+      if (r.ok) {
+        banner = { tone: "info", text: "Обработка запущена. Следите за прогрессом в статусе." };
+      } else {
+        banner = { tone: "err", text: r.error ?? "Ошибка" };
       }
     } catch (e) {
       banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
@@ -286,11 +306,11 @@
       </button>
       <button
         type="button"
-        class="btn danger"
+        class="btn"
         disabled={busy || running}
-        onclick={() => void doWipe()}
+        onclick={() => void doIngest()}
       >
-        Очистить индекс
+        Обработать загрузки
       </button>
       <button
         type="button"

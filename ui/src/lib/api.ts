@@ -157,6 +157,10 @@ export function rebuildIndex(signal?: AbortSignal): Promise<ManageResult> {
   return postForm<ManageResult>("/ui/rebuild", {}, signal);
 }
 
+export function ingest(signal?: AbortSignal): Promise<ManageResult> {
+  return postForm<ManageResult>("/ui/ingest", {}, signal);
+}
+
 export function wipeIndex(confirm: string, signal?: AbortSignal): Promise<ManageResult> {
   return postForm<ManageResult>("/ui/wipe", { confirm }, signal);
 }

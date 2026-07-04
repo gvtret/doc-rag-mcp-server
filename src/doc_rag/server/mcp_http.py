@@ -1835,9 +1835,22 @@ def _ui_status_payload() -> dict[str, Any]:
     eta_s, eta_h = _compute_eta()
     out["eta_seconds"] = eta_s
     out["eta_human"] = eta_h
-    # Detect interrupted rebuild via lock file
+    # Detect interrupted rebuild via lock file — if a lock exists but no
+    # job is running and the last job completed successfully, the lock is
+    # stale (e.g. server restarted before cleanup ran). Remove it.
     lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
-    out["rebuild_interrupted"] = os.path.isfile(lock_path) and not _INGEST_STATE.get("running")
+    rebuild_interrupted = False
+    if os.path.isfile(lock_path) and not _INGEST_STATE.get("running"):
+        last_ok = _INGEST_STATE.get("last_ok")
+        if last_ok is True:
+            # Last job succeeded — lock is stale, clean it up
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
+        else:
+            rebuild_interrupted = True
+    out["rebuild_interrupted"] = rebuild_interrupted
     try:
         out["indexed"] = indexed_catalog()
     except Exception as exc:
