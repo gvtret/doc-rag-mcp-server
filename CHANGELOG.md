@@ -3,6 +3,22 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v5.1.0 — 2026-07-04
+
+Upload fix, delete UI, tooltips, versioning, table layout.
+
+### Added
+- **Per-file upload banners**: upload response shows saved/dup/error per file.
+- **Delete button** in Documents page: select docs → "Удалить" → confirms → removes from index.
+- **Tooltips** on all buttons and interactive elements across Manage/Documents/Stats pages.
+- **Single-source versioning**: `_VERSION` reads from `importlib.metadata` at runtime (pyproject.toml is the only source). UI sidebar pulls version from `/ui/status` endpoint.
+
+### Fixed
+- **Upload XHR path**: `POST /ui/upload` returns JSON for `X-Requested-With: XMLHttpRequest` requests instead of 303 redirect.
+- **File input accept**: `.html`/`.htm` removed (backend doesn't parse HTML), `.doc` added.
+- **Rebuild banner**: stale lock files auto-cleaned when last job succeeded.
+- **Table layout**: columns now fit content width, no artificial stretching.
+
 ## v5.0.0 — 2026-07-04
 
 Production-ready release: stats page, security hardening, health checks, CI fixes.

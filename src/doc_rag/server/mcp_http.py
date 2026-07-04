@@ -17,6 +17,19 @@ import os
 import re
 import sys
 import threading
+
+
+def _get_version() -> str:
+    """Read version from package metadata (single source: pyproject.toml)."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("doc-rag")
+    except Exception:
+        return "0.0.0"
+
+
+_VERSION = _get_version()
 import time
 import traceback
 from collections import deque
@@ -986,7 +999,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "doc-rag", "version": "5.0.0"},
+            "serverInfo": {"name": "doc-rag", "version": _VERSION},
             "capabilities": {"tools": {"listChanged": True}},
         }
         return 200, _ok(req_id, result)
@@ -1125,7 +1138,7 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version="5.0.0")
+app = FastAPI(title="doc-rag MCP HTTP", version=_VERSION)
 
 
 def _mount_ui_next(app: FastAPI) -> None:
@@ -1309,7 +1322,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "name": "doc-rag",
-            "version": "5.0.0",
+            "version": _VERSION,
             "ready": state["ready"],
             "reasons": state["reasons"],
         }
@@ -1862,6 +1875,7 @@ def _ui_status_payload() -> dict[str, Any]:
         else:
             rebuild_interrupted = True
     out["rebuild_interrupted"] = rebuild_interrupted
+    out["version"] = _VERSION
     try:
         out["indexed"] = indexed_catalog()
     except Exception as exc:

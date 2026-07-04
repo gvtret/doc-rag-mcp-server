@@ -22,7 +22,7 @@
 <aside class="sidebar" aria-label="Главное меню">
   <div class="brand">
     <span class="logo">doc-rag</span>
-    <span class="ver">v4.1</span>
+    <span class="ver">{appState.status?.version ? `v${appState.status.version}` : ""}</span>
   </div>
   <nav>
     <ul>

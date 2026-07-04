@@ -283,7 +283,7 @@
 
   /* Table */
   .stats-table {
-    width: 100%; border-collapse: collapse; background: var(--bg-elevated);
+    width: auto; max-width: 100%; border-collapse: collapse; background: var(--bg-elevated);
     border: 1px solid var(--border-subtle); font-size: 0.82rem;
   }
   .stats-table th {
@@ -297,7 +297,7 @@
   .stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
   .sortable { cursor: pointer; user-select: none; }
   .sortable:hover { color: var(--text-primary); }
-  .blocks-col { min-width: 200px; }
+  .blocks-col { }
 
   /* Stacked bar in table */
   .blocks-cell { display: flex; align-items: center; gap: 6px; }

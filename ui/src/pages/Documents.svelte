@@ -428,7 +428,8 @@
     color: var(--accent-error);
   }
   table {
-    width: 100%;
+    width: auto;
+    max-width: 100%;
     border-collapse: collapse;
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);

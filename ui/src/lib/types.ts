@@ -34,6 +34,7 @@ export type IndexedCatalog = {
 };
 
 export type StatusPayload = {
+  version?: string;
   running?: boolean;
   job?: string | null;
   last_started?: number | null;
