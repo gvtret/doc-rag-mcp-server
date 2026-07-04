@@ -124,6 +124,7 @@ def _api_key_required() -> str | None:
 
 def _check_api_key(request: Request) -> bool:
     import hmac
+
     required = _api_key_required()
     if not required:
         return True
@@ -712,7 +713,9 @@ async def _run_ingest_background() -> None:
 
 
 async def _run_rebuild_background(force: bool = False, skip_index: bool = False) -> None:
-    await _run_index_job_background("rebuild", lambda: _sync_run_rebuild_with_ui_logging(force=force, skip_index=skip_index))
+    await _run_index_job_background(
+        "rebuild", lambda: _sync_run_rebuild_with_ui_logging(force=force, skip_index=skip_index)
+    )
 
 
 def _sync_run_rebuild_docs_with_ui_logging(doc_ids: list[str], filenames: list[str]) -> None:
@@ -846,6 +849,7 @@ def _sse_frame(msg: dict[str, Any]) -> str:
 def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Download a source document by filename."""
     import base64
+
     filename = arguments.get("filename", "")
     if not filename:
         return [{"type": "text", "text": "Error: filename is required"}]
@@ -855,6 +859,7 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         with cfg_path.open(encoding="utf-8") as f:
             import yaml
+
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
@@ -873,14 +878,16 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
                 try:
                     data = p.read_bytes()
                     b64 = base64.b64encode(data).decode("ascii")
-                    return [{
-                        "type": "file",
-                        "file": {
-                            "name": filename,
-                            "mimeType": "application/octet-stream",
-                            "data": b64,
-                        },
-                    }]
+                    return [
+                        {
+                            "type": "file",
+                            "file": {
+                                "name": filename,
+                                "mimeType": "application/octet-stream",
+                                "data": b64,
+                            },
+                        }
+                    ]
                 except Exception as e:
                     return [{"type": "text", "text": f"Error reading file: {e}"}]
 
@@ -993,11 +1000,26 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query text"},
-                        "top_k": {"type": "integer", "default": 6, "description": "Number of results to return"},
-                        "namespace": {"type": "string", "default": "default", "description": "Collection namespace"},
+                        "top_k": {
+                            "type": "integer",
+                            "default": 6,
+                            "description": "Number of results to return",
+                        },
+                        "namespace": {
+                            "type": "string",
+                            "default": "default",
+                            "description": "Collection namespace",
+                        },
                         "doc_id": {"type": "string", "description": "Filter by document ID"},
-                        "section_path": {"type": "string", "description": "Filter by section path prefix"},
-                        "tables_only": {"type": "boolean", "default": False, "description": "Return only table chunks"},
+                        "section_path": {
+                            "type": "string",
+                            "description": "Filter by section path prefix",
+                        },
+                        "tables_only": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return only table chunks",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -1008,7 +1030,10 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "filename": {"type": "string", "description": "Filename of the document to download (e.g. 'СТО_34.01-5.1-006-2023v4.pdf')"},
+                        "filename": {
+                            "type": "string",
+                            "description": "Filename of the document to download (e.g. 'СТО_34.01-5.1-006-2023v4.pdf')",
+                        },
                     },
                     "required": ["filename"],
                 },
@@ -1020,7 +1045,11 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query text"},
-                        "top_k": {"type": "integer", "default": 10, "description": "Max number of documents to return"},
+                        "top_k": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Max number of documents to return",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -1046,6 +1075,7 @@ def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
         try:
             if name == "doc_search":
                 from doc_rag.server.search_tool import doc_search_tool
+
                 content = doc_search_tool(arguments)
             elif name == "doc_download":
                 content = _doc_download_tool(arguments)
@@ -1205,7 +1235,7 @@ def _readiness_state() -> dict[str, Any]:
         import shutil
 
         usage = shutil.disk_usage(root)
-        checks["disk_space"] = usage.free >= 1024 ** 3
+        checks["disk_space"] = usage.free >= 1024**3
     except Exception:
         checks["disk_space"] = True  # don't block on check failure
 
@@ -1807,9 +1837,7 @@ def _ui_status_payload() -> dict[str, Any]:
     out["eta_human"] = eta_h
     # Detect interrupted rebuild via lock file
     lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
-    out["rebuild_interrupted"] = (
-        os.path.isfile(lock_path) and not _INGEST_STATE.get("running")
-    )
+    out["rebuild_interrupted"] = os.path.isfile(lock_path) and not _INGEST_STATE.get("running")
     try:
         out["indexed"] = indexed_catalog()
     except Exception as exc:
@@ -2727,6 +2755,7 @@ async def ui_doc_stats(request: Request, key: str = "") -> JSONResponse:
         cfg_path = _config_path()
         with cfg_path.open(encoding="utf-8") as f:
             import yaml
+
             cfg = yaml.safe_load(f) or {}
         paths = cfg.get("paths", {}) or {}
         manifest_path = root / paths.get("manifest_path", "build/manifest.json")
@@ -2777,21 +2806,25 @@ async def ui_doc_stats(request: Request, key: str = "") -> JSONResponse:
                 blocks = quality.get("blocks", {})
                 total_blocks = sum(blocks.values())
 
-                stats.append({
-                    "doc_id": doc_id,
-                    "filename": bn,
-                    "source_file": source_file,
-                    "size_bytes": sz,
-                    "size_mb": round(sz / 1024 / 1024, 2),
-                    "chunk_count": chunk_count or d.get("chunk_count", 0),
-                    "quality_score": quality.get("score", d.get("quality_score", 0)),
-                    "quality_warnings": quality.get("warning_count", d.get("quality_warning_count", 0)),
-                    "pages": quality.get("pages", 0),
-                    "blocks": blocks,
-                    "total_blocks": total_blocks,
-                    "edition_year": d.get("edition_year"),
-                    "coverage": d.get("coverage", {}),
-                })
+                stats.append(
+                    {
+                        "doc_id": doc_id,
+                        "filename": bn,
+                        "source_file": source_file,
+                        "size_bytes": sz,
+                        "size_mb": round(sz / 1024 / 1024, 2),
+                        "chunk_count": chunk_count or d.get("chunk_count", 0),
+                        "quality_score": quality.get("score", d.get("quality_score", 0)),
+                        "quality_warnings": quality.get(
+                            "warning_count", d.get("quality_warning_count", 0)
+                        ),
+                        "pages": quality.get("pages", 0),
+                        "blocks": blocks,
+                        "total_blocks": total_blocks,
+                        "edition_year": d.get("edition_year"),
+                        "coverage": d.get("coverage", {}),
+                    }
+                )
 
         return JSONResponse({"ok": True, "documents": stats, "count": len(stats)})
     except Exception as exc:
@@ -2819,6 +2852,7 @@ def _build_documents_list() -> dict[str, Any]:
     cfg_path = _config_path()
     with cfg_path.open(encoding="utf-8") as f:
         import yaml
+
         cfg = yaml.safe_load(f) or {}
     paths = cfg.get("paths", {}) or {}
     incoming_rel = paths.get("sources_incoming", "sources/incoming")
@@ -2837,11 +2871,13 @@ def _build_documents_list() -> dict[str, Any]:
         out = []
         for p in sorted(d.rglob("*")):
             if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
-                out.append({
-                    "path": str(p.relative_to(root)),
-                    "basename": p.name,
-                    "size": p.stat().st_size,
-                })
+                out.append(
+                    {
+                        "path": str(p.relative_to(root)),
+                        "basename": p.name,
+                        "size": p.stat().st_size,
+                    }
+                )
         return out
 
     incoming_files = _scan_dir(incoming_dir)
@@ -2870,15 +2906,17 @@ def _build_documents_list() -> dict[str, Any]:
                         if cand.is_file():
                             sz = cand.stat().st_size
                             break
-                indexed_docs.append({
-                    "doc_id": did,
-                    "basename": bn,
-                    "source_file": sf,
-                    "chunk_count": d.get("chunk_count"),
-                    "edition_year": d.get("edition_year"),
-                    "size": sz,
-                    "indexed": True,
-                })
+                indexed_docs.append(
+                    {
+                        "doc_id": did,
+                        "basename": bn,
+                        "source_file": sf,
+                        "chunk_count": d.get("chunk_count"),
+                        "edition_year": d.get("edition_year"),
+                        "size": sz,
+                        "indexed": True,
+                    }
+                )
         except Exception:
             pass
 
@@ -2888,12 +2926,14 @@ def _build_documents_list() -> dict[str, Any]:
         bn = f["basename"]
         if bn not in indexed_basenames and bn not in seen_pending:
             seen_pending.add(bn)
-            pending.append({
-                "basename": bn,
-                "path": f["path"],
-                "size": f["size"],
-                "indexed": False,
-            })
+            pending.append(
+                {
+                    "basename": bn,
+                    "path": f["path"],
+                    "size": f["size"],
+                    "indexed": False,
+                }
+            )
 
     rebuild_progress = None
     if _INGEST_STATE.get("running") and "rebuild" in (_INGEST_STATE.get("job") or ""):
@@ -2946,6 +2986,7 @@ async def api_v1_download(request: Request, filename: str = "", key: str = "") -
     try:
         with cfg_path.open(encoding="utf-8") as f:
             import yaml
+
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
@@ -2959,6 +3000,7 @@ async def api_v1_download(request: Request, filename: str = "", key: str = "") -
         for p in dir_path.rglob("*"):
             if p.is_file() and p.name == filename:
                 from starlette.responses import FileResponse
+
                 return FileResponse(str(p), filename=filename)
     return JSONResponse({"error": f"Файл не найден: {filename}"}, status_code=404)
 
@@ -3024,10 +3066,11 @@ async def ui_rebuild(request: Request, key: str = Form("")) -> Response:
 async def ui_rebuild_index(request: Request, key: str = Form("")) -> Response:
     if not _ui_key_ok(request, key):
         return PlainTextResponse("Unauthorized", status_code=401)
-    asyncio.create_task(_run_index_job_background(
-        "rebuild-index",
-        lambda: _pipeline_rebuild_index(str(_config_path()))
-    ))
+    asyncio.create_task(
+        _run_index_job_background(
+            "rebuild-index", lambda: _pipeline_rebuild_index(str(_config_path()))
+        )
+    )
     kq = f"?key={key}" if key else ""
     return RedirectResponse(url=f"/ui{kq}", status_code=303)
 
@@ -3059,7 +3102,9 @@ async def ui_rebuild_docs(request: Request) -> JSONResponse:
     doc_ids = [str(d) for d in doc_ids if d]
     filenames = [str(f) for f in filenames if f]
     if not doc_ids and not filenames:
-        return JSONResponse({"ok": False, "error": "требуются doc_ids или filenames"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "error": "требуются doc_ids или filenames"}, status_code=400
+        )
     asyncio.create_task(_run_rebuild_docs_background(doc_ids, filenames))
     total = len(doc_ids) + len(filenames)
     return JSONResponse({"ok": True, "message": f"rebuild-docs запущен для {total} документ(ов)"})

@@ -70,7 +70,10 @@ def test_postprocess_empty_input():
 def test_postprocess_preserves_content():
     """Good quality chunks should pass through unchanged."""
     chunks = [
-        {"text": "This is a well-formed paragraph with enough content to pass the filter.", "chunk_id": "a:0"},
+        {
+            "text": "This is a well-formed paragraph with enough content to pass the filter.",
+            "chunk_id": "a:0",
+        },
     ]
     result = _postprocess_chunks(chunks)
     assert len(result) == 1

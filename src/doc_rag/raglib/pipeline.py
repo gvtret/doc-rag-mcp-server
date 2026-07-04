@@ -377,6 +377,7 @@ def _ingest_sources(
             cleaned_blocks = blocks
             if blocks:
                 from doc_rag.raglib.quality import remove_duplicate_headers
+
                 cleaned_blocks = remove_duplicate_headers(blocks)
 
             quality_report = None
@@ -452,12 +453,17 @@ def _ingest_sources(
     original_count = len(all_chunks)
     all_chunks = _postprocess_chunks(all_chunks)
     if len(all_chunks) < original_count:
-        _log("INFO", f"postprocess: removed {original_count - len(all_chunks)} low-quality/noise chunks")
+        _log(
+            "INFO",
+            f"postprocess: removed {original_count - len(all_chunks)} low-quality/noise chunks",
+        )
 
     return manifest_documents, all_chunks, processed_sources
 
 
-def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) -> list[dict[str, Any]]:
+def _postprocess_chunks(
+    chunks: list[dict[str, Any]], min_text_len: int = 20
+) -> list[dict[str, Any]]:
     """Post-process chunks to improve search quality.
 
     - Remove duplicate header/footer patterns
@@ -493,12 +499,12 @@ def _postprocess_chunks(chunks: list[dict[str, Any]], min_text_len: int = 20) ->
             continue
 
         # Clean unreadable characters (OCR artifacts)
-        cleaned = re.sub(r'[\ufffd\x00-\x08\x0e-\x1f]', '', text)
-        cleaned = re.sub(r'[^\w\s.,;:!?()\-+/=<>%§°±×÷†‡∞≈≠≤≥\[\]{}|/\\\"\'`~@#&*^]', '', cleaned)
+        cleaned = re.sub(r"[\ufffd\x00-\x08\x0e-\x1f]", "", text)
+        cleaned = re.sub(r"[^\w\s.,;:!?()\-+/=<>%§°±×÷†‡∞≈≠≤≥\[\]{}|/\\\"\'`~@#&*^]", "", cleaned)
 
         # Collapse multiple spaces/newlines
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
 
         if len(cleaned) < min_text_len:
             continue
@@ -880,7 +886,10 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             parsed = parse_document(cfg, src)
             md_text = parsed["markdown"]
             blocks = parsed.get("blocks") or []
-            _log("INFO", f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)")
+            _log(
+                "INFO",
+                f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)",
+            )
 
             md_path = os.path.join(docs_md, f"{doc_id}.md")
             with open(md_path, "w", encoding="utf-8") as f:
@@ -892,6 +901,7 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             cleaned_blocks = blocks
             if blocks:
                 from doc_rag.raglib.quality import remove_duplicate_headers
+
                 cleaned_blocks = remove_duplicate_headers(blocks)
 
             quality_report = None
@@ -934,25 +944,27 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
 
             cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
             ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
-            new_docs.append({
-                "doc_id": doc_id,
-                "source_file": rel_src,
-                "md_path": os.path.relpath(md_path, root),
-                "blocks_path": blocks_rel,
-                "sha256": file_hash,
-                "chunk_count": len(file_chunks),
-                "title_hint": os.path.splitext(base)[0],
-                "edition_year": ed_y,
-                "coverage": cov,
-                **(
-                    {
-                        "quality_score": quality_report.score,
-                        "quality_warning_count": len(quality_report.warnings),
-                    }
-                    if quality_report is not None
-                    else {}
-                ),
-            })
+            new_docs.append(
+                {
+                    "doc_id": doc_id,
+                    "source_file": rel_src,
+                    "md_path": os.path.relpath(md_path, root),
+                    "blocks_path": blocks_rel,
+                    "sha256": file_hash,
+                    "chunk_count": len(file_chunks),
+                    "title_hint": os.path.splitext(base)[0],
+                    "edition_year": ed_y,
+                    "coverage": cov,
+                    **(
+                        {
+                            "quality_score": quality_report.score,
+                            "quality_warning_count": len(quality_report.warnings),
+                        }
+                        if quality_report is not None
+                        else {}
+                    ),
+                }
+            )
 
             new_chunks.extend(file_chunks)
             processed.append(src)
@@ -1012,7 +1024,10 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             seen_cids.add(cid)
             deduped_chunks.append(c)
     if len(deduped_chunks) != len(all_chunks):
-        _log("WARN", f"rebuild: removed {len(all_chunks) - len(deduped_chunks)} duplicate chunk entries")
+        _log(
+            "WARN",
+            f"rebuild: removed {len(all_chunks) - len(deduped_chunks)} duplicate chunk entries",
+        )
     all_chunks = list(reversed(deduped_chunks))
 
     dedup_thresh = float(cfg.get("chunking", {}).get("dedup_similarity_threshold", 0.0))
@@ -1107,7 +1122,9 @@ def rebuild_index(config_path: str) -> None:
         _log("ERROR", f"rebuild_index failed: {e}")
 
 
-def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | None = None) -> dict[str, Any]:
+def rebuild_docs(
+    config_path: str, doc_ids: list[str], filenames: list[str] | None = None
+) -> dict[str, Any]:
     """Rebuild only specific documents by doc_id or filename.
 
     Removes their .md and chunks, re-parses the source files, then
@@ -1131,7 +1148,9 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     target_filenames = {f for f in (filenames or []) if f}
 
     # Phase 1: find indexed docs by doc_id — delete their .md, resolve source files
-    to_rebuild_indexed = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids]
+    to_rebuild_indexed = [
+        d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") in target_ids
+    ]
     sources_to_parse: list[str] = []
 
     for d in to_rebuild_indexed:
@@ -1176,10 +1195,17 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     # Remove duplicates
     sources_to_parse = list(dict.fromkeys(sources_to_parse))
 
-    _log("INFO", f"rebuild-docs: {len(to_rebuild_indexed)} indexed + {len(sources_to_parse) - len(to_rebuild_indexed)} pending = {len(sources_to_parse)} to parse")
+    _log(
+        "INFO",
+        f"rebuild-docs: {len(to_rebuild_indexed)} indexed + {len(sources_to_parse) - len(to_rebuild_indexed)} pending = {len(sources_to_parse)} to parse",
+    )
 
     if not sources_to_parse:
-        return {"requested": len(target_ids) + len(target_filenames), "rebuilt": 0, "missing": len(target_ids) - len(to_rebuild_indexed)}
+        return {
+            "requested": len(target_ids) + len(target_filenames),
+            "rebuilt": 0,
+            "missing": len(target_ids) - len(to_rebuild_indexed),
+        }
 
     target = int(cfg.get("chunking", {}).get("target_tokens", 512))
     overlap = int(cfg.get("chunking", {}).get("overlap_tokens", 64))
@@ -1206,7 +1232,10 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
             parsed = parse_document(cfg, src)
             md_text = parsed["markdown"]
             blocks = parsed.get("blocks") or []
-            _log("INFO", f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)")
+            _log(
+                "INFO",
+                f"[{file_idx}/{total_files}] parsed: {len(md_text)} chars, {len(blocks)} blocks ({time.time() - t_file:.1f}s)",
+            )
 
             md_path = os.path.join(docs_md, f"{doc_id}.md")
             with open(md_path, "w", encoding="utf-8") as f:
@@ -1218,6 +1247,7 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
             cleaned_blocks = blocks
             if blocks:
                 from doc_rag.raglib.quality import remove_duplicate_headers
+
                 cleaned_blocks = remove_duplicate_headers(blocks)
 
             quality_report = None
@@ -1260,28 +1290,34 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
 
             cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
             ed_y = resolve_edition_year(cfg, abs_path=src, rel_path=rel_src, sha256_hex=file_hash)
-            new_docs.append({
-                "doc_id": doc_id,
-                "source_file": rel_src,
-                "md_path": os.path.relpath(md_path, root),
-                "blocks_path": blocks_rel,
-                "sha256": file_hash,
-                "chunk_count": len(file_chunks),
-                "title_hint": os.path.splitext(base)[0],
-                "edition_year": ed_y,
-                "coverage": cov,
-                **(
-                    {
-                        "quality_score": quality_report.score,
-                        "quality_warning_count": len(quality_report.warnings),
-                    }
-                    if quality_report is not None
-                    else {}
-                ),
-            })
+            new_docs.append(
+                {
+                    "doc_id": doc_id,
+                    "source_file": rel_src,
+                    "md_path": os.path.relpath(md_path, root),
+                    "blocks_path": blocks_rel,
+                    "sha256": file_hash,
+                    "chunk_count": len(file_chunks),
+                    "title_hint": os.path.splitext(base)[0],
+                    "edition_year": ed_y,
+                    "coverage": cov,
+                    **(
+                        {
+                            "quality_score": quality_report.score,
+                            "quality_warning_count": len(quality_report.warnings),
+                        }
+                        if quality_report is not None
+                        else {}
+                    ),
+                }
+            )
 
             # Incremental manifest update: write after each file so UI sees progress
-            _kept = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
+            _kept = [
+                d
+                for d in existing_docs
+                if isinstance(d, dict) and d.get("doc_id") not in target_ids
+            ]
             _inc_manifest = _manifest_shell(cfg, _kept + new_docs)
             with open(manifest_path, "w", encoding="utf-8") as _mf:
                 json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
@@ -1298,10 +1334,14 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
             _log("ERROR", f"[{file_idx}/{total_files}] failed: {rel_src} ({elapsed:.1f}s): {e}")
 
     total_elapsed = time.time() - t_start
-    _log("INFO", f"rebuild-docs: parsed {len(new_docs)}/{total_files} files in {total_elapsed:.1f}s")
+    _log(
+        "INFO", f"rebuild-docs: parsed {len(new_docs)}/{total_files} files in {total_elapsed:.1f}s"
+    )
 
     # Phase 2: Merge with existing
-    kept_docs = [d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids]
+    kept_docs = [
+        d for d in existing_docs if isinstance(d, dict) and d.get("doc_id") not in target_ids
+    ]
     all_docs = kept_docs + new_docs
 
     _seen_ids: set[str] = set()
@@ -1366,7 +1406,11 @@ def rebuild_docs(config_path: str, doc_ids: list[str], filenames: list[str] | No
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 
-    return {"requested": len(target_ids) + len(target_filenames), "rebuilt": len(new_docs), "missing": 0}
+    return {
+        "requested": len(target_ids) + len(target_filenames),
+        "rebuilt": len(new_docs),
+        "missing": 0,
+    }
 
 
 def _rebuild_faiss_after_delete(cfg: dict[str, Any], deleted_doc_ids: set) -> dict[str, Any]:

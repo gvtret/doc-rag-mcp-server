@@ -18,15 +18,17 @@ def _build_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build structured citations array from search results."""
     citations: list[dict[str, Any]] = []
     for i, r in enumerate(results, 1):
-        citations.append({
-            "index": i,
-            "chunk_id": r.get("chunk_id", ""),
-            "source_file": r.get("source_file", ""),
-            "section_path": r.get("section_path", ""),
-            "doc_id": r.get("doc_id", ""),
-            "score": r.get("score"),
-            "text_preview": str(r.get("text", ""))[:200],
-        })
+        citations.append(
+            {
+                "index": i,
+                "chunk_id": r.get("chunk_id", ""),
+                "source_file": r.get("source_file", ""),
+                "section_path": r.get("section_path", ""),
+                "doc_id": r.get("doc_id", ""),
+                "score": r.get("score"),
+                "text_preview": str(r.get("text", ""))[:200],
+            }
+        )
     return citations
 
 
@@ -113,9 +115,11 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
 
     content.append({"type": "text", "text": "\n\n".join(lines)})
 
-    content.append({
-        "type": "text",
-        "text": "\n---\nCitations: " + str(citations),
-    })
+    content.append(
+        {
+            "type": "text",
+            "text": "\n---\nCitations: " + str(citations),
+        }
+    )
 
     return content

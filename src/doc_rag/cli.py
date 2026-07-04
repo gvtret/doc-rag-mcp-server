@@ -85,8 +85,16 @@ def main() -> None:
 
     sub.add_parser("ingest", help="Incremental ingest from sources/incoming")
     p_rebuild = sub.add_parser("rebuild", help="Rebuild chunks/embeddings/index from build/docs_md")
-    p_rebuild.add_argument("--force", action="store_true", help="Full rebuild: wipe docs_md + chunks, reparse everything")
-    p_rebuild.add_argument("--skip-index", action="store_true", help="Skip vector index rebuild (for local GPU processing)")
+    p_rebuild.add_argument(
+        "--force",
+        action="store_true",
+        help="Full rebuild: wipe docs_md + chunks, reparse everything",
+    )
+    p_rebuild.add_argument(
+        "--skip-index",
+        action="store_true",
+        help="Skip vector index rebuild (for local GPU processing)",
+    )
 
     p_rebuild_docs = sub.add_parser("rebuild-docs", help="Rebuild specific documents by doc_id")
     p_rebuild_docs.add_argument("doc_ids", nargs="+", help="doc_id(s) to rebuild")
@@ -145,7 +153,9 @@ def main() -> None:
     if args.cmd == "rebuild-docs":
         cfg = load_config(cfg_path)
         if _server_running(cfg):
-            print(f"Сервер запущен — отправляю rebuild-docs ({len(args.doc_ids)} doc(s)) через API…")
+            print(
+                f"Сервер запущен — отправляю rebuild-docs ({len(args.doc_ids)} doc(s)) через API…"
+            )
             _api_post(cfg, "/ui/rebuild-docs", {"doc_ids": args.doc_ids})
             _wait_for_job(cfg)
             print("Готово.")

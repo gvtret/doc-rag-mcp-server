@@ -65,6 +65,7 @@ def test_load_config_rejects_invalid_index_backend(tmp_path, monkeypatch) -> Non
 
     with _pytest.raises(ValueError, match="Invalid index.backend"):
         from doc_rag.server.retrieval import load_config as _lc
+
         _lc()
 
 
@@ -84,4 +85,5 @@ def test_load_config_rejects_invalid_retrieval_mode(tmp_path, monkeypatch) -> No
 
     with _pytest.raises(ValueError, match="Invalid mcp.retrieval_mode"):
         from doc_rag.server.retrieval import load_config as _lc
+
         _lc()

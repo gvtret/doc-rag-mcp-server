@@ -106,7 +106,8 @@ class VectorIndex:
                 last_error = e
                 if attempt < max_retries - 1:
                     import time
-                    time.sleep(2 ** attempt)  # Exponential backoff
+
+                    time.sleep(2**attempt)  # Exponential backoff
                     logger.warning("Embedding attempt %d failed: %s, retrying...", attempt + 1, e)
 
         raise RuntimeError(f"Embedding failed after {max_retries} attempts: {last_error}")

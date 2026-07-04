@@ -4,6 +4,7 @@ import pytest
 
 # ── search_tool: structured citations ──────────────────────────────────
 
+
 def test_build_citations_returns_indexed_list() -> None:
     from doc_rag.server.search_tool import _build_citations
 

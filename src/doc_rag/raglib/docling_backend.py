@@ -469,6 +469,7 @@ def parse_pdf_docling(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     if file_size_mb > 3:
         try:
             from pypdf import PdfReader
+
             reader = PdfReader(path)
             page_count = len(reader.pages)
         except Exception:
@@ -508,7 +509,9 @@ def _parse_pdf_single(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     return text, blocks, stats
 
 
-def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, list[Block], dict[str, Any]]:
+def _parse_pdf_chunked(
+    path: str, max_pages_per_chunk: int = 100
+) -> tuple[str, list[Block], dict[str, Any]]:
     """Parse a large PDF by splitting into page chunks.
 
     Each chunk is processed separately to avoid OOM. Results are merged.
@@ -539,6 +542,7 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
         # Check available memory before processing
         try:
             import psutil
+
             mem = psutil.virtual_memory()
             if mem.available < 1024 * 1024 * 1024:  # Less than 1GB free
                 print(
@@ -551,6 +555,7 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
 
         # Force garbage collection before processing to free memory
         import gc
+
         gc.collect()
 
         # Create a temporary PDF with just these pages
@@ -601,6 +606,8 @@ def _parse_pdf_chunked(path: str, max_pages_per_chunk: int = 100) -> tuple[str, 
     if total_ocr_pages:
         stats["ocr_pages_count"] = total_ocr_pages
         stats["ocr_pages"] = list(range(1, total_pages + 1))
-        stats["ocr_mean_score"] = round(sum(total_ocr_scores) / len(total_ocr_scores), 4) if total_ocr_scores else 0
+        stats["ocr_mean_score"] = (
+            round(sum(total_ocr_scores) / len(total_ocr_scores), 4) if total_ocr_scores else 0
+        )
 
     return text, all_blocks, stats

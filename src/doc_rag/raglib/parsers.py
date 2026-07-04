@@ -333,21 +333,34 @@ def parse_document(cfg: dict[str, Any], path: str) -> dict[str, Any]:
                 tmp_blocks = backend_blocks
                 report = run_quality_checks("tmp", tmp_blocks)
                 if report.score < quality_threshold:
-                    print(f"[doc-rag][WARN] quality cascade: score {report.score:.2f} < {quality_threshold}, trying Unstructured on {os.path.basename(path)}", file=os.sys.stderr)
+                    print(
+                        f"[doc-rag][WARN] quality cascade: score {report.score:.2f} < {quality_threshold}, trying Unstructured on {os.path.basename(path)}",
+                        file=os.sys.stderr,
+                    )
                     try:
                         from doc_rag.raglib.unstructured_backend import parse_pdf_unstructured
+
                         u_text, u_blocks, u_stats = parse_pdf_unstructured(path)
                         u_report = run_quality_checks("tmp", u_blocks)
                         if u_report.score > report.score:
-                            print(f"[doc-rag][WARN] quality cascade: Unstructured score {u_report.score:.2f} > {report.score:.2f}, using Unstructured", file=os.sys.stderr)
+                            print(
+                                f"[doc-rag][WARN] quality cascade: Unstructured score {u_report.score:.2f} > {report.score:.2f}, using Unstructured",
+                                file=os.sys.stderr,
+                            )
                             text = u_text
                             backend_blocks = u_blocks
                             raw_stats = u_stats
                             source_backend = "unstructured"
                         else:
-                            print(f"[doc-rag][INFO] quality cascade: Unstructured score {u_report.score:.2f} <= {report.score:.2f}, keeping Docling", file=os.sys.stderr)
+                            print(
+                                f"[doc-rag][INFO] quality cascade: Unstructured score {u_report.score:.2f} <= {report.score:.2f}, keeping Docling",
+                                file=os.sys.stderr,
+                            )
                     except RuntimeError:
-                        print("[doc-rag][WARN] quality cascade: Unstructured not installed, keeping Docling", file=os.sys.stderr)
+                        print(
+                            "[doc-rag][WARN] quality cascade: Unstructured not installed, keeping Docling",
+                            file=os.sys.stderr,
+                        )
             except Exception as e:
                 print(f"[doc-rag][WARN] quality cascade check failed: {e}", file=os.sys.stderr)
 

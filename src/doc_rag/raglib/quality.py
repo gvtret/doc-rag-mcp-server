@@ -135,6 +135,7 @@ def remove_duplicate_headers(blocks: list[Block], threshold: int = 3) -> list[Bl
 
     if removed:
         import logging
+
         logging.getLogger("doc_rag").warning(
             "quality: removed %d duplicate header/footer blocks", removed
         )

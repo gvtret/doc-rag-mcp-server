@@ -18,6 +18,7 @@ import pytest
 
 # ── VectorIndex.build() input dedup ────────────────────────────────────
 
+
 def test_vector_index_build_dedup_input_chunks(tmp_path: Path) -> None:
     """Duplicate chunk_ids in input should not create ghost vectors."""
     from doc_rag.raglib.vector_index import VectorIndex
@@ -55,14 +56,19 @@ def test_vector_index_build_incremental_dedup_input(tmp_path: Path) -> None:
     vi = VectorIndex(cfg)
     vi.build([{"chunk_id": "a:0", "text": "alpha"}], force=True, log=lambda *a: None)
     assert vi.size == 1
-    vi.build([
-        {"chunk_id": "b:0", "text": "beta"},
-        {"chunk_id": "b:0", "text": "beta dup"},
-    ], force=False, log=lambda *a: None)
+    vi.build(
+        [
+            {"chunk_id": "b:0", "text": "beta"},
+            {"chunk_id": "b:0", "text": "beta dup"},
+        ],
+        force=False,
+        log=lambda *a: None,
+    )
     assert vi.size == 2
 
 
 # ── helpers ────────────────────────────────────────────────────────────
+
 
 def _make_root(tmp_path: Path) -> Path:
     """Create standard directory layout and config for rebuild tests.
@@ -73,11 +79,16 @@ def _make_root(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     for d in [
-        "build/docs_md", "build/chunks", "build/blocks", "build/index",
-        "sources/archived", "sources/incoming",
+        "build/docs_md",
+        "build/chunks",
+        "build/blocks",
+        "build/index",
+        "sources/archived",
+        "sources/incoming",
     ]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config" / "config.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "config" / "config.yaml").write_text(
+        textwrap.dedent("""\
         paths:
           sources_archived: sources/archived
           sources_incoming: sources/incoming
@@ -95,7 +106,8 @@ def _make_root(tmp_path: Path) -> Path:
         embeddings:
           model_name: BAAI/bge-small-en-v1.5
           device: cpu
-    """))
+    """)
+    )
     return tmp_path / "config" / "config.yaml"
 
 
@@ -106,6 +118,7 @@ def _write_chunks(path: Path, chunks: list[dict]) -> None:
 
 
 # ── rebuild() doc + chunk dedup ────────────────────────────────────────
+
 
 def test_rebuild_deduplicates_docs_by_doc_id(tmp_path: Path) -> None:
     """rebuild() should drop duplicate doc_id entries from existing manifest."""
@@ -118,12 +131,27 @@ def test_rebuild_deduplicates_docs_by_doc_id(tmp_path: Path) -> None:
     manifest = {
         "schema_version": 1,
         "documents": [
-            {"doc_id": "dup_x", "source_file": "a.txt", "sha256": "aaa",
-             "md_path": "build/docs_md/dup_x.md", "chunk_count": 1},
-            {"doc_id": "dup_x", "source_file": "a.txt", "sha256": "aaa",
-             "md_path": "build/docs_md/dup_x.md", "chunk_count": 1},
-            {"doc_id": "unique_y", "source_file": "b.txt", "sha256": "bbb",
-             "md_path": "build/docs_md/unique_y.md", "chunk_count": 1},
+            {
+                "doc_id": "dup_x",
+                "source_file": "a.txt",
+                "sha256": "aaa",
+                "md_path": "build/docs_md/dup_x.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "dup_x",
+                "source_file": "a.txt",
+                "sha256": "aaa",
+                "md_path": "build/docs_md/dup_x.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "unique_y",
+                "source_file": "b.txt",
+                "sha256": "bbb",
+                "md_path": "build/docs_md/unique_y.md",
+                "chunk_count": 1,
+            },
         ],
     }
     with open(manifest_path, "w") as f:
@@ -153,18 +181,26 @@ def test_rebuild_deduplicates_chunks_by_chunk_id(tmp_path: Path) -> None:
     manifest = {
         "schema_version": 1,
         "documents": [
-            {"doc_id": "doc_a", "source_file": "a.txt", "sha256": "aaa",
-             "md_path": "build/docs_md/doc_a.md", "chunk_count": 2},
+            {
+                "doc_id": "doc_a",
+                "source_file": "a.txt",
+                "sha256": "aaa",
+                "md_path": "build/docs_md/doc_a.md",
+                "chunk_count": 2,
+            },
         ],
     }
     with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
-    _write_chunks(chunks_path, [
-        {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero"},
-        {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero dup"},
-        {"doc_id": "doc_a", "chunk_id": "doc_a:1", "text": "chunk one"},
-    ])
+    _write_chunks(
+        chunks_path,
+        [
+            {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero"},
+            {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero dup"},
+            {"doc_id": "doc_a", "chunk_id": "doc_a:1", "text": "chunk one"},
+        ],
+    )
 
     (docs_md / "doc_a.md").write_text("content a")
 
@@ -181,7 +217,10 @@ def test_rebuild_deduplicates_chunks_by_chunk_id(tmp_path: Path) -> None:
 
 # ── _build_documents_list() dedup ──────────────────────────────────────
 
-def test_build_documents_list_dedup_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_build_documents_list_dedup_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Same filename in both incoming/ and archived/ should appear once in pending."""
     from doc_rag.server import mcp_http
 
@@ -195,12 +234,14 @@ def test_build_documents_list_dedup_pending(tmp_path: Path, monkeypatch: pytest.
     (archived / "dup.txt").write_text("from archived")
     (tmp_path / "build" / "manifest.json").write_text(json.dumps({"documents": []}))
 
-    (tmp_path / "config.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "config.yaml").write_text(
+        textwrap.dedent("""\
         paths:
           sources_archived: sources/archived
           sources_incoming: sources/incoming
           manifest_path: build/manifest.json
-    """))
+    """)
+    )
 
     monkeypatch.setattr(mcp_http, "_root_dir", lambda: tmp_path)
     monkeypatch.setattr(mcp_http, "_config_path", lambda: tmp_path / "config.yaml")
@@ -211,7 +252,9 @@ def test_build_documents_list_dedup_pending(tmp_path: Path, monkeypatch: pytest.
     assert result["pending_count"] == 1
 
 
-def test_build_documents_list_dedup_indexed_by_doc_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_documents_list_dedup_indexed_by_doc_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Duplicate doc_id entries in manifest should appear once in indexed."""
     from doc_rag.server import mcp_http
 
@@ -220,23 +263,29 @@ def test_build_documents_list_dedup_indexed_by_doc_id(tmp_path: Path, monkeypatc
     (tmp_path / "sources" / "incoming").mkdir(parents=True)
     (tmp_path / "build").mkdir(parents=True)
 
-    (tmp_path / "build" / "manifest.json").write_text(json.dumps({
-        "documents": [
-            {"doc_id": "dup_x", "source_file": "x.txt", "sha256": "aaa", "chunk_count": 1},
-            {"doc_id": "dup_x", "source_file": "x.txt", "sha256": "aaa", "chunk_count": 1},
-            {"doc_id": "uniq_y", "source_file": "y.txt", "sha256": "bbb", "chunk_count": 1},
-        ]
-    }))
+    (tmp_path / "build" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {"doc_id": "dup_x", "source_file": "x.txt", "sha256": "aaa", "chunk_count": 1},
+                    {"doc_id": "dup_x", "source_file": "x.txt", "sha256": "aaa", "chunk_count": 1},
+                    {"doc_id": "uniq_y", "source_file": "y.txt", "sha256": "bbb", "chunk_count": 1},
+                ]
+            }
+        )
+    )
 
     (archived / "x.txt").write_text("x")
     (archived / "y.txt").write_text("y")
 
-    (tmp_path / "config.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "config.yaml").write_text(
+        textwrap.dedent("""\
         paths:
           sources_archived: sources/archived
           sources_incoming: sources/incoming
           manifest_path: build/manifest.json
-    """))
+    """)
+    )
 
     monkeypatch.setattr(mcp_http, "_root_dir", lambda: tmp_path)
     monkeypatch.setattr(mcp_http, "_config_path", lambda: tmp_path / "config.yaml")
@@ -246,6 +295,7 @@ def test_build_documents_list_dedup_indexed_by_doc_id(tmp_path: Path, monkeypatc
 
 
 # ── rebuild_docs() dedup ───────────────────────────────────────────────
+
 
 def test_rebuild_docs_deduplicates_chunks(tmp_path: Path) -> None:
     """rebuild_docs() should dedup chunks after merge."""
@@ -259,22 +309,40 @@ def test_rebuild_docs_deduplicates_chunks(tmp_path: Path) -> None:
     manifest = {
         "schema_version": 1,
         "documents": [
-            {"doc_id": "keep_me", "source_file": "keep.txt", "sha256": "111",
-             "md_path": "build/docs_md/keep_me.md", "chunk_count": 1},
-            {"doc_id": "dup_target", "source_file": "target.txt", "sha256": "222",
-             "md_path": "build/docs_md/dup_target.md", "chunk_count": 1},
-            {"doc_id": "dup_target", "source_file": "target.txt", "sha256": "222",
-             "md_path": "build/docs_md/dup_target.md", "chunk_count": 1},
+            {
+                "doc_id": "keep_me",
+                "source_file": "keep.txt",
+                "sha256": "111",
+                "md_path": "build/docs_md/keep_me.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "dup_target",
+                "source_file": "target.txt",
+                "sha256": "222",
+                "md_path": "build/docs_md/dup_target.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "dup_target",
+                "source_file": "target.txt",
+                "sha256": "222",
+                "md_path": "build/docs_md/dup_target.md",
+                "chunk_count": 1,
+            },
         ],
     }
     with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
-    _write_chunks(chunks_path, [
-        {"doc_id": "keep_me", "chunk_id": "keep_me:0", "text": "keep"},
-        {"doc_id": "dup_target", "chunk_id": "dup_target:0", "text": "old target"},
-        {"doc_id": "dup_target", "chunk_id": "dup_target:0", "text": "old target dup"},
-    ])
+    _write_chunks(
+        chunks_path,
+        [
+            {"doc_id": "keep_me", "chunk_id": "keep_me:0", "text": "keep"},
+            {"doc_id": "dup_target", "chunk_id": "dup_target:0", "text": "old target"},
+            {"doc_id": "dup_target", "chunk_id": "dup_target:0", "text": "old target dup"},
+        ],
+    )
 
     (docs_md / "keep_me.md").write_text("keep content")
 

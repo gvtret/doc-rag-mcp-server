@@ -16,11 +16,16 @@ def _make_root(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     for d in [
-        "build/docs_md", "build/chunks", "build/blocks", "build/index",
-        "sources/archived", "sources/incoming",
+        "build/docs_md",
+        "build/chunks",
+        "build/blocks",
+        "build/index",
+        "sources/archived",
+        "sources/incoming",
     ]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config" / "config.yaml").write_text(textwrap.dedent("""\
+    (tmp_path / "config" / "config.yaml").write_text(
+        textwrap.dedent("""\
         paths:
           sources_archived: sources/archived
           sources_incoming: sources/incoming
@@ -38,7 +43,8 @@ def _make_root(tmp_path: Path) -> Path:
         embeddings:
           model_name: BAAI/bge-small-en-v1.5
           device: cpu
-    """))
+    """)
+    )
     return tmp_path / "config" / "config.yaml"
 
 
@@ -70,6 +76,7 @@ def _read_chunks(chunks_path: Path) -> list[dict]:
 
 # ── Test 1: Chunks appear in chunks.jsonl after each file ──────────────
 
+
 def test_rebuild_per_file_chunk_persist(tmp_path: Path) -> None:
     """Each parsed file's chunks should be in chunks.jsonl immediately after parsing."""
     from doc_rag.raglib.pipeline import rebuild
@@ -92,6 +99,7 @@ def test_rebuild_per_file_chunk_persist(tmp_path: Path) -> None:
         original_append(path, chunks)
 
     from doc_rag.raglib import pipeline
+
     original_append = pipeline._append_chunks
     with patch.object(pipeline, "_append_chunks", side_effect=counting_append):
         rebuild(str(config_path), force=True)
@@ -101,6 +109,7 @@ def test_rebuild_per_file_chunk_persist(tmp_path: Path) -> None:
 
 
 # ── Test 2: Crash recovery — chunks exist for completed files ──────────
+
 
 def test_rebuild_crash_recovery_chunks_exist(tmp_path: Path) -> None:
     """If _ingest_sources fails on file #3, files #1-2 should have chunks in chunks.jsonl."""
@@ -126,6 +135,7 @@ def test_rebuild_crash_recovery_chunks_exist(tmp_path: Path) -> None:
         return original_parse(cfg, src)
 
     from doc_rag.raglib import pipeline
+
     original_parse = pipeline.parse_document
     with patch.object(pipeline, "parse_document", side_effect=failing_parse):
         rebuild(str(config_path), force=True)
@@ -139,6 +149,7 @@ def test_rebuild_crash_recovery_chunks_exist(tmp_path: Path) -> None:
 
 
 # ── Test 3: rebuild_docs per-file persist ──────────────────────────────
+
 
 def test_rebuild_docs_per_file_chunk_persist(tmp_path: Path) -> None:
     """rebuild_docs should also persist chunks per-file."""
@@ -155,20 +166,31 @@ def test_rebuild_docs_per_file_chunk_persist(tmp_path: Path) -> None:
     (docs_md / "existing.md").write_text("existing content")
     manifest = {
         "schema_version": 1,
-        "documents": [{
-            "doc_id": "existing_abc123",
-            "source_file": "sources/archived/existing.txt",
-            "sha256": "aaa",
-            "md_path": "build/docs_md/existing.md",
-            "chunk_count": 1,
-        }],
+        "documents": [
+            {
+                "doc_id": "existing_abc123",
+                "source_file": "sources/archived/existing.txt",
+                "sha256": "aaa",
+                "md_path": "build/docs_md/existing.md",
+                "chunk_count": 1,
+            }
+        ],
     }
     with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
     # Write existing chunks
     with open(chunks_path, "w") as f:
-        f.write(json.dumps({"doc_id": "existing_abc123", "chunk_id": "existing_abc123:0", "text": "existing chunk"}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "doc_id": "existing_abc123",
+                    "chunk_id": "existing_abc123:0",
+                    "text": "existing chunk",
+                }
+            )
+            + "\n"
+        )
 
     # New file to rebuild
     _create_txt(archived / "new.txt", "New document content. " * 20)
@@ -182,6 +204,7 @@ def test_rebuild_docs_per_file_chunk_persist(tmp_path: Path) -> None:
         original_append(path, chunks)
 
     from doc_rag.raglib import pipeline
+
     original_append = pipeline._append_chunks
     with patch.object(pipeline, "_append_chunks", side_effect=counting_append):
         rebuild_docs(str(config_path), doc_ids=[], filenames=["new.txt"])
@@ -192,6 +215,7 @@ def test_rebuild_docs_per_file_chunk_persist(tmp_path: Path) -> None:
 
 
 # ── Test 4: force=True triggers full index rebuild ─────────────────────
+
 
 def test_rebuild_force_index_full_rebuild(tmp_path: Path) -> None:
     """force=True should rebuild the vector index from scratch."""
@@ -210,6 +234,7 @@ def test_rebuild_force_index_full_rebuild(tmp_path: Path) -> None:
         return original_build(self, chunks, force=force, log=log)
 
     from doc_rag.raglib import vector_index
+
     original_build = vector_index.VectorIndex.build
     with patch.object(vector_index.VectorIndex, "build", tracking_build):
         rebuild(str(config_path), force=True)
@@ -219,6 +244,7 @@ def test_rebuild_force_index_full_rebuild(tmp_path: Path) -> None:
 
 
 # ── Test 5: force=False triggers incremental index update ──────────────
+
 
 def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
     """force=False with new chunks should do incremental index update."""
@@ -237,6 +263,7 @@ def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
         return original_build(self, chunks, force=force, log=log)
 
     from doc_rag.raglib import vector_index
+
     original_build = vector_index.VectorIndex.build
     with patch.object(vector_index.VectorIndex, "build", tracking_build):
         rebuild(str(config_path), force=False)
@@ -246,6 +273,7 @@ def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
 
 
 # ── Test 6: ingest incremental per-file index update ───────────────────
+
 
 def test_ingest_per_file_index_update(tmp_path: Path) -> None:
     """ingest() incremental should update the vector index per-file."""
@@ -265,6 +293,7 @@ def test_ingest_per_file_index_update(tmp_path: Path) -> None:
         return original_build(self, chunks, force=force, log=log)
 
     from doc_rag.raglib import vector_index
+
     original_build = vector_index.VectorIndex.build
     with patch.object(vector_index.VectorIndex, "build", tracking_build):
         ingest(str(config_path))
@@ -275,6 +304,7 @@ def test_ingest_per_file_index_update(tmp_path: Path) -> None:
 
 
 # ── Test 7: Skip logic after crash — .md exists → file skipped ─────────
+
 
 def test_rebuild_skip_logic_after_crash(tmp_path: Path) -> None:
     """If .md exists from a prior partial rebuild, the file should be skipped."""
@@ -295,20 +325,25 @@ def test_rebuild_skip_logic_after_crash(tmp_path: Path) -> None:
     # Manifest with this doc
     manifest = {
         "schema_version": 1,
-        "documents": [{
-            "doc_id": doc_id,
-            "source_file": "sources/archived/a.txt",
-            "sha256": file_hash,
-            "md_path": f"build/docs_md/{doc_id}.md",
-            "chunk_count": 0,
-        }],
+        "documents": [
+            {
+                "doc_id": doc_id,
+                "source_file": "sources/archived/a.txt",
+                "sha256": file_hash,
+                "md_path": f"build/docs_md/{doc_id}.md",
+                "chunk_count": 0,
+            }
+        ],
     }
     with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
     # Write some chunks for this doc
     with open(chunks_path, "w") as f:
-        f.write(json.dumps({"doc_id": doc_id, "chunk_id": f"{doc_id}:0", "text": "existing chunk"}) + "\n")
+        f.write(
+            json.dumps({"doc_id": doc_id, "chunk_id": f"{doc_id}:0", "text": "existing chunk"})
+            + "\n"
+        )
 
     parse_count = 0
     original_parse = None
@@ -319,6 +354,7 @@ def test_rebuild_skip_logic_after_crash(tmp_path: Path) -> None:
         return original_parse(cfg, src)
 
     from doc_rag.raglib import pipeline
+
     original_parse = pipeline.parse_document
     with patch.object(pipeline, "parse_document", counting_parse):
         rebuild(str(config_path), force=False)
@@ -328,6 +364,7 @@ def test_rebuild_skip_logic_after_crash(tmp_path: Path) -> None:
 
 
 # ── Test 8: manifest written at end, chunks per-file ───────────────────
+
 
 def test_manifest_written_at_end_chunks_per_file(tmp_path: Path) -> None:
     """Manifest should be written after all files, chunks after each file."""
@@ -351,6 +388,7 @@ def test_manifest_written_at_end_chunks_per_file(tmp_path: Path) -> None:
         chunk_counts_after_append.append(_count_chunks(chunks_path))
 
     from doc_rag.raglib import pipeline
+
     original_append = pipeline._append_chunks
     with patch.object(pipeline, "_append_chunks", side_effect=tracking_append):
         rebuild(str(config_path), force=True)
@@ -358,7 +396,9 @@ def test_manifest_written_at_end_chunks_per_file(tmp_path: Path) -> None:
     # Each append should increase the chunk count
     assert len(chunk_counts_after_append) == 2
     assert chunk_counts_after_append[0] > 0, "First append should add chunks"
-    assert chunk_counts_after_append[1] > chunk_counts_after_append[0], "Second append should add more chunks"
+    assert chunk_counts_after_append[1] > chunk_counts_after_append[0], (
+        "Second append should add more chunks"
+    )
 
     # Manifest should exist and have 2 docs
     assert manifest_path.exists()
