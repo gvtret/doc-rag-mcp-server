@@ -1835,15 +1835,26 @@ def _ui_status_payload() -> dict[str, Any]:
     eta_s, eta_h = _compute_eta()
     out["eta_seconds"] = eta_s
     out["eta_human"] = eta_h
-    # Detect interrupted rebuild via lock file — if a lock exists but no
-    # job is running and the last job completed successfully, the lock is
-    # stale (e.g. server restarted before cleanup ran). Remove it.
+    # Detect interrupted rebuild via lock file.  The lock is written at
+    # rebuild start and removed on success.  After a server restart the
+    # in-memory state is gone, so we also compare the lock's embedded
+    # timestamp against manifest mtime — if the manifest was updated
+    # after the lock was created, the rebuild completed and the lock
+    # is stale.
     lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
     rebuild_interrupted = False
     if os.path.isfile(lock_path) and not _INGEST_STATE.get("running"):
-        last_ok = _INGEST_STATE.get("last_ok")
-        if last_ok is True:
-            # Last job succeeded — lock is stale, clean it up
+        stale = False
+        try:
+            with open(lock_path, encoding="utf-8") as lf:
+                lines = lf.read().strip().split("\n")
+                lock_ts = float(lines[1]) if len(lines) >= 2 else 0
+            manifest_path = os.path.join(str(_root_dir()), "build", "manifest.json")
+            manifest_mtime = os.path.getmtime(manifest_path) if os.path.isfile(manifest_path) else 0
+            stale = manifest_mtime >= lock_ts
+        except (OSError, ValueError):
+            pass
+        if stale:
             try:
                 os.remove(lock_path)
             except OSError:
