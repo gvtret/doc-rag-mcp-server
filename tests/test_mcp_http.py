@@ -458,9 +458,8 @@ def test_upload_xhr_returns_json_saved(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert r.status_code == 200
     data = r.json()
     assert data["saved"] == 1
-    assert data["dups"] == 0
-    assert data["errors"] == 0
-    # Verify file actually landed on disk
+    assert data["dups"] == []
+    assert data["errors"] == []
     incoming = tmp_path / "sources" / "incoming"
     pdfs = list(incoming.glob("*.pdf"))
     assert len(pdfs) == 1
@@ -501,7 +500,7 @@ def test_upload_xhr_returns_json_dup(monkeypatch: pytest.MonkeyPatch, tmp_path) 
     assert r.status_code == 200
     data = r.json()
     assert data["saved"] == 0
-    assert data["dups"] == 1
+    assert len(data["dups"]) == 1
     incoming = tmp_path / "sources" / "incoming"
     assert len(list(incoming.glob("*.pdf"))) == 0
 
@@ -528,7 +527,7 @@ def test_upload_xhr_rejects_bad_extension(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert r.status_code == 200
     data = r.json()
     assert data["saved"] == 0
-    assert data["errors"] == 1
+    assert len(data["errors"]) == 1
 
 
 def test_upload_then_ingest_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

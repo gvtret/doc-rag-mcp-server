@@ -127,6 +127,7 @@ export interface ManageResult {
   deleted?: string[];
   error?: string;
   saved?: number;
+  result?: any;
   dups?: number;
 }
 
@@ -150,18 +151,9 @@ export async function uploadFiles(
   }
   try {
     const data = await r.json();
-    if (data.saved > 0) {
-      return { ok: true, message: `Загружено: ${data.saved} файл(ов)` };
-    }
-    if (data.dups > 0) {
-      return { ok: false, error: data.dup_msg || `${data.dups} файл(ов) уже в индексе` };
-    }
-    if (data.errors > 0) {
-      return { ok: false, error: data.error_msg || `Ошибок: ${data.errors}` };
-    }
-    return { ok: false, error: "Файлы не сохранены" };
+    return { ok: data.ok, result: data };
   } catch {
-    return { ok: true, message: `Загружено файлов: ${files.length}` };
+    return { ok: false, error: "Ошибка чтения ответа сервера" };
   }
 }
 

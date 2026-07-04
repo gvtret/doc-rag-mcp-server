@@ -10,9 +10,11 @@
     ingest,
   } from "../lib/api";
 
-  type Banner = { tone: "ok" | "err" | "info"; text: string } | null;
+  type Banner = { tone: "ok" | "err" | "info" | "warn"; text: string };
+  type UploadResult = { saved: number; dups: string[]; errors: string[] };
 
-  let banner: Banner = $state(null);
+  let banner: Banner | null = $state(null);
+  let uploadBanners: Banner[] = $state([]);
   let busy = $state(false);
   let dragging = $state(false);
   let fileInput: HTMLInputElement;
@@ -43,16 +45,30 @@
   async function doUpload(files: File[]) {
     if (busy) return;
     busy = true;
-    banner = null;
+    uploadBanners = [];
     try {
       const r = await uploadFiles(files);
-      if (r.ok) {
-        banner = { tone: "ok", text: r.message ?? `Загружено файлов: ${files.length}` };
+      if (r.result) {
+        const res = r.result as UploadResult;
+        const list: Banner[] = [];
+        if (res.saved > 0) {
+          list.push({ tone: "ok", text: `Загружено: ${res.saved} файл(ов)` });
+        }
+        for (const msg of res.dups) {
+          list.push({ tone: "warn", text: msg });
+        }
+        for (const msg of res.errors) {
+          list.push({ tone: "err", text: msg });
+        }
+        if (list.length === 0) {
+          list.push({ tone: "err", text: "Файлы не сохранены" });
+        }
+        uploadBanners = list;
       } else {
-        banner = { tone: "err", text: r.error ?? "Ошибка загрузки" };
+        uploadBanners = [{ tone: "err", text: r.error ?? "Ошибка загрузки" }];
       }
     } catch (e) {
-      banner = { tone: "err", text: e instanceof Error ? e.message : String(e) };
+      uploadBanners = [{ tone: "err", text: e instanceof Error ? e.message : String(e) }];
     } finally {
       busy = false;
       if (fileInput) fileInput.value = "";
@@ -276,6 +292,14 @@
       />
     </div>
   </fieldset>
+
+  {#if uploadBanners.length > 0}
+    <div class="upload-results">
+      {#each uploadBanners as b}
+        <div class="banner {b.tone}">{b.text}</div>
+      {/each}
+    </div>
+  {/if}
 
   <fieldset class="group">
     <legend>Операции</legend>

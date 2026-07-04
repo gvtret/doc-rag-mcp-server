@@ -3065,12 +3065,10 @@ async def ui_upload(
     if is_xhr:
         return JSONResponse(
             {
-                "ok": saved > 0 or len(dups) > 0,
+                "ok": saved > 0,
                 "saved": saved,
-                "dups": len(dups),
-                "errors": len(errors),
-                "dup_msg": dups[0] if dups else None,
-                "error_msg": errors[0] if errors else None,
+                "dups": dups,
+                "errors": errors,
             }
         )
 
