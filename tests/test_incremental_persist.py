@@ -303,6 +303,39 @@ def test_ingest_per_file_index_update(tmp_path: Path) -> None:
     assert all(not c["force"] for c in build_calls), "All builds should be incremental"
 
 
+def test_ingest_incremental_persists_quality_report(tmp_path: Path) -> None:
+    """Regression: the incremental ingest() branch used to skip quality
+    checks entirely (only the non-incremental branch and rebuild()/
+    rebuild_docs() ran them), so every document added through the normal
+    upload+ingest flow got no build/quality/<doc_id>.json and no
+    quality_score/quality_warning_count in the manifest. The UI then
+    defaulted the missing score to 0, rendering a misleading "0.00 / ERR"
+    badge for documents that were never actually evaluated.
+    """
+    from doc_rag.raglib.pipeline import ingest
+
+    config_path = _make_root(tmp_path)
+    incoming = tmp_path / "sources" / "incoming"
+    _create_txt(incoming / "a.md", "# Heading\n\nSome document content. " * 20)
+
+    ingest(str(config_path))
+
+    manifest = json.loads((tmp_path / "build" / "manifest.json").read_text())
+    docs = manifest["documents"]
+    assert len(docs) == 1
+    doc = docs[0]
+    assert "quality_score" in doc
+    assert "quality_warning_count" in doc
+
+    quality_path = tmp_path / "build" / "quality" / f"{doc['doc_id']}.json"
+    assert quality_path.is_file(), "per-doc quality report must be persisted"
+    report = json.loads(quality_path.read_text())
+    assert report["doc_id"] == doc["doc_id"]
+
+    summary = json.loads((tmp_path / "build" / "quality" / "summary.json").read_text())
+    assert any(d["doc_id"] == doc["doc_id"] for d in summary["documents"])
+
+
 # ── Test 7: Skip logic after crash — .md exists → file skipped ─────────
 
 
