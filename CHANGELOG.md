@@ -3,6 +3,58 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v5.2.0 — 2026-07-25
+
+Security/correctness audit fixes, `DOC_RAG_API_KEY` and legacy inline `/ui` removed, Web UI reskinned.
+
+### Removed
+- **`DOC_RAG_API_KEY`**: removed entirely, along with the auth-check plumbing
+  on every `/mcp` and `/ui/*` route and the env-editor's secret-masking
+  sub-system. The Svelte UI never had a way to send the key anywhere (no
+  header, no `?key=`) — it only ever worked through the legacy inline `/ui`
+  page's forms, and MCP client `Authorization` headers. No auth exists on
+  this server now; documented as a deliberate trusted-LAN design choice in
+  `SECURITY.md`, not a gap.
+- **Legacy inline `/ui` page**: the ~700-line inline-HTML/JS page (pre-dating
+  the v2.2 Svelte migration) is gone. `GET /ui` is now a plain redirect to
+  `/ui-next/`, the only Web UI. The Svelte build is a hard install
+  requirement — `bootstrap.sh` / `docker/Dockerfile` fail without Node ≥ 20,
+  there is no more inline fallback.
+
+### Fixed
+- **Race condition**: `/ui/delete`, `/ui/wipe`, `/ui/clean-orphans`,
+  `/ui/clear-incoming` now share an exclusive-job lock with ingest/rebuild
+  instead of racing them (`clear-incoming` previously had no busy-check at
+  all).
+- **Stale rebuild-lock false positive**: detection no longer keys off
+  `manifest.json`'s mtime — an unrelated `delete`/`clean-orphans` write could
+  falsely clear a genuinely interrupted-rebuild banner. Now uses a matching
+  completion marker written by the job that actually finished.
+- **`rebuild-docs` full-corpus re-embed**: rebuilding one document no longer
+  re-embeds the entire corpus (incremental `VectorIndex.build()` was already
+  there, just unused).
+- **`rebuild-docs` orphaned chunks**: when a rebuilt document's content
+  actually changed, its new content-hash `doc_id` differs from the old one —
+  the old chunks were never removed from `chunks.jsonl`, leaking stale
+  content into search results indefinitely. Now filtered out on merge.
+- **FAISS delete performance**: `faiss_store.delete()` uses an O(1) set
+  lookup instead of an O(n) list scan per chunk, and reconstructs directly
+  into a preallocated array instead of doubling peak memory via a
+  list-then-vstack.
+- **Embedding retry**: `_encode()` now halves the batch size on each retry
+  instead of repeating the same batch size that likely caused the OOM.
+- **OCR badge**: `GET /ui/documents` wasn't returning `coverage.ocr`, so the
+  Documents page had no data to render the OCR badge from.
+- **Docker**: container now runs as an unprivileged user instead of root.
+
+### Changed
+- **Web UI reskinned**: replaced the "Engineering Dark" theme (dark,
+  monospace-everywhere) with a light corporate design system
+  (`ui/src/doc-rag-style.css`) — accent `#1f785f`, Lato typography, shared
+  `.btn`/`.badge`/`.table` classes applied across every page. Monospace kept
+  only where functionally meaningful: doc_id/code, the architecture diagram,
+  and the Logs page's terminal panel (deliberately dark regardless of theme).
+
 ## v5.1.0 — 2026-07-04
 
 Upload fix, delete UI, tooltips, versioning, table layout.
