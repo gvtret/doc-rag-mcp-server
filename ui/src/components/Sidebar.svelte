@@ -62,13 +62,12 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
     border-bottom: 1px solid var(--border-subtle);
   }
   .brand .logo {
     font-weight: 700;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.02em;
+    color: var(--accent-ok);
   }
   .brand .ver {
     color: var(--text-muted);
@@ -94,8 +93,7 @@
     color: var(--text-secondary);
     text-align: left;
     cursor: pointer;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
+    font-weight: 600;
     font-size: 0.92rem;
   }
   .nav-btn:hover {

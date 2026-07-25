@@ -123,9 +123,8 @@
     display: flex;
     align-items: center;
     gap: 18px;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    font-size: 0.75rem;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
     border-top: 1px solid var(--border-strong);
     flex-wrap: wrap;
   }
@@ -156,15 +155,15 @@
   }
   .dot-ok {
     background: var(--accent-ok);
-    box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+    box-shadow: 0 0 6px rgba(31, 120, 95, 0.5);
   }
   .dot-warn {
     background: var(--accent-warn);
-    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+    box-shadow: 0 0 6px rgba(180, 83, 9, 0.5);
   }
   .dot-error {
     background: var(--accent-error);
-    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 6px rgba(187, 58, 52, 0.5);
   }
   .dot-unknown {
     background: var(--text-faint);

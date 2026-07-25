@@ -253,7 +253,7 @@
       Предыдущий rebuild был прерван. Нажмите «Продолжить» для возобновления.
       <button
         type="button"
-        class="btn inline"
+        class="btn primary inline"
         disabled={busy}
         onclick={() => void doRebuild()}
       >
@@ -401,22 +401,22 @@
     border-left: 3px solid;
   }
   .banner.ok {
-    background: rgba(34, 197, 94, 0.1);
+    background: rgba(31, 120, 95, 0.08);
     border-color: var(--accent-ok);
     color: var(--text-primary);
   }
   .banner.err {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(187, 58, 52, 0.08);
     border-color: var(--accent-error);
     color: var(--text-primary);
   }
   .banner.info {
-    background: rgba(59, 130, 246, 0.08);
-    border-color: var(--accent-info);
+    background: var(--bg-elevated);
+    border-color: var(--border-strong);
     color: var(--text-secondary);
   }
   .banner.warn {
-    background: rgba(245, 158, 11, 0.08);
+    background: rgba(180, 83, 9, 0.08);
     border-color: var(--accent-warn);
     color: var(--text-primary);
     display: flex;
@@ -454,8 +454,8 @@
   }
   .dropzone:hover,
   .dropzone.dragging {
-    border-color: var(--accent-info);
-    background: rgba(59, 130, 246, 0.06);
+    border-color: var(--accent-ok);
+    background: rgba(31, 120, 95, 0.05);
   }
   .drop-label {
     color: var(--text-muted);
@@ -469,36 +469,13 @@
     flex-wrap: wrap;
     gap: 8px;
   }
-  .btn {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border: 1px solid var(--border-strong);
-    border-radius: 3px;
-    padding: 6px 12px;
-    font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--text-muted);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .btn.danger {
-    border-color: var(--accent-error);
-    color: var(--accent-error);
-  }
-  .btn.danger:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.1);
-  }
   .btn.warn {
     border-color: var(--accent-warn);
     color: var(--accent-warn);
+    background: var(--bg-base);
   }
   .btn.warn:hover:not(:disabled) {
-    background: rgba(245, 158, 11, 0.1);
+    background: rgba(180, 83, 9, 0.08);
   }
   .hint {
     margin: 0;

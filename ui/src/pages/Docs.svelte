@@ -240,7 +240,6 @@
         <tr><td><code>DOC_RAG_RATE_LIMIT_BURST</code></td><td>int</td><td>Ёмкость burst-бакета.</td></tr>
         <tr><td><code>DOC_RAG_LOG_LEVEL</code></td><td>string</td><td>Уровень логов (DEBUG/INFO/WARNING/ERROR).</td></tr>
         <tr><td><code>DOC_RAG_LOG_FORMAT</code></td><td>select</td><td><code>text</code> — человекочитаемый; <code>json</code> — для лог-шипперов.</td></tr>
-        <tr><td><code>DOC_RAG_API_KEY</code></td><td>secret</td><td>API-ключ для доступа к MCP и UI.</td></tr>
         <tr><td><code>DOC_RAG_LLM_BASE_URL</code></td><td>string</td><td>URL LLM API для RAG-генерации.</td></tr>
         <tr><td><code>DOC_RAG_LLM_MODEL</code></td><td>string</td><td>Имя модели LLM.</td></tr>
         <tr><td><code>DOC_RAG_LLM_API_KEY</code></td><td>secret</td><td>API-ключ LLM (если нужен).</td></tr>
@@ -375,9 +374,9 @@
     <table class="doc-table">
       <thead><tr><th>Бейдж</th><th>Score</th><th>Значение</th></tr></thead>
       <tbody>
-        <tr><td><span class="q-badge q-ok">OK</span></td><td>≥ 0.8</td><td>Документ нормально распарсен</td></tr>
-        <tr><td><span class="q-badge q-warn">WARN</span></td><td>0.5 – 0.8</td><td>Есть проблемы с качеством, но контент индексируется</td></tr>
-        <tr><td><span class="q-badge q-err">ERR</span></td><td>&lt; 0.5</td><td>Серьёзные проблемы с парсингом</td></tr>
+        <tr><td><span class="badge ok">OK</span></td><td>≥ 0.8</td><td>Документ нормально распарсен</td></tr>
+        <tr><td><span class="badge warn">WARN</span></td><td>0.5 – 0.8</td><td>Есть проблемы с качеством, но контент индексируется</td></tr>
+        <tr><td><span class="badge err">ERR</span></td><td>&lt; 0.5</td><td>Серьёзные проблемы с парсингом</td></tr>
       </tbody>
     </table>
     <p>Score вычисляется как <code>1.0 - penalty</code>, где penalty зависит от severity: error = 0.15, warn = 0.05, info = 0.01 за каждое предупреждение.</p>
@@ -428,9 +427,8 @@
     border: none;
     color: var(--text-secondary);
     font-size: 0.85rem;
+    font-weight: 600;
     cursor: pointer;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
   }
   .doc-nav-btn:hover {
     color: var(--text-primary);
@@ -457,20 +455,18 @@
     margin-bottom: 36px;
   }
   .doc-body h2 {
-    font-size: 1.15rem;
+    font-size: 1.2rem;
+    font-weight: 700;
     color: var(--accent-info);
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: 6px;
     margin: 0 0 16px;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
   }
   .doc-body h3 {
-    font-size: 0.95rem;
+    font-size: 1rem;
+    font-weight: 700;
     color: var(--text-primary);
     margin: 20px 0 8px;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
   }
   .doc-body p, .doc-body li {
     color: var(--text-secondary);
@@ -495,10 +491,10 @@
     padding: 6px 10px;
     border-bottom: 2px solid var(--border-strong);
     color: var(--text-muted);
-    font-weight: 500;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.72rem;
   }
   .doc-table td {
     padding: 5px 10px;

@@ -16,7 +16,7 @@
   } from "../lib/configSchema";
   import { getByPath } from "../lib/dotpath";
   import { ENV_META } from "../lib/envSchema";
-  import type { EnvField, EnvSecret } from "../lib/types";
+  import type { EnvField } from "../lib/types";
 
   // Two editors over the same config/config.yaml:
   //   - "form": structured fields (schema-driven), comment-preserving
@@ -211,7 +211,6 @@
 
   let envState = $state<EnvState>({ kind: "loading" });
   let envFields = $state<EnvField[]>([]);
-  let envSecrets = $state<EnvSecret[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let envValues = $state<Record<string, any>>({});
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -240,7 +239,6 @@
       const r = await fetchEnv();
       if (r.ok) {
         envFields = r.fields;
-        envSecrets = r.secrets;
         const vals: Record<string, string | boolean> = {};
         for (const f of r.fields) vals[f.key] = envIn(f);
         envValues = vals;
@@ -503,21 +501,6 @@
           </div>
         {/each}
       </fieldset>
-
-      {#if envSecrets.length}
-        <fieldset class="group">
-          <legend>Секреты (только статус)</legend>
-          {#each envSecrets as s (s.key)}
-            <div class="row">
-              <label for={s.key}>{s.key}</label>
-              <div class="control">
-                <span class="secret-status {s.set ? 'on' : 'off'}">{s.set ? "задан" : "не задан"}</span>
-                <p class="hint">Секрет не редактируется из UI — задайте его в env/systemd на сервере.</p>
-              </div>
-            </div>
-          {/each}
-        </fieldset>
-      {/if}
     </div>
 
     <div class="actions">
@@ -558,7 +541,7 @@
     border-radius: 3px 3px 0 0;
     padding: 6px 14px;
     font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 600;
     cursor: pointer;
   }
   .tab:hover {
@@ -587,7 +570,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--accent-warn);
-    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+    box-shadow: 0 0 6px rgba(180, 83, 9, 0.5);
   }
   .banner {
     padding: 6px 10px;
@@ -596,18 +579,18 @@
     border-left: 3px solid;
   }
   .banner.ok {
-    background: rgba(34, 197, 94, 0.1);
+    background: rgba(31, 120, 95, 0.08);
     border-color: var(--accent-ok);
     color: var(--text-primary);
   }
   .banner.err {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(187, 58, 52, 0.08);
     border-color: var(--accent-error);
     color: var(--text-primary);
   }
   .banner.info {
-    background: rgba(59, 130, 246, 0.08);
-    border-color: var(--accent-info);
+    background: var(--bg-elevated);
+    border-color: var(--border-strong);
     color: var(--text-secondary);
     line-height: 1.4;
   }
@@ -618,20 +601,6 @@
   .src {
     color: var(--accent-info);
     font-size: 0.75rem;
-  }
-  .secret-status {
-    font-size: 0.85rem;
-    padding: 3px 8px;
-    border-radius: 3px;
-    align-self: flex-start;
-  }
-  .secret-status.on {
-    color: var(--accent-ok);
-    border: 1px solid var(--accent-ok);
-  }
-  .secret-status.off {
-    color: var(--text-muted);
-    border: 1px solid var(--border-strong);
   }
   .form-scroll {
     flex: 1;
@@ -683,13 +652,12 @@
   .control input[type="text"],
   .control input[type="number"],
   .control select {
-    background: var(--bg-elevated);
+    background: var(--bg-base);
     color: var(--text-primary);
     border: 1px solid var(--border-strong);
-    border-radius: 3px;
+    border-radius: 2px;
     padding: 5px 8px;
     font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
     max-width: 360px;
   }
   .control input:focus,
@@ -751,37 +719,12 @@
     margin-left: auto;
     font-size: 0.8rem;
   }
-  .btn {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border: 1px solid var(--border-strong);
-    border-radius: 3px;
-    padding: 6px 12px;
-    font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, Consolas, monospace;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--text-muted);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .btn.primary {
-    background: var(--accent-ok);
-    color: var(--bg-base);
-    border-color: var(--accent-ok);
-    font-weight: 600;
-  }
-  .btn.primary:hover:not(:disabled) {
-    background: #16a34a;
-  }
   .btn.warn {
     border-color: var(--accent-warn);
     color: var(--accent-warn);
+    background: var(--bg-base);
   }
   .btn.warn:hover:not(:disabled) {
-    background: rgba(245, 158, 11, 0.1);
+    background: rgba(180, 83, 9, 0.08);
   }
 </style>

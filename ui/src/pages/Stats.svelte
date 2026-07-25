@@ -159,7 +159,7 @@
       {/each}
     </div>
 
-    <table class="stats-table">
+    <table class="table stats-table">
       <thead>
         <tr>
           <th class="sortable" title="Название файла" onclick={() => toggleSort("filename")}>
@@ -189,7 +189,7 @@
             <td class="num">{d.total_blocks}</td>
             <td class="num">{d.pages || "—"}</td>
             <td>
-              <span class="q-badge q-{qualityColor(d.quality_score)}">
+              <span class="badge {qualityColor(d.quality_score)}">
                 {d.quality_score.toFixed(2)}
               </span>
             </td>
@@ -282,22 +282,11 @@
   .legend-label { cursor: help; }
 
   /* Table */
-  .stats-table {
-    width: auto; max-width: 100%; border-collapse: collapse; background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle); font-size: 0.82rem;
-  }
-  .stats-table th {
-    padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border-strong);
-    color: var(--text-faint); font-family: ui-monospace, monospace; font-size: 0.72rem;
-    letter-spacing: 0.04em;
-  }
-  .stats-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
-  .stats-table tbody tr:hover td { background: var(--bg-base); color: var(--text-primary); }
+  .stats-table { width: auto; max-width: 100%; font-size: 0.82rem; }
   .stats-table .clickable { cursor: pointer; }
   .stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
   .sortable { cursor: pointer; user-select: none; }
   .sortable:hover { color: var(--text-primary); }
-  .blocks-col { }
 
   /* Stacked bar in table */
   .blocks-cell { display: flex; align-items: center; gap: 6px; }
@@ -341,13 +330,5 @@
     font-size: 0.72rem; color: var(--text-muted);
   }
 
-  /* Quality badge */
-  .q-badge {
-    display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600;
-    border-radius: 2px; font-family: ui-monospace, monospace;
-  }
-  .q-ok { color: var(--bg-base); background: var(--accent-ok); }
-  .q-warn { color: var(--bg-base); background: var(--accent-warn); }
-  .q-err { color: #fff; background: var(--accent-error); }
   .muted { color: var(--text-muted); }
 </style>

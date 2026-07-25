@@ -138,8 +138,7 @@
     border-radius: 3px 3px 0 0;
     padding: 6px 14px;
     font-size: 0.85rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
+    font-weight: 600;
     cursor: pointer;
   }
   .tab:hover {
@@ -163,36 +162,22 @@
     gap: 4px;
     font-size: 0.8rem;
     color: var(--text-muted);
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
   }
   .ctrl-label select {
-    background: var(--bg-elevated);
+    background: var(--bg-base);
     color: var(--text-primary);
     border: 1px solid var(--border-strong);
-    border-radius: 3px;
+    border-radius: 2px;
     padding: 3px 6px;
     font-size: 0.8rem;
     font-family: inherit;
-  }
-  .btn {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border: 1px solid var(--border-strong);
-    border-radius: 3px;
-    padding: 4px 10px;
-    font-size: 0.8rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    cursor: pointer;
-  }
-  .btn:hover {
-    border-color: var(--text-muted);
   }
   .btn.active-btn {
     border-color: var(--accent-warn);
     color: var(--accent-warn);
   }
+  /* Log panel keeps a dark terminal look on purpose — a recognizable
+   * convention for log/console output, independent of the app theme. */
   .log-container {
     flex: 1;
     min-height: 0;

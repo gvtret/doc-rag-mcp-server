@@ -1,24 +1,27 @@
-/* Engineering Dark theme — chosen for v2.2.1.
- * Deep slate background, monospace accents, terminal-like indicators.
+/* doc-rag-style theme — palette and base classes lifted from
+ * doc-rag-style.css (a corporate landing-page stylesheet, see that file).
+ * Real values: accent #1f785f, error #bb3a34, text #404040, borders
+ * #b7b7b7/#dadada. The one color that has no source in that file is
+ * --accent-warn, picked by hand to fit the palette (see PR/audit notes).
  */
 
 :root {
-  --bg-base: #0f172a;
-  --bg-elevated: #1e293b;
-  --bg-row-hover: #1e293b;
-  --border-subtle: #1f2937;
-  --border-strong: #334155;
-  --text-primary: #e2e8f0;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --text-faint: #64748b;
-  --accent-ok: #22c55e;
-  --accent-warn: #f59e0b;
-  --accent-error: #ef4444;
-  --accent-info: #38bdf8;
+  --bg-base: #ffffff;
+  --bg-elevated: #f7f7f7;
+  --bg-row-hover: #f2f7f5;
+  --border-subtle: #e2e2e2;
+  --border-strong: #b7b7b7;
+  --text-primary: #404040;
+  --text-secondary: #595959;
+  --text-muted: #7a7a7a;
+  --text-faint: #9a9a9a;
+  --accent-ok: #1f785f;
+  --accent-warn: #b45309;
+  --accent-error: #bb3a34;
+  --accent-info: #1f785f;
 
-  font-family:
-    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Lato", Arial, "Helvetica Neue", FreeSans, sans-serif;
+  letter-spacing: 0.2px;
   color: var(--text-primary);
   background: var(--bg-base);
 }
@@ -51,11 +54,11 @@ code {
 
 a {
   color: var(--accent-info);
-  text-decoration: none;
+  text-decoration: underline;
 }
 
 a:hover {
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 ::-webkit-scrollbar {
@@ -63,7 +66,7 @@ a:hover {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-base);
+  background: var(--bg-elevated);
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
@@ -71,4 +74,133 @@ a:hover {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-faint);
+}
+
+/* --- .btn — from doc-rag-style.css (bordered, no fill by default) ------ */
+.btn {
+  display: inline-block;
+  box-sizing: border-box;
+  vertical-align: top;
+  text-decoration: none;
+  cursor: pointer;
+  margin: 0;
+  border: 1px solid #dadada;
+  padding: 0 20px;
+  min-width: 100px;
+  height: 32px;
+  line-height: 30px;
+  text-align: center;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  font: 13px/30px "Lato", Arial, sans-serif;
+  font-weight: 600;
+  border-radius: 2px;
+  transition: background-color linear 0.15s, border-color linear 0.15s;
+}
+.btn:hover:not(:disabled) {
+  background: #dadada;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Filled variants: not in the source file verbatim — modelled on the one
+ * filled instance found there (.region-window .btn, background #1f785f). */
+.btn.primary {
+  background: var(--accent-ok);
+  border-color: var(--accent-ok);
+  color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  background: #195f4b;
+  border-color: #195f4b;
+}
+.btn.danger {
+  background: var(--accent-error);
+  border-color: var(--accent-error);
+  color: #fff;
+}
+.btn.danger:hover:not(:disabled) {
+  background: #9c2f2a;
+  border-color: #9c2f2a;
+}
+
+/* --- .table — border-collapse reset from the source, visuals added
+ * (the source's own table look is buried in page-specific selectors that
+ * don't generalize, so this part is ours, built from the same palette). */
+.table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+}
+.table th,
+.table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+.table th {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-strong);
+}
+.table tbody tr:hover {
+  background: var(--bg-row-hover);
+}
+
+/* --- form inputs — from .form input[type=...] in the source ----------- */
+input[type="text"],
+input[type="search"],
+input[type="password"],
+input[type="number"],
+select,
+textarea {
+  width: 100%;
+  padding: 6px 12px;
+  margin: 0;
+  line-height: 22px;
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  border-radius: 2px;
+  box-shadow: none;
+  font: inherit;
+  transition: border-color linear 0.2s;
+}
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent-ok);
+}
+
+/* --- badge — no equivalent in the source (it's a landing page, no admin
+ * UI components); built from the palette above to match the rest. ------ */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+  font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
+    Menlo, Consolas, monospace;
+  color: #fff;
+  cursor: help;
+}
+.badge.ok {
+  background: var(--accent-ok);
+}
+.badge.warn {
+  background: var(--accent-warn);
+}
+.badge.err {
+  background: var(--accent-error);
 }

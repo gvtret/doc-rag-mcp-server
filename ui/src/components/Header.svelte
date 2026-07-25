@@ -37,11 +37,9 @@
   }
   h1 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 500;
+    font-size: 1.05rem;
+    font-weight: 700;
     color: var(--text-primary);
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
   }
   .prompt {
     color: var(--text-faint);

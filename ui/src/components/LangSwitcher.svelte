@@ -37,11 +37,10 @@
     background: transparent;
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
-    border-radius: 3px;
-    padding: 2px 6px;
-    font-size: 0.7rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
+    border-radius: 2px;
+    padding: 2px 7px;
+    font-size: 0.72rem;
+    font-weight: 700;
     cursor: pointer;
     letter-spacing: 0.04em;
   }

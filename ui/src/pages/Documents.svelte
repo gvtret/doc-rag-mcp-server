@@ -133,6 +133,17 @@
     if (score >= 0.5) return "warn";
     return "err";
   }
+
+  function ocrTitle(ocr: { pages_recognized?: number; confidence?: number }): string {
+    const parts = [t("documents.ocr_tooltip_base")];
+    if (typeof ocr.pages_recognized === "number" && ocr.pages_recognized > 0) {
+      parts.push(t("documents.ocr_tooltip_pages", { n: ocr.pages_recognized }));
+    }
+    if (typeof ocr.confidence === "number") {
+      parts.push(t("documents.ocr_tooltip_confidence", { v: ocr.confidence.toFixed(2) }));
+    }
+    return parts.join(" · ");
+  }
 </script>
 
 <section>
@@ -198,7 +209,7 @@
           <span class="muted">{t("documents.selected")} {selected.size}</span>
           <button
             type="button"
-            class="btn"
+            class="btn primary"
             disabled={busy || running}
             title="Пересобрать выбранные документы заново: парсинг + чанкинг + индексация."
             onclick={() => void doRebuildSelected()}
@@ -214,12 +225,12 @@
           >
             Удалить
           </button>
-          <button type="button" class="btn secondary" onclick={() => (selected = new Set())}>
+          <button type="button" class="btn" onclick={() => (selected = new Set())}>
             {t("documents.reset")}
           </button>
         </div>
       {/if}
-      <table>
+      <table class="table doc-table">
         <thead>
           <tr>
             <th class="check">
@@ -252,7 +263,12 @@
                 />
               </td>
               <td class="num muted">{String(i + 1).padStart(2, "0")}</td>
-              <td title={d.source_file ?? ""}>{d.basename}</td>
+              <td title={d.source_file ?? ""}>
+                {#if d.coverage?.ocr?.applied}
+                  <span class="badge ok" title={ocrTitle(d.coverage.ocr)}>OCR</span>
+                {/if}
+                {d.basename}
+              </td>
               <td class="mono small">{d.doc_id ?? "—"}</td>
               <td class="num">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
@@ -270,7 +286,7 @@
                 {#if d.doc_id && qualityMap[d.doc_id]}
                   {@const q = qualityMap[d.doc_id]}
                   <span
-                    class="q-badge q-{qualityColor(q.score)}"
+                    class="badge {qualityColor(q.score)}"
                     title="точность: {q.score.toFixed(2)} · предупреждения: {q.warning_count}"
                   >
                     {q.score >= 0.8 ? "OK" : q.score >= 0.5 ? "WARN" : "ERR"}
@@ -326,18 +342,18 @@
     margin-bottom: 8px;
   }
   .banner.ok {
-    background: rgba(34, 197, 94, 0.1);
+    background: rgba(31, 120, 95, 0.08);
     border-color: var(--accent-ok);
     color: var(--text-primary);
   }
   .banner.err {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(187, 58, 52, 0.08);
     border-color: var(--accent-error);
     color: var(--text-primary);
   }
   .banner.info {
-    background: rgba(59, 130, 246, 0.08);
-    border-color: var(--accent-info);
+    background: var(--bg-elevated);
+    border-color: var(--border-strong);
     color: var(--text-secondary);
   }
   .progress-bar {
@@ -362,7 +378,7 @@
   }
   .progress-fill {
     height: 100%;
-    background: var(--accent-info);
+    background: var(--accent-ok);
     border-radius: 2px;
     transition: width 0.3s ease;
   }
@@ -375,34 +391,6 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: 3px;
-  }
-  .btn {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border: 1px solid var(--border-strong);
-    border-radius: 3px;
-    padding: 4px 10px;
-    font-size: 0.82rem;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--text-muted);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .btn.secondary {
-    color: var(--text-muted);
-  }
-  .btn.danger {
-    border-color: var(--accent-error);
-    color: var(--accent-error);
-  }
-  .btn.danger:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.1);
   }
   .summary {
     display: flex;
@@ -427,51 +415,21 @@
   .error {
     color: var(--accent-error);
   }
-  table {
-    width: auto;
+  .doc-table {
     max-width: 100%;
-    border-collapse: collapse;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
     font-size: 0.85rem;
   }
-  thead {
-    background: var(--bg-base);
-  }
-  th {
-    padding: 7px 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--border-strong);
-    color: var(--text-faint);
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    font-size: 0.72rem;
-    letter-spacing: 0.05em;
-    font-weight: 500;
-  }
-  th.check,
-  td.check {
+  .doc-table th.check,
+  .doc-table td.check {
     text-align: center;
     width: 32px;
     padding: 6px 4px;
   }
-  td {
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
+  .doc-table tbody tr.selected-row td {
+    background: rgba(31, 120, 95, 0.06);
   }
-  tbody tr:hover td {
-    background: var(--bg-base);
-    color: var(--text-primary);
-  }
-  tbody tr.selected-row td {
-    background: rgba(59, 130, 246, 0.06);
-  }
-  tbody tr:last-child td {
-    border-bottom: none;
-  }
-  td.num,
-  th.num {
+  .doc-table td.num,
+  .doc-table th.num {
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
@@ -501,34 +459,11 @@
   }
   .s-processing {
     color: var(--bg-base);
-    background: var(--accent-info);
+    background: var(--accent-warn);
   }
   .s-processed {
     color: var(--bg-base);
     background: var(--accent-ok);
     opacity: 0.7;
-  }
-  .q-badge {
-    display: inline-block;
-    padding: 1px 6px;
-    font-size: 10px;
-    font-weight: 600;
-    border-radius: 2px;
-    cursor: help;
-    font-family: ui-monospace, "JetBrains Mono", "Fira Code", SFMono-Regular,
-      Menlo, Consolas, monospace;
-    letter-spacing: 0.05em;
-  }
-  .q-ok {
-    color: var(--bg-base);
-    background: var(--accent-ok);
-  }
-  .q-warn {
-    color: var(--bg-base);
-    background: var(--accent-warn);
-  }
-  .q-err {
-    color: #fff;
-    background: var(--accent-error);
   }
 </style>
