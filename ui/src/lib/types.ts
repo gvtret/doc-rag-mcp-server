@@ -105,8 +105,7 @@ export type ConfigPatchResponse = {
   error?: string;
 };
 
-// Service runtime env editor. Editable keys come back as `fields`; secrets
-// (DOC_RAG_API_KEY) only as a set/not-set flag — never the value.
+// Service runtime env editor. Editable keys come back as `fields`.
 export type EnvField = {
   key: string;
   type: "text" | "int" | "float" | "bool" | "select";
@@ -115,13 +114,10 @@ export type EnvField = {
   source: "file" | "env" | "default";
 };
 
-export type EnvSecret = { key: string; set: boolean };
-
 export type EnvGet = {
   ok: true;
   path: string;
   fields: EnvField[];
-  secrets: EnvSecret[];
 };
 
 export type EnvGetError = {

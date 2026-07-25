@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from doc_rag.raglib.vector_index import VectorIndex
 
@@ -135,3 +136,52 @@ class TestVectorIndex:
         dists, ids = idx.search("query", top_k=5)
         assert len(dists) == 0
         assert len(ids) == 0
+
+    def test_encode_retries_with_shrinking_batch_size(self, tmp_path: Path, monkeypatch):
+        """A failure (e.g. OOM) should not be retried with the same batch
+        size — that just reproduces the same failure. Regression for a
+        retry loop that kept `batch_size` constant across all attempts.
+        """
+        cfg = _make_cfg(tmp_path)  # batch_size: 4
+        idx = VectorIndex(cfg)
+
+        seen_batch_sizes: list[int] = []
+
+        class _FlakyEmbedder:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def encode(
+                self, texts, batch_size=32, show_progress_bar=False, normalize_embeddings=True
+            ):
+                seen_batch_sizes.append(batch_size)
+                self.calls += 1
+                if self.calls < 3:
+                    raise RuntimeError("CUDA out of memory")
+                return np.ones((len(texts), 8), dtype=np.float32)
+
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _FlakyEmbedder()
+        )
+        monkeypatch.setattr("time.sleep", lambda *_: None)
+
+        vecs = idx._encode(["a", "b"])
+
+        assert seen_batch_sizes == [4, 2, 1]
+        assert vecs.shape == (2, 8)
+
+    def test_encode_raises_after_exhausting_retries(self, tmp_path: Path, monkeypatch):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+
+        class _AlwaysFailEmbedder:
+            def encode(self, *a, **kw):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _AlwaysFailEmbedder()
+        )
+        monkeypatch.setattr("time.sleep", lambda *_: None)
+
+        with pytest.raises(RuntimeError, match="Embedding failed after 3 attempts"):
+            idx._encode(["a"])

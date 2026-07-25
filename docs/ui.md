@@ -1,13 +1,13 @@
 # Web UI
 
-The MCP HTTP server bundles a single-page Web UI at `/ui`. No build step, no JS
-framework — it ships in the server response as plain HTML + a small `<script>` block.
+The MCP HTTP server bundles a Svelte + Vite single-page app, built to `ui/dist` and
+served at `/ui-next/` (bare `GET /ui` redirects there). Building it is a hard
+requirement — `bootstrap.sh` / `install_server_native.sh` fail the install if
+Node ≥ 20 isn't available, since there is no fallback.
 
 ```
 http://<host>:3333/ui
 ```
-
-If `DOC_RAG_API_KEY` is set, append `?key=<DOC_RAG_API_KEY>`.
 
 ## What it does
 
@@ -17,8 +17,22 @@ If `DOC_RAG_API_KEY` is set, append `?key=<DOC_RAG_API_KEY>`.
 - **Run ingest / rebuild** asynchronously; status polls live (started → running →
   finished/error).
 - **Browse indexed documents** in a table — doc_id, source file, chunks, parser used,
-  OCR coverage, ingest timestamp.
-- **Preview a document's markdown** with one click.
+  ingest timestamp, quality badge (green/yellow/red, from `GET /ui/quality`), OCR badge
+  (shown when RapidOCR fired on the document; tooltip has pages recognized + mean
+  confidence, from `coverage.ocr` in `GET /ui/documents`).
+- **Preview a document's markdown** with one click, or **download the source file**
+  (`GET /api/v1/download`).
+- **Document statistics page** (`GET /ui/doc-stats`) — per-document block-type
+  breakdown (heading/paragraph/table/figure/...) as stacked bars, expandable detail
+  rows, sortable columns.
+- **Selective rebuild** — checkboxes on the Documents page, "Rebuild selected" runs
+  `POST /ui/rebuild-docs` for just those documents. Separate "index only"
+  (`POST /ui/rebuild-index`) and "skip index" (`POST /ui/rebuild-skip-index`) modes
+  support the GPU-offload workflow: parse+chunk on the server, embed elsewhere, build
+  the index back on the server.
+- **Logs page** — live tail of the ingest/rebuild log and the HTTP access log (reads
+  the `log_tail`/`http_log_tail` fields from `GET /ui/status`).
+- **RU/EN language switch** in the header (localStorage-persisted).
 - **Delete documents** (per-row ✕ button, or bulk checkbox plus
   "Удалить выбранные" / "Delete selected").
 - **Danger zone** — three additional buttons:
@@ -71,15 +85,12 @@ UI-managed `<root>/.env` (override path with `DOC_RAG_ENV_FILE`) that
 root-owned `/etc/default/doc-rag` (which the service user cannot write).
 Changes apply on the next **service restart**.
 
-`DOC_RAG_API_KEY` is a **secret**: the editor shows only whether it is set,
-never its value, and refuses to write it — manage the key in env/systemd on
-the server.
-
 > **Note:** config and env writes only take effect on the **systemd** deploy.
 > Under Docker, `config/` is mounted read-only and env is set in
 > `docker-compose.yml`, so edit those there instead.
 
-These are intended for trusted LAN/admin use. Keep the API key set in production.
+These editors have no authentication of their own — see
+[SECURITY.md](../SECURITY.md) for the server's overall (lack of) auth model.
 
 ## Endpoints summary
 
@@ -88,17 +99,29 @@ These are intended for trusted LAN/admin use. Keep the API key set in production
 | `POST` | `/ui/upload` | multipart upload to `sources/incoming/`; reports duplicates |
 | `POST` | `/ui/ingest` | run ingest in background |
 | `POST` | `/ui/rebuild` | rebuild chunks/embeddings/FAISS in background |
+| `POST` | `/ui/rebuild-docs` | rebuild specific documents (selective rebuild) |
+| `POST` | `/ui/rebuild-index` | rebuild only the FAISS index from existing chunks |
+| `POST` | `/ui/rebuild-skip-index` | parse+chunk only, skip the vector index |
 | `POST` | `/ui/delete` | delete one or more `doc_id`s |
 | `POST` | `/ui/wipe` | clear everything (manifest, build, archived) |
 | `POST` | `/ui/clean-orphans` | drop unreferenced artefacts |
 | `POST` | `/ui/clear-incoming` | empty `sources/incoming/` |
+| `POST` | `/ui/restart` | restart the service (requires `DOC_RAG_UI_RESTART_ENABLED`) |
 | `GET`  | `/ui/status` | JSON status for live polling |
+| `GET`  | `/ui/documents` | indexed + pending documents, cross-referenced with the manifest |
 | `GET`  | `/ui/document-preview` | rendered markdown for a `doc_id` |
+| `GET`  | `/ui/doc-stats` | per-document block-type statistics |
+| `GET`  | `/ui/quality` | quality summary (`build/quality/summary.json`) |
+| `GET`  | `/api/v1/download` | download a source document by filename |
+| `GET`  | `/ui/config/raw` | raw `config.yaml` text for the Advanced editor |
+| `POST` | `/ui/config/save` | write raw `config.yaml` text |
 | `GET`  | `/ui/config/parsed` | parsed `config.yaml` for the structured form |
 | `POST` | `/ui/config/patch` | field-level, comment-preserving config write |
 | `POST` | `/ui/config/validate` | validate field updates without writing |
 | `GET`  | `/ui/env` | editable service env (secrets masked) |
 | `POST` | `/ui/env/save` | write service env to `<root>/.env` |
+| `GET`  | `/ui/mcp/cursor.json` | drop-in MCP config for Cursor |
+| `GET`  | `/ui/mcp/vscode.json` | drop-in MCP config for VS Code |
 | `GET`  | `/api/v1/manifest` | raw `build/manifest.json` |
 
 In addition, the server exposes the standard probe and observability

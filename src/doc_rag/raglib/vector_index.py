@@ -88,17 +88,24 @@ class VectorIndex:
         return int(self._cfg.get("embeddings", {}).get("batch_size", 32))
 
     def _encode(self, texts: list[str], max_retries: int = 3) -> np.ndarray:
-        """Encode texts to vectors with retry logic."""
+        """Encode texts to vectors with retry logic.
+
+        Halves the encoding batch size on each retry. A failure is often
+        OOM triggered by the current batch size being too large for
+        available memory (CPU RAM or GPU VRAM) — retrying with the *same*
+        batch size just reproduces the same failure three times in a row.
+        """
         embedder = self._ensure_embedder()
         if embedder is None:
             raise RuntimeError("sentence-transformers not installed")
 
+        batch_size = self._batch_size()
         last_error = None
         for attempt in range(max_retries):
             try:
                 return embedder.encode(
                     texts,
-                    batch_size=self._batch_size(),
+                    batch_size=batch_size,
                     show_progress_bar=False,
                     normalize_embeddings=self._normalize(),
                 ).astype(np.float32)
@@ -107,8 +114,14 @@ class VectorIndex:
                 if attempt < max_retries - 1:
                     import time
 
+                    batch_size = max(1, batch_size // 2)
+                    logger.warning(
+                        "Embedding attempt %d failed: %s, retrying with batch_size=%d...",
+                        attempt + 1,
+                        e,
+                        batch_size,
+                    )
                     time.sleep(2**attempt)  # Exponential backoff
-                    logger.warning("Embedding attempt %d failed: %s, retrying...", attempt + 1, e)
 
         raise RuntimeError(f"Embedding failed after {max_retries} attempts: {last_error}")
 

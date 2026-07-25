@@ -117,10 +117,18 @@ text:
 
 You hit `RuntimeError: parsing.pdf_backend='pymupdf' is no longer
 supported.` (or `'pypdf2'`, or `'auto'`-without-Docling). This is the
-v2.0 hard gate: Docling is the only PDF backend.
+v2.0 hard gate: PyMuPDF/PyPDF2 were removed, Docling-based parsing is
+the only supported path.
 
-Fix: in `config/config.yaml` set `parsing.pdf_backend: docling` (or
-remove the key entirely — `docling` is the default).
+Fix: in `config/config.yaml` set `parsing.pdf_backend` to one of the two
+valid values:
+
+- `docling` (default) — Docling only.
+- `cascade` (v2.3+) — Docling first, falls back to Unstructured (if
+  installed) when Docling's quality score is below
+  `parsing.quality_fallback_threshold`. See [install.md](install.md#pdf-quality-cascade).
+
+Or remove the key entirely — `docling` is the default.
 
 ## Duplicate uploads aren't detected
 

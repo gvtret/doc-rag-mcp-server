@@ -1358,9 +1358,23 @@ def rebuild_docs(
         _log("WARN", f"rebuild-docs: removed {len(all_docs) - len(_deduped)} duplicate doc entries")
     all_docs = list(reversed(_deduped))
 
-    # Chunks already in chunks.jsonl from per-file appends — just load and dedup
+    # Chunks already in chunks.jsonl from per-file appends — load, drop
+    # orphans, then dedup. Orphans arise because doc_id is a content hash:
+    # if the rebuilt file's content actually changed, the new doc_id
+    # differs from the old one, and the old doc_id's chunks would
+    # otherwise never be removed from chunks.jsonl (or the vector index),
+    # leaking stale content into search results indefinitely.
+    all_doc_ids = {d.get("doc_id", "") for d in all_docs}
     all_chunks = _load_existing_chunks(chunks_path)
     original_chunk_count = len(all_chunks)
+
+    _orphaned = [c for c in all_chunks if c.get("doc_id", "") not in all_doc_ids]
+    if _orphaned:
+        _log(
+            "WARN",
+            f"rebuild-docs: dropping {len(_orphaned)} orphaned chunk(s) with no matching document",
+        )
+        all_chunks = [c for c in all_chunks if c.get("doc_id", "") in all_doc_ids]
 
     _sc: set[str] = set()
     _dc: list[dict] = []
@@ -1388,21 +1402,17 @@ def rebuild_docs(
 
     _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
 
-    # Rebuild index from all chunks to ensure sync with chunks.jsonl
-    # (previous rebuild_docs calls may have added chunks not in the index)
+    # Prune stale vectors for the docs we just re-parsed, then let build()
+    # incrementally embed only chunks missing from the index — their new
+    # chunk_ids after this rebuild, plus any genuine chunks.jsonl/index
+    # drift from elsewhere (force=False falls back to a full build when the
+    # store is empty, so this is also correct for a from-scratch index).
+    # Avoids re-embedding the whole corpus to rebuild one or two documents.
     try:
         vi = _get_vector_index(cfg)
-        _index_dir = os.path.join(root, cfg["paths"]["index_dir"])
-        for _fname in ("faiss.index", "index_meta.json"):
-            _p = os.path.join(_index_dir, _fname)
-            if os.path.exists(_p):
-                try:
-                    os.remove(_p)
-                except OSError as _e:
-                    _log("WARN", f"could not remove stale index file {_fname}: {_e}")
-        vi.reset()
+        vi.delete(target_ids)
         if all_chunks:
-            vi.build(all_chunks, force=True, log=print)
+            vi.build(all_chunks, force=False, log=print)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 

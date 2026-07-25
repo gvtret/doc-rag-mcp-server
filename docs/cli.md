@@ -58,6 +58,36 @@ Use when you change chunk size, embedding model, or recover from a corrupt index
 doc-rag rebuild
 ```
 
+Flags:
+
+- `--force` — full rebuild: wipe `docs_md`/chunks and reparse everything (default is
+  incremental).
+- `--skip-index` — parse and chunk only, skip building the vector index. For local GPU
+  processing: run the heavy embedding step elsewhere, then `rebuild-index` on the server.
+
+If the MCP server is already running, `rebuild` (without `--skip-index`) is sent through
+`POST /ui/rebuild` instead of running in-process, so progress is visible in the Web UI.
+
+## `doc-rag rebuild-docs <doc_id> [<doc_id> ...]`
+
+Rebuild specific documents by `doc_id` — reparse, rechunk, and re-embed just those
+documents. Note: the vector index itself is still rebuilt in full from all chunks, not
+incrementally, so this is not necessarily cheaper than `rebuild` for a large corpus.
+
+```bash
+doc-rag rebuild-docs a3f1b9c2 7d4e0a55
+```
+
+## `doc-rag rebuild-index`
+
+Rebuild only the FAISS index from the existing `build/chunks_jsonl/chunks.jsonl`
+(no reparsing, no rechunking). Use after `rebuild --skip-index` or to recover a corrupt
+index without re-running embeddings.
+
+```bash
+doc-rag rebuild-index
+```
+
 ## `doc-rag serve`
 
 Legacy debug HTTP server (separate from the MCP server). Most users want
@@ -101,6 +131,15 @@ Delete every file under `sources/incoming/` (does not touch the index).
 
 ```bash
 doc-rag clear-incoming
+```
+
+## `doc-rag migrate-vectors --to <backend> [--from <backend>] [--collection <name>]`
+
+Migrate vectors between vector-store backends (e.g. `faiss` → `qdrant` or `pgvector`).
+`--from` defaults to `faiss`; `--to` is required.
+
+```bash
+doc-rag migrate-vectors --to qdrant --collection default
 ```
 
 ## `doc-rag migrate`

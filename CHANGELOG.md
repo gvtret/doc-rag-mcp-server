@@ -69,6 +69,14 @@ i18n, quality cascade, GPU support, OOM prevention, incremental persistence.
 - **Incremental manifest persistence**: Manifest written after each file in rebuild.
 - **Memory check before chunk processing**: Skip remaining chunks if <1GB free.
 - **Embedding retry**: Exponential backoff (1s, 2s, 4s) on encoding failures.
+- **`doc_download` MCP tool**: download a source document by filename (base64-encoded).
+  Replaces `doc_generate`.
+- **`doc_search_docs` MCP tool**: document-level search — unique documents with
+  relevance scores and download URLs, instead of chunks.
+
+### Removed
+- **`doc_generate` MCP tool and `rag_generate` module**: removed along with
+  `mcp.rag_generate.*` config keys and `DOC_RAG_LLM_*` env vars introduced in v4.0.0.
 
 ### Fixed
 - **Dedup by sha256**: Documents with same content but different filenames now deduplicated.

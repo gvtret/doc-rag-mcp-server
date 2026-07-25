@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -20,37 +22,6 @@ def test_mcp_http_initialize_and_tools_list() -> None:
     assert isinstance(out, dict)
     tools = out["result"]["tools"]
     assert any(t.get("name") == "doc_search" for t in tools)
-
-
-def test_mcp_http_auth_required_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
-    from doc_rag.server.mcp_http import app
-
-    c = TestClient(app)
-    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    assert r.status_code == 401
-
-    r = c.post(
-        "/mcp",
-        headers={"Authorization": "Bearer secret"},
-        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-    )
-    assert r.status_code == 200
-
-
-def test_mcp_http_denies_when_no_key_and_anon_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
-    from doc_rag.server.mcp_http import app
-
-    c = TestClient(app)
-    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    assert r.status_code == 200
 
 
 def test_mcp_http_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,22 +127,6 @@ def test_ui_status_includes_log_tail(monkeypatch: pytest.MonkeyPatch, tmp_path) 
     assert any("__ui_log_probe__" in line for line in data["log_tail"])
 
 
-def test_ui_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
-    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
-
-    from doc_rag.server.mcp_http import app
-
-    c = TestClient(app)
-    r = c.get("/ui")
-    assert r.status_code == 401
-    r = c.get("/ui?key=secret")
-    assert r.status_code == 200
-
-
 _SAMPLE_CONFIG = """\
 chunking:
   # keep this comment intact across a form-save
@@ -195,7 +150,6 @@ def test_ui_config_parsed_returns_mapping(monkeypatch: pytest.MonkeyPatch, tmp_p
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
     _write_sample_config(tmp_path)
     from doc_rag.server.mcp_http import app
@@ -215,7 +169,6 @@ def test_ui_config_patch_updates_and_preserves_comments(
     pytest.importorskip("ruamel.yaml")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
     p = _write_sample_config(tmp_path)
     from doc_rag.server.mcp_http import app
@@ -237,7 +190,6 @@ def test_ui_config_patch_rejects_unknown_key(monkeypatch: pytest.MonkeyPatch, tm
     pytest.importorskip("ruamel.yaml")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
     _write_sample_config(tmp_path)
     from doc_rag.server.mcp_http import app
@@ -247,27 +199,10 @@ def test_ui_config_patch_rejects_unknown_key(monkeypatch: pytest.MonkeyPatch, tm
     assert r.json()["ok"] is False
 
 
-def test_ui_config_patch_requires_key_when_api_key_set(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
-    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
-    _write_sample_config(tmp_path)
-    from doc_rag.server.mcp_http import app
-
-    c = TestClient(app)
-    assert c.get("/ui/config/parsed").status_code == 401
-    assert c.post("/ui/config/patch", data={"updates": "{}"}).status_code == 401
-
-
 def test_ui_env_get_lists_editable_keys(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
     from doc_rag.server.mcp_http import app
 
@@ -278,33 +213,12 @@ def test_ui_env_get_lists_editable_keys(monkeypatch: pytest.MonkeyPatch, tmp_pat
     keys = {f["key"] for f in data["fields"]}
     assert "DOC_RAG_HTTP_PORT" in keys
     assert "DOC_RAG_UI_RESTART_CMD" in keys
-    # API key is a secret: present only as a set/not-set flag, never a field.
-    assert "DOC_RAG_API_KEY" not in keys
-    assert any(s["key"] == "DOC_RAG_API_KEY" for s in data["secrets"])
-
-
-def test_ui_env_get_masks_secret_value(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "supersecret123")
-    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
-    from doc_rag.server.mcp_http import app
-
-    r = TestClient(app).get("/ui/env?key=supersecret123")
-    assert r.status_code == 200
-    data = r.json()
-    secret = next(s for s in data["secrets"] if s["key"] == "DOC_RAG_API_KEY")
-    assert secret["set"] is True
-    # The secret value must never appear in the response body.
-    assert "supersecret123" not in r.text
 
 
 def test_ui_env_save_writes_quoted_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     env_file = tmp_path / ".env"
     monkeypatch.setenv("DOC_RAG_ENV_FILE", str(env_file))
     from doc_rag.server.mcp_http import app
@@ -323,63 +237,22 @@ def test_ui_env_save_writes_quoted_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert "DOC_RAG_UI_RESTART_CMD='sudo systemctl restart doc-rag-mcp'" in written
 
 
-def test_ui_env_save_rejects_secret_unknown_and_bad_type(
+def test_ui_env_save_rejects_unknown_and_bad_type(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
     monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
     from doc_rag.server.mcp_http import app
 
     c = TestClient(app)
-    # secret key cannot be set from the UI
-    assert c.post("/ui/env/save", data={"updates": '{"DOC_RAG_API_KEY": "x"}'}).status_code == 400
     # unknown key
     assert c.post("/ui/env/save", data={"updates": '{"DOC_RAG_NOPE": "1"}'}).status_code == 400
     # bad type (port must be int)
     assert (
         c.post("/ui/env/save", data={"updates": '{"DOC_RAG_HTTP_PORT": "abc"}'}).status_code == 400
     )
-
-
-def test_ui_env_requires_key_when_api_key_set(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "secret")
-    monkeypatch.setenv("DOC_RAG_ENV_FILE", str(tmp_path / ".env"))
-    from doc_rag.server.mcp_http import app
-
-    c = TestClient(app)
-    assert c.get("/ui/env").status_code == 401
-    assert c.post("/ui/env/save", data={"updates": "{}"}).status_code == 401
-
-
-def test_ui_key_ok_uses_timing_safe_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_ui_key_ok must use hmac.compare_digest, not ==, to prevent timing attacks."""
-    pytest.importorskip("fastapi")
-    from unittest.mock import MagicMock, patch
-
-    monkeypatch.setenv("DOC_RAG_API_KEY", "real-secret-key")
-    from doc_rag.server.mcp_http import _ui_key_ok
-
-    request = MagicMock()
-    request.headers = {}
-
-    # Correct key should pass
-    assert _ui_key_ok(request, "real-secret-key") is True
-
-    # Wrong key should fail
-    assert _ui_key_ok(request, "wrong-key") is False
-
-    # Verify hmac.compare_digest is called (not ==)
-    import hmac as _hmac
-
-    with patch("hmac.compare_digest", wraps=_hmac.compare_digest) as mock_cmp:
-        _ui_key_ok(request, "real-secret-key")
-        mock_cmp.assert_called()
 
 
 def test_doc_stats_endpoint() -> None:
@@ -463,6 +336,55 @@ def test_upload_xhr_returns_json_saved(monkeypatch: pytest.MonkeyPatch, tmp_path
     incoming = tmp_path / "sources" / "incoming"
     pdfs = list(incoming.glob("*.pdf"))
     assert len(pdfs) == 1
+
+
+def test_upload_two_empty_files_second_flagged_as_dup_of_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Characterizes current behavior for two distinctly-named 0-byte uploads.
+
+    sha256 of empty content is the same constant for *any* empty file — this
+    isn't a hash collision between different content, it's two genuinely
+    identical (empty) files. `_find_dup_in_incoming` computes sha256 from
+    what's already on disk in incoming/, so the second empty upload gets
+    flagged as a duplicate of the first, even though the two files have
+    different names and the user may have intended them as separate
+    (currently-empty) documents. This test documents that outcome rather
+    than asserting it's necessarily desired — see audit notes on whether
+    empty uploads should instead be rejected outright with a clearer error.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    from doc_rag.server.mcp_http import app
+
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+    (tmp_path / "build").mkdir(parents=True)
+
+    files = [
+        ("files", ("first.txt", b"", "text/plain")),
+        ("files", ("second.txt", b"", "text/plain")),
+    ]
+
+    c = TestClient(app)
+    r = c.post(
+        "/ui/upload",
+        files=files,
+        data={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["saved"] == 1
+    assert len(data["dups"]) == 1
+    assert "second.txt" in data["dups"][0]
+
+    incoming = tmp_path / "sources" / "incoming"
+    txts = list(incoming.glob("*.txt"))
+    assert len(txts) == 1
+    assert txts[0].name == "first.txt"
 
 
 def test_upload_xhr_returns_json_dup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -621,3 +543,169 @@ def test_upload_old_form_returns_303(monkeypatch: pytest.MonkeyPatch, tmp_path) 
     assert r.status_code == 303
     loc = r.headers.get("location", "")
     assert "up_saved=1" in loc
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/ui/delete", {"doc_ids": "abc123"}),
+        ("/ui/wipe", {"confirm": "DELETE"}),
+        ("/ui/clean-orphans", {}),
+        ("/ui/clear-incoming", {}),
+    ],
+)
+def test_destructive_ui_endpoints_busy_when_job_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, path: str, data: dict
+) -> None:
+    """A rebuild/ingest already in flight must block delete/wipe/clean-orphans/
+    clear-incoming instead of racing it — see `_exclusive_job`. Before the fix,
+    these endpoints checked `_INGEST_STATE["running"]` without holding
+    `_INGEST_LOCK` (or, for clear-incoming, didn't check it at all), so a
+    concurrent request could slip through and mutate manifest/chunks/index
+    while a rebuild was still writing them.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+
+    import doc_rag.server.mcp_http as mh
+
+    called = False
+
+    def _fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("pipeline op must not run while a job is marked running")
+
+    monkeypatch.setattr(mh, "_pipeline_delete_documents", _fail_if_called)
+    monkeypatch.setattr(mh, "_pipeline_wipe_index", _fail_if_called)
+    monkeypatch.setattr(mh, "_pipeline_clean_orphans", _fail_if_called)
+    monkeypatch.setattr(mh, "_pipeline_clear_incoming", _fail_if_called)
+
+    mh._INGEST_STATE["running"] = True
+    mh._INGEST_STATE["job"] = "rebuild"
+    try:
+        r = TestClient(mh.app).post(path, data=data)
+        assert r.status_code == 409
+        assert r.json()["ok"] is False
+        assert called is False
+    finally:
+        mh._INGEST_STATE["running"] = False
+        mh._INGEST_STATE["job"] = None
+
+
+def test_ui_delete_releases_exclusive_job_state_after_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DOC_RAG_API_KEY", raising=False)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+
+    import doc_rag.server.mcp_http as mh
+
+    def _ok_delete(config_path: str, doc_ids: list) -> dict:
+        assert mh._INGEST_STATE["running"] is True
+        assert mh._INGEST_STATE["job"] == "delete"
+        return {"removed_docs": len(doc_ids)}
+
+    monkeypatch.setattr(mh, "_pipeline_delete_documents", _ok_delete)
+
+    r = TestClient(mh.app).post("/ui/delete", data={"doc_ids": "abc123"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert mh._INGEST_STATE["running"] is False
+    assert mh._INGEST_STATE["job"] is None
+
+
+def _write_lock(build_dir, job: str, ts: str) -> None:
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / ".rebuild.lock").write_text(f"{job}\n{ts}\n")
+
+
+def test_rebuild_interrupted_true_when_lock_has_no_done_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """No `.done` marker next to the lock = the process never confirmed
+    completion (crashed mid-rebuild, or killed before writing the marker) —
+    must report interrupted and leave the lock in place."""
+    import doc_rag.server.mcp_http as mh
+
+    monkeypatch.setattr(mh, "_root_dir", lambda: tmp_path)
+    _write_lock(tmp_path / "build", "rebuild", "1000.0")
+
+    payload = mh._ui_status_payload()
+
+    assert payload["rebuild_interrupted"] is True
+    assert (tmp_path / "build" / ".rebuild.lock").is_file()
+
+
+def test_rebuild_interrupted_false_when_done_marker_matches_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A `.done` marker whose timestamp matches the lock means *this* run
+    finished successfully and only failed to clean up after itself (killed
+    between finishing the job and removing the lock) — safe to auto-clear."""
+    import doc_rag.server.mcp_http as mh
+
+    monkeypatch.setattr(mh, "_root_dir", lambda: tmp_path)
+    build_dir = tmp_path / "build"
+    _write_lock(build_dir, "rebuild", "1000.0")
+    (build_dir / ".rebuild.lock.done").write_text("1000.0\n")
+
+    payload = mh._ui_status_payload()
+
+    assert payload["rebuild_interrupted"] is False
+    assert not (build_dir / ".rebuild.lock").exists()
+    assert not (build_dir / ".rebuild.lock.done").exists()
+
+
+def test_unrelated_manifest_write_does_not_clear_interrupted_rebuild_banner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Regression for the bug fixed in this change: delete/clean-orphans/wipe
+    rewrite manifest.json for reasons unrelated to any in-flight rebuild.
+    Before the fix, staleness was inferred by comparing manifest.json's mtime
+    to the lock's timestamp, so any later unrelated write to manifest.json
+    (bumping its mtime past the lock's) made a genuinely interrupted rebuild
+    look "stale" and silently cleared the banner. The fix decouples
+    staleness from manifest.json entirely (see the `.done` marker tests
+    above); this test locks in that a later manifest write has no effect.
+    """
+    import doc_rag.server.mcp_http as mh
+
+    monkeypatch.setattr(mh, "_root_dir", lambda: tmp_path)
+    build_dir = tmp_path / "build"
+    _write_lock(build_dir, "rebuild", "1000.0")
+
+    # Simulate an unrelated `/ui/delete` running after the crash, rewriting
+    # manifest.json well after the lock's timestamp.
+    (build_dir / "manifest.json").write_text('{"documents": []}')
+    os.utime(build_dir / "manifest.json", (2000.0, 2000.0))
+
+    payload = mh._ui_status_payload()
+
+    assert payload["rebuild_interrupted"] is True
+    assert (build_dir / ".rebuild.lock").is_file()
+
+
+def test_run_index_job_background_leaves_no_lock_files_on_clean_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """End-to-end success path: lock + `.done` marker must both be gone once
+    `_run_index_job_background` finishes without crashing."""
+    import doc_rag.server.mcp_http as mh
+
+    monkeypatch.setattr(mh, "_root_dir", lambda: tmp_path)
+
+    import asyncio as _asyncio
+
+    _asyncio.run(mh._run_index_job_background("rebuild", lambda: None))
+
+    build_dir = tmp_path / "build"
+    assert not (build_dir / ".rebuild.lock").exists()
+    assert not (build_dir / ".rebuild.lock.done").exists()
+    assert mh._INGEST_STATE["last_ok"] is True

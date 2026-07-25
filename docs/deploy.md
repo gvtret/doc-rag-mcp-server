@@ -10,9 +10,14 @@ Three deployment styles, in increasing order of operational seriousness:
 
 ```bash
 cp .env.example .env
+mkdir -p build sources/incoming sources/archived && chown -R 1000:1000 build sources
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
+
+The container runs as an unprivileged user (uid 1000), so the bind-mounted
+`./build` and `./sources` must be writable by that uid on the host — hence the
+`chown` step above.
 
 Volumes (defined in `docker-compose.yml`):
 
@@ -24,7 +29,6 @@ Environment variables of interest in `docker-compose.yml`:
 
 - `DOC_RAG_HTTP_HOST` / `DOC_RAG_HTTP_PORT`
 - `DOC_RAG_ALLOWED_ORIGINS` (CSV; required if your client sends `Origin`)
-- `DOC_RAG_API_KEY` (commented out by default; uncomment to require auth)
 - `DOC_RAG_HTTP_LOG` (default `/app/build/http.log`)
 
 ## Native systemd
@@ -34,8 +38,15 @@ For a Linux server you control. Boot-on-startup, single-user `docrag`, repo at
 
 ```bash
 sudo bash scripts/install_server_native.sh
-# flags: --cpu (default) | --gpu | --minimal
+# flags: --minimal (skip torch/embeddings — HTTP/MCP only, no semantic search)
+#        default (no flag) installs the CPU embeddings stack (torch CPU + sentence-transformers)
 # positional: optional INSTALL_ROOT (default /opt/doc-rag-mcp)
+```
+
+For GPU embeddings, run the base install first, then swap in a CUDA build of torch:
+
+```bash
+sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && bash scripts/install_torch_gpu.sh'
 ```
 
 What it does:
@@ -67,8 +78,7 @@ edited from the UI). `scripts/run_mcp_http.sh` sources this file at startup
 and it **overrides** `/etc/default/doc-rag`, so a key set in both wins from
 `.env`. Override the path with `DOC_RAG_ENV_FILE`. Changes apply on the next
 `systemctl restart doc-rag-mcp` (the UI's Restart button, if sudoers allows
-it). `DOC_RAG_API_KEY` is never written from the UI — manage the key here or
-in `/etc/default/doc-rag`.
+it).
 
 ### Restarting from a deploy user
 

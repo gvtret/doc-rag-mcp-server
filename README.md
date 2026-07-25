@@ -48,7 +48,9 @@ Then open `http://127.0.0.1:3333/ui` or point Cursor at `http://127.0.0.1:3333/m
 | [docs/ui.md](docs/ui.md) | Web UI: upload, dedup, ingest, delete, danger zone, degraded-mode banner |
 | [docs/deploy.md](docs/deploy.md) | Docker Compose, native systemd, deploy archive, remote MCP |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Torch/CUDA, MCP not visible, FAISS rebuild, PEP 668, OCR |
-| [docs/roadmap.md](docs/roadmap.md) | Versioning policy and the path to public v1.x.y |
+| [docs/roadmap.md](docs/roadmap.md) | Versioning policy, SemVer-protected public surface, release history |
+| [docs/bench-results.md](docs/bench-results.md) | `scripts/bench.py` output: parse/embed/rebuild timings |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | Living session handoff log (see the `handoff` workflow) |
 
 See [CHANGELOG.md](CHANGELOG.md) for notable changes between releases.
 

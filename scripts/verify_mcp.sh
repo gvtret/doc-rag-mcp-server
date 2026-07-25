@@ -21,16 +21,9 @@ if [[ -z "$PY" ]]; then
   fi
 fi
 
-API_KEY="${DOC_RAG_API_KEY:-}"
-AUTH_HEADERS=()
-if [[ -n "${API_KEY}" ]]; then
-  AUTH_HEADERS+=(-H "Authorization: Bearer ${API_KEY}")
-fi
-
 curl -fsS -X POST "${BASE}/mcp" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
-  "${AUTH_HEADERS[@]}" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
 echo
@@ -38,7 +31,6 @@ echo
 curl -fsS -X POST "${BASE}/mcp" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
-  "${AUTH_HEADERS[@]}" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 
 echo
@@ -67,7 +59,6 @@ PY
 curl -fsS -X POST "${BASE}/mcp" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
-  "${AUTH_HEADERS[@]}" \
   -d "${PAYLOAD}"
 
 echo

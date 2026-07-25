@@ -8,11 +8,11 @@ do **not** receive backports.
 
 | Version | Status |
 | ------- | ------ |
-| 1.x (latest minor) | Security fixes |
-| < 1.x | Unsupported |
+| 5.x (latest minor) | Security fixes |
+| < 5.x | Unsupported |
 
 If you are running an older release, the recommended remediation is to
-upgrade to the latest 1.x release before reporting an issue you cannot
+upgrade to the latest 5.x release before reporting an issue you cannot
 otherwise demonstrate against `main`.
 
 ## Reporting a vulnerability
@@ -71,14 +71,16 @@ Out of scope:
 
 ## Hardening defaults users should know about
 
-- The MCP/UI server is **unauthenticated by default**. Set
-  `DOC_RAG_API_KEY` to enable bearer-token auth before exposing the
-  server outside a trusted LAN.
+- The MCP/UI server has **no authentication mechanism at all** — every
+  `/mcp` and `/ui/*` route (including destructive ones: `/ui/delete`,
+  `/ui/wipe`, `/ui/restart`) is open to anyone who can reach the port.
+  This is a deliberate design choice for trusted-LAN deployments, not a
+  gap to be configured away — there is no key/token option. **Do not**
+  expose this port to an untrusted network; put it behind a VPN or
+  firewall if you need remote access.
 - `DOC_RAG_ALLOWED_ORIGINS` should be an explicit allow-list, not `*`,
-  for any deployment that receives requests with `Origin` headers.
-- The Web UI exposes destructive operations (`/ui/delete`, `/ui/wipe`).
-  Treat the API key (if set) as a destructive credential, not just a
-  read token.
+  for any deployment that receives requests with `Origin` headers. This
+  is a CORS control, not an authentication mechanism.
 
 ## Credit
 

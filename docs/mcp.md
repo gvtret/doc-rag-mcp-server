@@ -10,7 +10,7 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 | `POST /mcp` | JSON-RPC request/response (`application/json`) |
 | `GET  /mcp` | SSE stream (`text/event-stream`) — `doc_rag/ready` notification + keepalives |
 | `GET  /health` | `{"status":"ok",...}` health check |
-| `GET  /ui` | Web UI |
+| `GET  /ui` | Redirects to the Web UI at `/ui-next/` |
 | `GET  /ui/mcp/cursor.json` | drop-in MCP config for Cursor |
 | `GET  /ui/mcp/vscode.json` | drop-in MCP config for VS Code |
 | `GET  /health/live` | liveness probe — always 200 |
@@ -20,8 +20,16 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 ## Tools exposed
 
 - **`doc_search`** — semantic + lexical search over the indexed corpus.
-  Arguments: `query: str` (required), `top_k: int` (default 6, capped at 50).
+  Arguments: `query: str` (required), `top_k: int` (default 6, capped at 50),
+  `namespace: str` (default `"default"`), `doc_id: str` (filter by document),
+  `section_path: str` (filter by section-path prefix), `tables_only: bool`
+  (default `false`, return only table chunks).
   Returns ranked chunks with `score`, `doc_id`, `chunk_id`, `source_file`, `text`.
+- **`doc_download`** — download a source document by filename.
+  Arguments: `filename: str` (required). Returns the file content base64-encoded.
+- **`doc_search_docs`** — like `doc_search` but document-level: returns unique
+  documents (not chunks) with relevance scores and download URLs.
+  Arguments: `query: str` (required), `top_k: int` (default 10).
 
 If the FAISS index isn't available (e.g. corpus was wiped or rebuild is in progress),
 `doc_search` falls back to lexical search and prepends a warning content-item to the
@@ -32,11 +40,11 @@ response telling the client that quality is degraded and pointing them at the
 ## API stability (SemVer)
 
 The MCP surface of `doc-rag` is SemVer-protected per
-[docs/roadmap.md § 1](roadmap.md). Concretely, for the v1.x release line:
+[docs/roadmap.md § 1](roadmap.md):
 
-- **The list of exposed tools is fixed at `[doc_search]`.** Adding a
-  new tool is a MINOR bump. Removing or renaming a tool is a MAJOR
-  bump.
+- **The list of exposed tools is currently `[doc_search, doc_download,
+  doc_search_docs]`.** Adding a new tool is a MINOR bump. Removing or
+  renaming a tool is a MAJOR bump.
 - **`doc_search` argument schema is stable.** `query: str` (required)
   and `top_k: int` (default 6, capped at 50) — adding optional fields
   is a MINOR bump, removing or renaming is MAJOR. The capping rule
@@ -64,8 +72,8 @@ What is **not** SemVer-protected:
 - The Web UI HTML markup. Routes under `/ui/*` are stable; the markup
   they return is not.
 
-If you build an MCP client against `doc-rag` v1.x, the above is what
-you can rely on through every v1.y.z release.
+If you build an MCP client against a given `doc-rag` major version, the above is
+what you can rely on through every minor/patch release of that major version.
 
 ## Run the server
 
@@ -148,17 +156,12 @@ Paste the printed JSON into `~/.cursor/mcp.json`, restart Cursor, open a **new**
 
 If your client sends an `Origin` header, allow it via `DOC_RAG_ALLOWED_ORIGINS` (CSV).
 
-## Auth (optional)
+## No authentication
 
-LAN deployments can run open by default. To require an API key:
-
-```bash
-export DOC_RAG_API_KEY="change-me"
-bash scripts/run_mcp_http.sh
-```
-
-Clients must send `Authorization: Bearer <key>` or `X-Api-Key: <key>` for `/mcp` and
-`/ui`. The UI accepts `?key=<DOC_RAG_API_KEY>` in the URL as a convenience.
+`doc-rag` has no auth mechanism — `/mcp` and every `/ui/*` route are open to anyone who
+can reach the port. This is by design for a trusted-LAN deployment; do not expose this
+port to an untrusted network. See [SECURITY.md](../SECURITY.md) for the full threat
+model and hardening guidance.
 
 ## Rate limit (optional)
 

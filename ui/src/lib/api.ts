@@ -196,6 +196,12 @@ export function fetchQuality(signal?: AbortSignal): Promise<QualitySummary> {
   return getJSON<QualitySummary>("/ui/quality", signal);
 }
 
+export type OcrCoverage = {
+  applied?: boolean;
+  pages_recognized?: number;
+  confidence?: number;
+};
+
 export type AllDocument = {
   doc_id?: string;
   basename: string;
@@ -206,6 +212,7 @@ export type AllDocument = {
   size?: number;
   indexed: boolean;
   status?: "processing" | "processed" | "reprocessing";
+  coverage?: { ocr?: OcrCoverage };
 };
 
 export type AllDocumentsResponse = {

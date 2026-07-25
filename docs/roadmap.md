@@ -37,9 +37,11 @@ strictly. Versions are `MAJOR.MINOR.PATCH`:
 
 The following are SemVer-protected:
 
-1. The CLI: `doc-rag {ingest,rebuild,serve,delete,wipe,clean-orphans,clear-incoming}`
+1. The CLI: `doc-rag {ingest,rebuild,rebuild-docs,rebuild-index,serve,delete,wipe,
+   clean-orphans,clear-incoming,migrate-vectors,migrate}`
    — names, positional argument shapes, exit codes.
-2. The MCP tool surface exposed over `POST /mcp` (currently: `doc_search`).
+2. The MCP tool surface exposed over `POST /mcp` (currently: `doc_search`,
+   `doc_download`, `doc_search_docs`).
 3. The HTTP endpoints used by the Web UI (`/ui/*`) — their **paths**, not
    their HTML markup.
 4. `config/config.yaml` — top-level keys and their semantics.
@@ -88,48 +90,56 @@ see CI status; logs are machine-readable.
 
 ### Sprint 1.1 — Legal
 
-- [ ] `LICENSE` — full text of AGPL-3.0-or-later at repo root.
-- [ ] `pyproject.toml` — `license = "AGPL-3.0-or-later"` plus matching
-      `classifiers`.
-- [ ] `NOTICE` — third-party dependencies and their licenses (the
+- [x] `LICENSE` — full text of AGPL-3.0-or-later at repo root. (Superseded:
+      relicensed to MIT in v2.0.0, see § "v1.5 → v2.0" below — `LICENSE` now
+      carries MIT text, `pyproject.toml` `license = "MIT"`.)
+- [x] `pyproject.toml` — `license = "AGPL-3.0-or-later"` plus matching
+      `classifiers`. (Superseded: now `license = "MIT"`, see above.)
+- [x] `NOTICE` — third-party dependencies and their licenses (the
       project is AGPL, but bundled deps span MIT, BSD, Apache-2.0,
       MPL-2.0, HPND, etc. — make this visible).
-- [ ] `SECURITY.md` — supported versions, vulnerability reporting
+- [x] `SECURITY.md` — supported versions, vulnerability reporting
       address, response SLA.
-- [ ] `CONTRIBUTING.md` — dev setup, test instructions, commit style,
+- [x] `CONTRIBUTING.md` — dev setup, test instructions, commit style,
       explicit note that contributions are accepted under AGPL.
 
 ### Sprint 1.2 — CI
 
-- [ ] `.github/workflows/tests.yml` — pytest on Python 3.10/3.11/3.12,
+- [x] `.github/workflows/tests.yml` — pytest on Python 3.10/3.11/3.12,
       with `[server,faiss,pdf]` extras installed. Runs on push and PR.
-- [ ] `.github/workflows/lint.yml` — `ruff check` + `ruff format --check`.
+      (3.10 dropped in v5.0.0 — incompatible wheels in `uv.lock`; matrix
+      is now 3.11/3.12.)
+- [x] `.github/workflows/lint.yml` — `ruff check` + `ruff format --check`.
       Ruff config in `pyproject.toml`.
-- [ ] `.github/workflows/build.yml` — `docker build` against the bundled
+- [x] `.github/workflows/build.yml` — `docker build` against the bundled
       `docker/Dockerfile`. Runs on push and PR.
-- [ ] Status badges in `README.md`.
+- [x] Status badges in `README.md`.
 
 ### Sprint 1.3 — Observability foundation
 
-- [ ] Structured logging: introduce `python-json-logger`. Two modes
+- [x] Structured logging: introduce `python-json-logger`. Two modes
       selectable via `DOC_RAG_LOG_FORMAT` (`text` default, `json` for
       production).
-- [ ] Correlation ID middleware in `mcp_http.py` — `request_id` (uuid4)
+- [x] Correlation ID middleware in `mcp_http.py` — `request_id` (uuid4)
       injected into every log line covering a request.
-- [ ] `DOC_RAG_LOG_LEVEL` env var (default `INFO`).
-- [ ] All explicit `print()` and ad-hoc `logging.info` calls in the
+- [x] `DOC_RAG_LOG_LEVEL` env var (default `INFO`).
+- [x] All explicit `print()` and ad-hoc `logging.info` calls in the
       server path audited and routed through the new logger.
 
 ### Sprint 1.4 — Documentation language switch
 
-- [ ] `README.md` translated to English. Slim overview format
-      preserved. AGPL notice added. Link to the published Habr article
-      added under "Talks and articles".
-- [ ] `docs/install.md`, `docs/cli.md`, `docs/mcp.md`, `docs/ui.md`,
+- [x] `README.md` translated to English. Slim overview format
+      preserved. Link to the published Habr article added under
+      "Talks and articles".
+- [x] `docs/install.md`, `docs/cli.md`, `docs/mcp.md`, `docs/ui.md`,
       `docs/deploy.md`, `docs/troubleshooting.md` translated to English.
 - [ ] `CHANGELOG.md` updated for `1.1.0` with all sprint-1 changes.
+      (Moot: `v1.1.0`/`v1.2.0`/`v1.3.0` were internal-only and never
+      published — see § "Release cadence and tagging" above. The first
+      public tag `v1.4.0` has its own CHANGELOG entry instead.)
 - [ ] Russian copies tracked under `docs/ru/` and may lag behind by
       design; only the English versions are considered authoritative.
+      (Not done: `docs/ru/` was never created; docs are English-only.)
 
 ## 3. Sprint 2 — Test coverage
 
@@ -148,21 +158,23 @@ embedding model. That refactor is deferred to Sprint 3.
 
 ### Items
 
-- [ ] Parser tests for every supported format: `.pdf` (text), `.pdf`
+- [x] Parser tests for every supported format: `.pdf` (text), `.pdf`
       (scanned, requires Tesseract), `.docx` (with table), `.doc` (via
       antiword), `.md`, `.txt`. Fixtures live under `tests/fixtures/`.
-- [ ] CLI tests for `delete`, `wipe`, `clean-orphans`, `clear-incoming` —
+- [x] CLI tests for `delete`, `wipe`, `clean-orphans`, `clear-incoming` —
       each operation has a happy-path test against an isolated
-      temp-rooted corpus.
-- [ ] **FAISS reconstruct regression test** — given an index with N
+      temp-rooted corpus. (`tests/test_cli_destructive.py`.)
+- [x] **FAISS reconstruct regression test** — given an index with N
       chunks, deleting K of them must produce an index whose remaining
       `index.reconstruct(i)` vectors match the originals byte-for-byte.
-- [ ] **Degraded-mode contract test** — with `faiss.index` removed,
+      (`tests/test_faiss_reconstruct.py`.)
+- [x] **Degraded-mode contract test** — with `faiss.index` removed,
       `doc_search` returns a content array whose first item is the
-      configured warning text.
-- [ ] **Dedup test** — uploading the same sha256 twice via `/ui/upload`
+      configured warning text. (`tests/test_degraded_mode.py`.)
+- [x] **Dedup test** — uploading the same sha256 twice via `/ui/upload`
       yields a 200 with the dup reported, not a second manifest entry.
-- [ ] Coverage report uploaded to CI artefacts; ≥ 40 % gate enforced in
+      (`tests/test_dedup.py`.)
+- [x] Coverage report uploaded to CI artefacts; ≥ 40 % gate enforced in
       `tests.yml` (`--cov-fail-under=40`). Raising the gate is a Sprint 3
       task tied to a `pipeline.py` testability refactor.
 
@@ -176,29 +188,30 @@ operator can tell whether an instance is alive vs. ready.
 
 ### Items
 
-- [ ] Split `/health` into `/health/live` (always 200) and
+- [x] Split `/health` into `/health/live` (always 200) and
       `/health/ready` (200 only when manifest exists and no rebuild is
       in flight; 503 otherwise).
-- [ ] `/metrics` endpoint in Prometheus exposition format via
+- [x] `/metrics` endpoint in Prometheus exposition format via
       `prometheus-client`. Counters: `mcp_requests_total{tool,status}`,
       `ingest_documents_total`, `ingest_errors_total`. Gauges:
       `faiss_index_size`. Histograms: `embedding_duration_seconds`,
       `mcp_request_duration_seconds`.
-- [ ] `manifest.schema_version: 1` introduced. `doc-rag` refuses to
+- [x] `manifest.schema_version: 1` introduced. `doc-rag` refuses to
       operate on a manifest with a higher schema version than it
-      understands and prints an actionable message.
-- [ ] `doc-rag migrate` subcommand stub — empty handler, but the
+      understands and prints an actionable message. (`tests/test_schema_version.py`.)
+- [x] `doc-rag migrate` subcommand stub — empty handler, but the
       surface exists so future migrations have a place to land.
-- [ ] `build/audit.log` — append-only line-delimited JSON, one entry
+- [x] `build/audit.log` — append-only line-delimited JSON, one entry
       per destructive operation: timestamp, operation, doc_ids if
       relevant, principal (if auth enabled), counts before/after.
-- [ ] `scripts/backup.sh` — produces a timestamped tar.gz from
+      (`tests/test_audit_log.py`.)
+- [x] `scripts/backup.sh` — produces a timestamped tar.gz from
       `build/manifest.json`, `build/chunks_jsonl/`, `build/index/`,
       `build/embeddings/`, optionally `sources/archived/`. Includes a
       `MANIFEST.sha256` file inside.
-- [ ] `scripts/restore.sh` — extracts a backup, validates sha256s,
+- [x] `scripts/restore.sh` — extracts a backup, validates sha256s,
       refuses to overwrite without `--force`.
-- [ ] Graceful shutdown verified: SIGTERM during a request finishes the
+- [x] Graceful shutdown verified: SIGTERM during a request finishes the
       in-flight request within `DOC_RAG_SHUTDOWN_TIMEOUT` (default 30 s).
       Background ingest/rebuild interrupt cleanly (no half-written index).
 
@@ -212,18 +225,25 @@ public release announced.
 
 ### Items
 
-- [ ] `scripts/bench.py` — produces JSON with: time per document parse,
+- [x] `scripts/bench.py` — produces JSON with: time per document parse,
       time per chunk to embed (CPU and GPU paths), full-corpus rebuild
       time at sizes 1 000 / 10 000 / 50 000 chunks (use synthetic
-      Lorem-Ipsum-equivalent data).
-- [ ] GPU install path end-to-end documented and tested at least once.
+      Lorem-Ipsum-equivalent data). (Results: `docs/bench-results.md`.)
+- [x] GPU install path end-to-end documented and tested at least once.
       `docs/install.md` GPU section calls out tested torch/CUDA combos.
-- [ ] API stability section in `docs/mcp.md` makes the SemVer
-      commitment explicit. The list of public MCP tools is fixed at
-      `[doc_search]` for v1.x.
-- [ ] All `# TODO` and `# FIXME` comments in the codebase triaged: each
-      becomes a GitHub issue or is removed.
-- [ ] CHANGELOG entry for `1.4.0`; GitHub release with release notes;
+      (`docs/install.md` § "GPU install (NVIDIA / CUDA)" / § "GPU install
+      (AMD / ROCm)" now exist and match the headings § 7 below references.
+      CUDA: verified on GTX 1650/WSL2 per § 7. ROCm: documented — manual
+      `pip install` against the matching ROCm wheel index, no bundled
+      script, not independently tested here.)
+- [x] API stability section in `docs/mcp.md` makes the SemVer
+      commitment explicit. (Tool list has since grown to `[doc_search,
+      doc_download, doc_search_docs]` — additions are MINOR bumps per
+      the policy in § 1, so this doesn't violate the contract; wording
+      updated to match current state.)
+- [x] All `# TODO` and `# FIXME` comments in the codebase triaged: each
+      becomes a GitHub issue or is removed. (None found under `src/`.)
+- [x] CHANGELOG entry for `1.4.0`; GitHub release with release notes;
       public announcement on Habr or equivalent.
 
 ## 6. Post-v1.x: planned major work
@@ -319,6 +339,12 @@ Concrete deliverables:
   JSON view, MCP-config download endpoints. These stay on the inline
   path; migration of the remaining pages is scheduled across follow-up
   MINOR releases (exact version pinning happens when each page lands).
+  **Update, post-v5.1**: by v3.1 (Manage + Logs pages, below) every page
+  had a Svelte equivalent, leaving the inline `GET /ui` handler
+  (`_render_ui` and its HTML-building helpers) unreachable dead weight —
+  it was deleted outright, along with the optional-Node fallback in
+  `bootstrap.sh`/`docker/Dockerfile`. `/ui` is now a redirect to
+  `/ui-next/`; the Svelte build is a hard install requirement.
 - Build pipeline: `npm run build` inside `ui/`; `scripts/bootstrap.sh`
   installs Node via `npm install` if a `package.json` is detected;
   `docker/Dockerfile` runs the build as a multi-stage layer; CI
@@ -598,6 +624,73 @@ Acceptance:
   the terminal and the UI reflects the running job.
 - All existing tests pass; new tests for incremental rebuild logic.
 
+### v4.2 (released) — i18n, quality cascade, GPU-offload workflow, OOM prevention
+
+Usability and resilience line. Adds a client-facing language switch, tightens the
+quality-cascade trigger introduced in v2.3/v2.4, and gives operators a way to run the
+expensive embedding step on a separate GPU machine and ship just the vectors back.
+
+Highlights:
+
+- i18n: RU/EN language switcher in the Web UI header (localStorage-persisted).
+- Quality cascade wired to `parsing.quality_fallback_threshold`: Docling scores below
+  threshold automatically retry with Unstructured and keep the better result.
+- **`rebuild --skip-index`** / **`rebuild-index` CLI command**: parse+chunk without
+  building the vector index, then build the index separately — the GPU-offload workflow
+  promised back in § 7 below (process on a GPU machine, `rebuild-index` on the CPU
+  server). `POST /ui/rebuild-index` / `POST /ui/rebuild-skip-index` endpoints + Manage
+  page buttons.
+- Chunk postprocessing: dedup repeated headers/footers and OCR artefacts, pad
+  mismatched table column counts.
+- Incremental manifest persistence (written after each file, not just at the end) and a
+  memory guard that skips remaining chunks when free RAM drops below 1 GB —
+  OOM-prevention on the CPU-only production server.
+- `hmac.compare_digest` for the UI/API key comparison (timing-safe).
+
+No acceptance gate — this is a maintenance/hardening line documented after the fact so
+the version history stays continuous; see `CHANGELOG.md` § v4.2.0 for the full diff.
+
+### v5.0 (released) — production hardening: stats page, security, health checks
+
+**Target gate (informal):** the project is comfortable calling itself
+"production-ready" — visible per-document diagnostics, a tightened security posture,
+and CI that reflects the actual supported Python matrix.
+
+Highlights:
+
+- **Document statistics page** (`/ui/doc-stats`): per-document block-type breakdown
+  with stacked bar charts, expandable detail rows, sortable columns.
+- **`/health/ready` subsystem checks**: reports FAISS index availability, embedding
+  model status, and free disk space — not just "manifest exists".
+- **Ruff `S` (bandit) rules** enabled in CI with targeted ignores.
+- Python 3.10 dropped from the CI matrix (incompatible wheels in `uv.lock`); 3.11/3.12
+  only from here on — see § "Public surface" note above.
+- Docker `rapidocr` packaging bug worked around (missing `arch_config.yaml` patched
+  into the venv post-install).
+
+See `CHANGELOG.md` § v5.0.0 for the full diff.
+
+### v5.1 (released) — upload UX, delete UI, single-source versioning
+
+Small UX/polish line closing out gaps from v4.1's selective-rebuild work.
+
+Highlights:
+
+- Per-file upload result banners (saved/duplicate/error, one banner per file instead of
+  one aggregate message).
+- **Delete button** on the Documents page — select documents, confirm, remove from the
+  index without a CLI round-trip.
+- Tooltips on every interactive element across Manage/Documents/Stats pages.
+- Single-source versioning: `_VERSION` reads from `importlib.metadata` at runtime
+  instead of being hand-maintained in multiple files; UI sidebar pulls it from
+  `/ui/status`.
+- Stale rebuild-lock detection via manifest/lock timestamp comparison (see known
+  limitation: a `delete`/`clean-orphans` run between an interrupted rebuild and the next
+  status poll can produce a false "stale" verdict — tracked as a bug, not a roadmap
+  item).
+
+See `CHANGELOG.md` § v5.1.0 for the full diff.
+
 ## 7. Hardware acceleration paths
 
 Independently of the version plan, three hardware acceleration paths
@@ -629,8 +722,12 @@ These items are deliberately deferred and tracked separately. They are
 not blockers for any v1.x.y tag.
 
 - Distributed search across multiple FAISS shards.
-- Web UI authentication beyond the existing single-key model
-  (multi-user authn, SSO).
+- Any form of authentication. The `DOC_RAG_API_KEY` single-key model was
+  removed (post-v5.1, unreleased at time of writing): it only ever
+  worked through the legacy inline `/ui` (query-param key) and `/mcp`
+  headers — the Svelte UI never sent it anywhere, so once the inline
+  page was also removed the mechanism had no working UI path left and
+  was pulled rather than fixed. Multi-user authn/SSO remains unplanned.
 - Background re-embedding when the embedding model changes mid-flight.
 - A "RAG quality" evaluation harness (retrieval@k, faithfulness scores
   with golden answers).

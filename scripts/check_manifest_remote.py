@@ -3,7 +3,6 @@
 
 Пример:
   export DOC_RAG_MANIFEST_URL=https://docs.example.com/api/v1/manifest
-  export DOC_RAG_API_KEY=secret  # если задан DOC_RAG_API_KEY на сервере
   python scripts/check_manifest_remote.py --expected ci/expected_manifest.json
 
 Формат expected (все поля опциональны, кроме того что вы хотите проверить):
@@ -35,10 +34,8 @@ def _load_expected(path: str) -> dict[str, Any]:
     return data
 
 
-def _fetch_manifest(url: str, api_key: str) -> dict[str, Any]:
+def _fetch_manifest(url: str) -> dict[str, Any]:
     headers = {"Accept": "application/json", "User-Agent": "doc-rag-check-manifest/1.0"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(req, timeout=60) as resp:
         body = resp.read().decode("utf-8")
@@ -74,11 +71,6 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Path to JSON with corpus_content_sha256 / document_sha256_allowlist / document_count",
     )
-    p.add_argument(
-        "--api-key",
-        default=(os.environ.get("DOC_RAG_API_KEY") or "").strip(),
-        help="Bearer token if server uses DOC_RAG_API_KEY (or DOC_RAG_API_KEY env)",
-    )
     args = p.parse_args(argv)
 
     if not args.url:
@@ -92,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        remote = _fetch_manifest(args.url, args.api_key)
+        remote = _fetch_manifest(args.url)
     except urllib.error.HTTPError as e:
         print(f"check_manifest_remote: HTTP {e.code} {e.reason}", file=sys.stderr)
         return 2

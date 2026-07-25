@@ -10,8 +10,8 @@ This follows the MCP Streamable HTTP transport spec (2025-03-26+).
 """
 
 import asyncio
+import contextlib
 import hashlib
-import html
 import json
 import os
 import re
@@ -42,7 +42,6 @@ from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import (
-    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
@@ -127,25 +126,6 @@ async def _rate_limit_allow(key: str) -> bool:
         tokens -= 1.0
         _RL_STATE[key] = (tokens, now)
         return True
-
-
-def _api_key_required() -> str | None:
-    # Open-by-default (LAN): if DOC_RAG_API_KEY is not set, allow all requests.
-    key = (os.environ.get("DOC_RAG_API_KEY") or "").strip()
-    return key or None
-
-
-def _check_api_key(request: Request) -> bool:
-    import hmac
-
-    required = _api_key_required()
-    if not required:
-        return True
-    hdr = (request.headers.get("authorization") or "").strip()
-    if hdr.lower().startswith("bearer "):
-        return hmac.compare_digest(hdr.split(" ", 1)[1].strip(), required)
-    xk = (request.headers.get("x-api-key") or "").strip()
-    return hmac.compare_digest(xk, required)
 
 
 def _root_dir() -> Path:
@@ -314,23 +294,6 @@ async def _save_upload_to_incoming(file: UploadFile, incoming: Path) -> tuple[bo
     return False, None
 
 
-def _ui_key_ok(request: Request, key: str) -> bool:
-    """Allow UI auth via query/form key when DOC_RAG_API_KEY is set.
-
-    Rationale: plain HTML forms cannot set Authorization headers.
-    """
-    import hmac as _hmac
-
-    required = _api_key_required()
-    if not required:
-        return True
-    k = (key or "").strip()
-    if k and _hmac.compare_digest(k, required):
-        return True
-    # Also allow header-based auth if caller can set it.
-    return _check_api_key(request)
-
-
 def _public_base_url(request: Request) -> str:
     # Prefer X-Forwarded-* when behind a reverse proxy.
     proto = (request.headers.get("x-forwarded-proto") or "").strip()
@@ -342,8 +305,8 @@ def _public_base_url(request: Request) -> str:
     return f"{proto}://{host}"
 
 
-def _mcp_config_payload(name: str, url: str, api_key: str) -> dict[str, Any]:
-    cfg: dict[str, Any] = {
+def _mcp_config_payload(name: str, url: str) -> dict[str, Any]:
+    return {
         "mcpServers": {
             name: {
                 "transport": "streamableHttp",
@@ -351,10 +314,6 @@ def _mcp_config_payload(name: str, url: str, api_key: str) -> dict[str, Any]:
             }
         }
     }
-    if api_key:
-        # Not all clients support headers in config, but include it for VSCode/others when possible.
-        cfg["mcpServers"][name]["headers"] = {"Authorization": f"Bearer {api_key}"}
-    return cfg
 
 
 def _download_json(payload: dict[str, Any], filename: str) -> Response:
@@ -366,6 +325,32 @@ def _download_json(payload: dict[str, Any], filename: str) -> Response:
 
 
 _INGEST_LOCK = asyncio.Lock()
+
+
+class _JobBusyError(Exception):
+    """Raised when an exclusive job is requested while another is running."""
+
+
+@contextlib.asynccontextmanager
+async def _exclusive_job(job: str):
+    """Mark `_INGEST_STATE` busy for the duration of a one-off destructive op.
+
+    Same `_INGEST_STATE["running"]` flag `_run_index_job_background` uses, so
+    delete/wipe/clean-orphans/clear-incoming can't race each other or a
+    concurrent ingest/rebuild — the check-and-set happens under `_INGEST_LOCK`
+    instead of being a separate unlocked read before the operation starts.
+    """
+    async with _INGEST_LOCK:
+        if _INGEST_STATE.get("running"):
+            raise _JobBusyError()
+        _INGEST_STATE["running"] = True
+        _INGEST_STATE["job"] = job
+    try:
+        yield
+    finally:
+        async with _INGEST_LOCK:
+            _INGEST_STATE["running"] = False
+            _INGEST_STATE["job"] = None
 
 
 def _ingest_ui_log_max_lines() -> int:
@@ -676,12 +661,13 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         _INGEST_STATE["last_ok"] = None
 
     # Write lock file so interrupted rebuilds can be detected on restart
+    lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
+    lock_ts = time.time()
     if "rebuild" in job:
-        lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
         try:
             ensure_dir(os.path.dirname(lock_path))
             with open(lock_path, "w") as lf:
-                lf.write(f"{job}\n{time.time()}\n")
+                lf.write(f"{job}\n{lock_ts}\n")
         except Exception:
             pass
 
@@ -706,11 +692,27 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         _INGEST_STATE["last_ok"] = ok
         _INGEST_STATE["last_error"] = err
         _reset_progress_state()
-        # Remove lock file on successful completion
+        # Remove lock file on successful completion. Write a matching
+        # "<lock_ts>.done" marker *first*: if the process is killed between
+        # finishing sync_runner and removing the lock (OOM-killer, restart),
+        # `_ui_status_payload` can still recognize this exact run as
+        # completed after a restart by matching timestamps. Do not fall
+        # back to comparing against manifest.json's mtime — delete/
+        # clean-orphans/wipe touch it too, which previously caused the
+        # "interrupted rebuild" banner to be cleared by an unrelated op.
         if ok and "rebuild" in job:
-            lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
+            done_path = lock_path + ".done"
+            try:
+                with open(done_path, "w") as df:
+                    df.write(f"{lock_ts}\n")
+            except OSError:
+                pass
             try:
                 os.remove(lock_path)
+            except OSError:
+                pass
+            try:
+                os.remove(done_path)
             except OSError:
                 pass
         if ok:
@@ -1142,13 +1144,17 @@ app = FastAPI(title="doc-rag MCP HTTP", version=_VERSION)
 
 
 def _mount_ui_next(app: FastAPI) -> None:
-    """Serve the Svelte UI bundle at `/ui-next/` when it's been built.
+    """Serve the Svelte UI bundle at `/ui-next/`.
 
-    v2.2.0 introduces a Svelte + Vite frontend under `ui/`. The build
-    output lives at `ui/dist/`. If that directory exists we mount it;
-    if not (e.g. minimal dev install that skipped `npm run build`),
-    `/ui-next/` returns 404 and the legacy inline `/ui` keeps serving
-    everyone.
+    The build output lives at `ui/dist/`. There is no fallback anymore —
+    if it hasn't been built, `/ui-next/` 404s. `bootstrap.sh` and
+    `install_server_native.sh` fail the install if Node/npm isn't
+    available, so a running server always has this built.
+
+    Note: this can't also be mounted at bare `/ui` — `StaticFiles` does
+    prefix matching, and `/ui/status`, `/ui/upload`, etc. are real JSON
+    API routes registered later in this module; a mount at `/ui` would
+    shadow all of them. `GET /ui` below is a plain redirect instead.
     """
     from fastapi.staticfiles import StaticFiles
 
@@ -1196,7 +1202,7 @@ async def _http_log_mw(request: Request, call_next):
         if response is not None:
             response.headers["X-Request-ID"] = rid
             path = request.url.path
-            if path in ("/ui-next/", "/ui-next") or path.endswith("/index.html"):
+            if path in ("/ui-next/", "/ui-next", "/ui/", "/ui") or path.endswith("/index.html"):
                 response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
     finally:
@@ -1331,9 +1337,7 @@ async def health() -> JSONResponse:
 
 @app.get("/api/v1/manifest")
 async def api_v1_manifest(request: Request) -> JSONResponse:
-    """Machine-readable manifest for CI / reproducibility (same auth as MCP when DOC_RAG_API_KEY is set)."""
-    if not _check_api_key(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    """Machine-readable manifest for CI / reproducibility."""
     data = load_manifest_json()
     if not data:
         return JSONResponse({"error": "manifest_not_found"}, status_code=404)
@@ -1341,9 +1345,7 @@ async def api_v1_manifest(request: Request) -> JSONResponse:
 
 
 @app.get("/ui/config/raw")
-async def ui_config_raw(request: Request, key: str = "") -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+async def ui_config_raw() -> JSONResponse:
     p = _config_path()
     try:
         yaml_text = p.read_text(encoding="utf-8")
@@ -1353,11 +1355,7 @@ async def ui_config_raw(request: Request, key: str = "") -> JSONResponse:
 
 
 @app.post("/ui/config/save")
-async def ui_config_save(
-    request: Request, key: str = Form(""), content: str = Form("")
-) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+async def ui_config_save(content: str = Form("")) -> JSONResponse:
     ok, msg = _validate_root_yaml(content)
     if not ok:
         return JSONResponse({"ok": False, "error": msg}, status_code=400)
@@ -1369,14 +1367,12 @@ async def ui_config_save(
 
 
 @app.get("/ui/config/parsed")
-async def ui_config_parsed(request: Request, key: str = "") -> JSONResponse:
+async def ui_config_parsed() -> JSONResponse:
     """Parsed view of config.yaml for the structured form editor.
 
     The form populates from this; comment-preserving writes go through
     `/ui/config/patch`. The raw text path (`/ui/config/raw`) still backs
     the Advanced tab."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     p = _config_path()
     try:
         import yaml
@@ -1393,12 +1389,8 @@ async def ui_config_parsed(request: Request, key: str = "") -> JSONResponse:
 
 
 @app.post("/ui/config/validate")
-async def ui_config_validate(
-    request: Request, key: str = Form(""), updates: str = Form("")
-) -> JSONResponse:
+async def ui_config_validate(updates: str = Form("")) -> JSONResponse:
     """Validate config field updates without writing. Returns errors if any."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         parsed = json.loads(updates)
     except Exception as exc:
@@ -1512,17 +1504,13 @@ def _validate_field_value(dotted: str, value: Any) -> str | None:
 
 
 @app.post("/ui/config/patch")
-async def ui_config_patch(
-    request: Request, key: str = Form(""), updates: str = Form("")
-) -> JSONResponse:
+async def ui_config_patch(updates: str = Form("")) -> JSONResponse:
     """Apply field-level updates to config.yaml while preserving comments.
 
     `updates` is a JSON object of dotted paths to values, e.g.
     `{"chunking.target_tokens": 512, "parsing.pdf_backend": "docling"}`.
     Only paths that already exist in the file are written; unknown paths
     are rejected so the form cannot silently invent keys."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     try:
         parsed = json.loads(updates)
     except Exception as exc:
@@ -1600,8 +1588,7 @@ async def ui_config_patch(
 # <root>/.env that `scripts/run_mcp_http.sh` sources at startup (overriding
 # /etc/default). Changes apply on the next service restart.
 #
-# Each editable key carries a type for validation. DOC_RAG_API_KEY is a
-# secret: surfaced as set/not-set only, never echoed and never written here.
+# Each editable key carries a type for validation.
 
 _EDITABLE_ENV: dict[str, dict[str, Any]] = {
     "DOC_RAG_HTTP_HOST": {"type": "text"},
@@ -1617,7 +1604,6 @@ _EDITABLE_ENV: dict[str, dict[str, Any]] = {
     "DOC_RAG_LOG_LEVEL": {"type": "select", "options": ["DEBUG", "INFO", "WARNING", "ERROR"]},
     "DOC_RAG_LOG_FORMAT": {"type": "select", "options": ["text", "json"]},
 }
-_SECRET_ENV = ("DOC_RAG_API_KEY",)
 
 
 def _env_file_path() -> Path:
@@ -1700,9 +1686,7 @@ def _write_env_file(path: Path, updates: dict[str, str]) -> None:
 
 
 @app.get("/ui/env")
-async def ui_env_get(request: Request, key: str = "") -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+async def ui_env_get() -> JSONResponse:
     env_file = _env_file_path()
     persisted = _parse_env_file(env_file)
     fields = []
@@ -1724,19 +1708,11 @@ async def ui_env_get(request: Request, key: str = "") -> JSONResponse:
                 "source": source,
             }
         )
-    secrets = [
-        {"key": k, "set": bool((os.environ.get(k) or "").strip() or persisted.get(k))}
-        for k in _SECRET_ENV
-    ]
-    return JSONResponse({"ok": True, "path": str(env_file), "fields": fields, "secrets": secrets})
+    return JSONResponse({"ok": True, "path": str(env_file), "fields": fields})
 
 
 @app.post("/ui/env/save")
-async def ui_env_save(
-    request: Request, key: str = Form(""), updates: str = Form("")
-) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+async def ui_env_save(updates: str = Form("")) -> JSONResponse:
     try:
         parsed = json.loads(updates)
     except Exception as exc:
@@ -1747,10 +1723,6 @@ async def ui_env_save(
         )
     normalized: dict[str, str] = {}
     for k, v in parsed.items():
-        if k in _SECRET_ENV:
-            return JSONResponse(
-                {"ok": False, "error": f"{k} нельзя задавать из UI."}, status_code=400
-            )
         if k not in _EDITABLE_ENV:
             return JSONResponse(
                 {"ok": False, "error": f"Неизвестный ключ env: {k}"}, status_code=400
@@ -1767,11 +1739,7 @@ async def ui_env_save(
 
 
 @app.post("/ui/restart")
-async def ui_restart_service(
-    request: Request, background_tasks: BackgroundTasks, key: str = Form("")
-) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+async def ui_restart_service(background_tasks: BackgroundTasks) -> JSONResponse:
     if not _ui_restart_allowed():
         return JSONResponse(
             {
@@ -1850,26 +1818,34 @@ def _ui_status_payload() -> dict[str, Any]:
     out["eta_human"] = eta_h
     # Detect interrupted rebuild via lock file.  The lock is written at
     # rebuild start and removed on success.  After a server restart the
-    # in-memory state is gone, so we also compare the lock's embedded
-    # timestamp against manifest mtime — if the manifest was updated
-    # after the lock was created, the rebuild completed and the lock
-    # is stale.
+    # in-memory state is gone, so on success `_run_index_job_background`
+    # also drops a "<lock_ts>.done" marker before removing the lock — if
+    # the process is killed in that narrow window, the marker survives and
+    # we can match it against the lock's own timestamp to confirm *this*
+    # run finished. We deliberately do NOT compare against manifest.json's
+    # mtime: delete/clean-orphans/wipe touch it too, which used to make an
+    # unrelated op silently clear a real "rebuild was interrupted" signal.
     lock_path = os.path.join(str(_root_dir()), "build", ".rebuild.lock")
     rebuild_interrupted = False
     if os.path.isfile(lock_path) and not _INGEST_STATE.get("running"):
         stale = False
+        done_path = lock_path + ".done"
         try:
             with open(lock_path, encoding="utf-8") as lf:
                 lines = lf.read().strip().split("\n")
-                lock_ts = float(lines[1]) if len(lines) >= 2 else 0
-            manifest_path = os.path.join(str(_root_dir()), "build", "manifest.json")
-            manifest_mtime = os.path.getmtime(manifest_path) if os.path.isfile(manifest_path) else 0
-            stale = manifest_mtime >= lock_ts
-        except (OSError, ValueError):
+                lock_ts = lines[1] if len(lines) >= 2 else ""
+            if lock_ts and os.path.isfile(done_path):
+                with open(done_path, encoding="utf-8") as df:
+                    stale = df.read().strip() == lock_ts
+        except OSError:
             pass
         if stale:
             try:
                 os.remove(lock_path)
+            except OSError:
+                pass
+            try:
+                os.remove(done_path)
             except OSError:
                 pass
         else:
@@ -1883,26 +1859,26 @@ def _ui_status_payload() -> dict[str, Any]:
     return out
 
 
-def _ocr_badge_html(coverage: Any) -> str:
-    """Inline OCR badge for the document table.
+@app.get("/ui")
+async def ui_redirect() -> Response:
+    """The Svelte SPA is mounted at `/ui-next/` (see `_mount_ui_next` — it
+    can't be mounted at bare `/ui` without shadowing the `/ui/*` JSON API
+    routes below). Bare `/ui` just redirects there."""
+    return RedirectResponse(url="/ui-next/", status_code=302)
 
-    Returns empty string when OCR did not fire on the document. When it
-    did, returns a small `<span>` with a tooltip listing pages and the
-    mean RapidOCR confidence."""
-    if not isinstance(coverage, dict):
-        return ""
-    ocr = coverage.get("ocr")
-    if not isinstance(ocr, dict) or not ocr.get("applied"):
-        return ""
-    pages_recognized = ocr.get("pages_recognized")
-    confidence = ocr.get("confidence")
-    title_parts: list[str] = ["OCR применился (RapidOCR через Docling)"]
-    if isinstance(pages_recognized, int) and pages_recognized > 0:
-        title_parts.append(f"страниц: {pages_recognized}")
-    if isinstance(confidence, (int, float)):
-        title_parts.append(f"средняя уверенность: {confidence:.2f}")
-    title = " · ".join(title_parts)
-    return f'<span class="ocr-badge" title="{html.escape(title, quote=True)}">OCR</span>'
+
+@app.get("/ui/mcp/cursor.json")
+async def ui_mcp_cursor(request: Request) -> Response:
+    base = _public_base_url(request)
+    payload = _mcp_config_payload("doc-rag", f"{base}/mcp")
+    return _download_json(payload, "cursor-mcp-doc-rag.json")
+
+
+@app.get("/ui/mcp/vscode.json")
+async def ui_mcp_vscode(request: Request) -> Response:
+    base = _public_base_url(request)
+    payload = _mcp_config_payload("doc-rag", f"{base}/mcp")
+    return _download_json(payload, "vscode-mcp-doc-rag.json")
 
 
 def _load_quality_summary() -> dict[str, Any]:
@@ -1920,862 +1896,14 @@ def _load_quality_summary() -> dict[str, Any]:
         return {"documents": [], "message": "No quality reports yet"}
 
 
-def _quality_badge_html(doc_id: str, quality_map: dict[str, Any]) -> str:
-    """Inline quality badge for the document table."""
-    q = quality_map.get(doc_id)
-    if not q or not isinstance(q, dict):
-        return ""
-    score = q.get("score")
-    warnings = q.get("warning_count", 0)
-    if score is None:
-        return ""
-    score_f = float(score)
-    if score_f >= 0.9:
-        color = "#2e7d32"
-        label = "OK"
-    elif score_f >= 0.7:
-        color = "#f57f17"
-        label = "WARN"
-    else:
-        color = "#c62828"
-        label = "ERR"
-    title = f"Score: {score_f:.2f}, warnings: {warnings}"
-    return f'<span class="quality-badge" style="color:{color};font-weight:600" title="{html.escape(title, quote=True)}">{label}</span>'
-
-
-def _load_quality_map() -> dict[str, Any]:
-    """Load quality summary and return doc_id → entry mapping."""
-    try:
-        from doc_rag.raglib.config import load_config as _lc
-
-        cfg = _lc(str(_config_path()))
-        quality_path = os.path.join(cfg["_root"], "build", "quality", "summary.json")
-        if os.path.exists(quality_path):
-            with open(quality_path, encoding="utf-8") as f:
-                qdata = json.load(f)
-            result: dict[str, Any] = {}
-            for doc_entry in qdata.get("documents", []):
-                if isinstance(doc_entry, dict):
-                    result[doc_entry.get("doc_id", "")] = doc_entry
-            return result
-    except Exception:
-        pass
-    return {}
-
-
-def _indexed_documents_table_rows_html(
-    catalog: dict[str, Any], max_rows: int = 300
-) -> tuple[str, str]:
-    """Return (tbody inner HTML, optional note HTML)."""
-    docs = catalog.get("documents") if isinstance(catalog.get("documents"), list) else []
-    note = ""
-    shown = docs[:max_rows]
-    if len(docs) > max_rows:
-        note = f'<p class="muted">Показаны первые {max_rows} из {len(docs)} документов.</p>'
-    quality_map = _load_quality_map()
-    rows: list[str] = []
-    for i, d in enumerate(shown, 1):
-        if not isinstance(d, dict):
-            continue
-        did_raw = str(d.get("doc_id") or "")
-        did_attr = html.escape(did_raw, quote=True)
-        bn_disp = html.escape(str(d.get("basename") or "—"), quote=False)
-        did_cell = html.escape(did_raw or "—", quote=False)
-        sf = html.escape(str(d.get("source_file") or ""), quote=True)
-        cc = d.get("chunk_count")
-        cc_s = html.escape(str(cc) if cc is not None else "—", quote=False)
-        ey = d.get("edition_year")
-        ey_s = html.escape(str(ey) if ey is not None else "—", quote=False)
-        sh = d.get("sha256")
-        sh_s = html.escape(
-            str(sh)[:16] + "…" if sh and len(str(sh)) > 16 else (str(sh) if sh else "—"),
-            quote=False,
-        )
-        ocr_badge = _ocr_badge_html(d.get("coverage"))
-        q_badge = _quality_badge_html(did_raw, quality_map)
-        rows.append(
-            f'<tr data-doc-id="{did_attr}">'
-            f'<td><input type="checkbox" class="row-check" data-doc-id="{did_attr}" /></td>'
-            f"<td>{i}</td>"
-            f'<td title="{sf}">{ocr_badge}{q_badge}<button type="button" class="doc-preview-btn" data-doc-id="{did_attr}">{bn_disp}</button></td>'
-            f'<td class="doc-id">{did_cell}</td><td>{cc_s}</td><td>{ey_s}</td><td class="muted">{sh_s}</td>'
-            f'<td><button type="button" class="row-delete-btn" data-doc-id="{did_attr}" data-name="{html.escape(str(d.get("basename") or ""), quote=True)}" title="Удалить документ">✕</button></td>'
-            f"</tr>"
-        )
-    return ("\n".join(rows), note)
-
-
-def _indexed_documents_summary_html(catalog: dict[str, Any]) -> str:
-    if catalog.get("error"):
-        return f'<p class="muted">Не удалось прочитать индекс: <code>{html.escape(str(catalog.get("error")), quote=False)}</code></p>'
-    n = int(catalog.get("document_count") or 0)
-    mg = catalog.get("manifest_generated_at_utc")
-    mg_s = html.escape(str(mg), quote=False) if mg else "—"
-    corp = catalog.get("corpus_content_sha256")
-    corp_s = (
-        html.escape(str(corp)[:20] + "…", quote=False)
-        if corp and len(str(corp)) > 20
-        else html.escape(str(corp), quote=False)
-        if corp
-        else "—"
-    )
-    pv = catalog.get("pipeline_version")
-    pv_s = html.escape(str(pv), quote=False) if pv else "—"
-    mp = catalog.get("manifest_present")
-    lex = catalog.get("lexical_search_ready")
-    sem = catalog.get("semantic_search_ready")
-    chunks = catalog.get("chunks_jsonl_present")
-    fidx = catalog.get("semantic_index_present")
-    bits = [
-        f"Записей в <code>manifest</code>: <strong>{n}</strong>.",
-        f"Файл manifest: <strong>{'есть' if mp else 'нет'}</strong>.",
-        f"<code>chunks.jsonl</code>: <strong>{'есть' if chunks else 'нет'}</strong>.",
-        f"Векторный индекс (FAISS): <strong>{'есть' if fidx else 'нет'}</strong>.",
-        f"Лексический поиск (doc_search): <strong>{'готов' if lex else 'не готов'}</strong>.",
-        f"Семантический поиск: <strong>{'готов' if sem else 'не готов'}</strong>.",
-        f"Время генерации manifest (UTC): <code>{mg_s}</code>.",
-        f"Версия пайплайна: <code>{pv_s}</code>. Fingerprint корпуса (SHA): <code>{corp_s}</code>. API: <code>/api/v1/manifest</code>.",
-    ]
-    return '<p class="muted">' + " ".join(bits) + "</p>"
-
-
-@app.get("/ui")
-async def ui(request: Request, key: str = "") -> Response:
-    if not _ui_key_ok(request, key):
-        return HTMLResponse(
-            "<h3>Unauthorized</h3><p>Append <code>?key=...</code> to URL or send Authorization header.</p>",
-            status_code=401,
-        )
-    # If the Svelte bundle is available, redirect to /ui-next/
-    ui_next_dist = None
-    candidates: list[str] = []
-    here = os.path.dirname(os.path.abspath(__file__))
-    for n in range(1, 5):
-        cand = os.path.join(os.path.abspath(os.path.join(here, *([".."] * n))), "ui", "dist")
-        candidates.append(cand)
-    env_dir = (os.environ.get("DOC_RAG_UI_DIST") or "").strip()
-    if env_dir:
-        candidates.insert(0, env_dir)
-    for d in candidates:
-        if os.path.isdir(d) and os.path.isfile(os.path.join(d, "index.html")):
-            ui_next_dist = d
-            break
-    if ui_next_dist:
-        kq = f"?key={key}" if key else ""
-        return RedirectResponse(url=f"/ui-next/{kq}", status_code=302)
-
-    qp = request.query_params
-    upload_banner = ""
-    try:
-        us = int(qp.get("up_saved") or "0")
-    except Exception:
-        us = 0
-    try:
-        ue = int(qp.get("up_err") or "0")
-    except Exception:
-        ue = 0
-    try:
-        ud = int(qp.get("up_dup") or "0")
-    except Exception:
-        ud = 0
-    um = (qp.get("up_msg") or "").strip()
-    udm = (qp.get("up_dup_msg") or "").strip()
-    if us > 0 or ue > 0 or ud > 0:
-        parts = []
-        if us > 0:
-            parts.append(f"Загружено файлов: {us}.")
-        if ud > 0:
-            dup_detail = f" «{html.escape(udm)}»" if udm else ""
-            parts.append(f"Пропущено дубликатов: {ud}.{dup_detail}")
-        if ue > 0:
-            err_detail = f" «{html.escape(um)}»" if um else ""
-            parts.append(f"Ошибок: {ue}.{err_detail}")
-        banner_cls = (
-            "upload-banner has-errors"
-            if ue > 0
-            else ("upload-banner has-dups" if ud > 0 else "upload-banner")
-        )
-        upload_banner = f'<div class="{banner_cls}">{" ".join(parts)}</div>'
-
-    state = dict(_INGEST_STATE)
-    incoming = _sources_incoming_dir()
-    incoming.mkdir(parents=True, exist_ok=True)
-    try:
-        files = sorted([p.name for p in incoming.iterdir() if p.is_file()])[:200]
-    except Exception:
-        files = []
-
-    key_q = f"?key={key}" if key else ""
-    poll_ms_js = int(_INGEST_UI_LOG_POLL_MS)
-    status_query_json = json.dumps(f"?key={key}" if key else "")
-    log_pre_esc = html.escape("\n".join(_snapshot_ingest_ui_log_tail()), quote=False)
-    http_log_pre_esc = html.escape("\n".join(_snapshot_server_http_ui_log_tail()), quote=False)
-    http_log_file_note = ""
-    hl = (os.environ.get("DOC_RAG_HTTP_LOG") or "").strip()
-    if hl:
-        escaped_hl = html.escape(hl, quote=True)
-        http_log_file_note = f'<p class="muted">Тот же текст дублируется в файл: <code>{escaped_hl}</code> (<code>DOC_RAG_HTTP_LOG</code>).</p>'
-    base = _public_base_url(request)
-    mcp_url = f"{base}/mcp"
-    try:
-        ic0 = indexed_catalog()
-    except Exception as exc:
-        ic0 = {"error": str(exc), "documents": [], "document_count": 0}
-    try:
-        cfg_yaml_body = _config_path().read_text(encoding="utf-8")
-    except Exception as exc:
-        cfg_yaml_body = f"# не удалось прочитать конфиг: {exc}\n"
-    cfg_path_esc = html.escape(str(_config_path()), quote=False)
-    cfg_yaml_esc = html.escape(cfg_yaml_body, quote=False)
-    restart_btn_on = _ui_restart_allowed() and bool(_ui_restart_cmd())
-    restart_note_html = ""
-    if not restart_btn_on:
-        restart_note_html = (
-            '<p class="muted">Перезапуск из UI по умолчанию выключен. Для кнопки задайте в окружении процесса '
-            "<code>DOC_RAG_UI_RESTART_ENABLED=1</code> и <code>DOC_RAG_UI_RESTART_CMD</code> "
-            "(например <code>sudo /bin/systemctl restart doc-rag-mcp</code> — см. sudoers).</p>"
-        )
-    restart_disabled_attr = " disabled" if not restart_btn_on else ""
-    idx_summary_html = _indexed_documents_summary_html(ic0)
-    idx_tbody_html, idx_cap_html = _indexed_documents_table_rows_html(ic0)
-    body = f"""
-  <html>
-    <head>
-      <meta charset="utf-8" />
-      <title>doc-rag</title>
-      <style>
-        body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }}
-        code {{ background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }}
-        .row {{ display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; }}
-        .card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; min-width: 320px; }}
-        #ingest-log-wrap {{ flex: 1 1 100%; min-width: min(920px, 100%); }}
-        .mono-log-pre {{
-          white-space: pre-wrap; word-break: break-word;
-          max-height: min(60vh, 520px); overflow: auto;
-          font-size: 12px; line-height: 1.35;
-          background: #f9fafb; padding: 12px; border-radius: 10px;
-          margin: 0; border: 1px solid #e5e7eb;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }}
-        .muted {{ color:#6b7280; }}
-        button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid #111827; background:#111827; color:white; cursor:pointer; }}
-        button.secondary {{ background:#374151; border-color:#374151; }}
-        button:disabled {{ opacity:0.5; cursor:not-allowed; }}
-        button.doc-preview-btn {{
-          background: transparent; border: none; color: #2563eb; padding: 0; cursor: pointer;
-          text-decoration: underline; font: inherit; text-align: left;
-        }}
-        button.doc-preview-btn:hover {{ color: #1d4ed8; }}
-        .ocr-badge {{
-          display: inline-block; margin-right: 6px; padding: 1px 6px;
-          font-size: 11px; font-weight: 600; line-height: 1.3;
-          color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
-          border-radius: 6px; vertical-align: middle; cursor: help;
-        }}
-        .quality-badge {{
-          display: inline-block; margin-right: 6px; padding: 1px 6px;
-          font-size: 11px; font-weight: 600; line-height: 1.3;
-          border: 1px solid currentColor; border-radius: 6px;
-          vertical-align: middle; cursor: help; opacity: 0.85;
-        }}
-        .quality-badge {{
-          display: inline-block; margin-right: 6px; padding: 1px 6px;
-          font-size: 11px; font-weight: 600; line-height: 1.3;
-          border: 1px solid currentColor; border-radius: 6px;
-          vertical-align: middle; cursor: help; opacity: 0.85;
-        }}
-        .modal-root {{ display: none; position: fixed; inset: 0; z-index: 50; align-items: center; justify-content: center; }}
-        .modal-root.is-open {{ display: flex; }}
-        .modal-backdrop {{ position: absolute; inset: 0; background: rgba(15, 23, 42, 0.45); }}
-        .modal-panel {{
-          position: relative; z-index: 1; background: #fff; border-radius: 12px; padding: 20px 24px;
-          max-width: min(560px, 92vw); max-height: min(72vh, 560px); overflow: auto;
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
-        }}
-        .modal-panel button.modal-close {{
-          position: absolute; top: 10px; right: 14px; padding: 4px 8px;
-          border: none; background: transparent; font-size: 22px; line-height: 1;
-          cursor: pointer; color: #64748b; border-radius: 8px;
-        }}
-        #doc-preview-heading {{ margin: 0 36px 8px 0; font-size: 1.1rem; }}
-        #doc-preview-text {{ margin: 12px 0 0; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }}
-        .upload-banner {{ margin:16px 0; padding:10px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:10px; color:#065f46; }}
-        .upload-banner.has-dups {{ background:#fefce8; border-color:#fde047; color:#713f12; }}
-        .upload-banner.has-errors {{ background:#fef2f2; border-color:#fca5a5; color:#991b1b; }}
-        .semantic-banner {{
-          margin:16px 0; padding:12px 14px;
-          background:#fff7ed; border:1px solid #fdba74; border-radius:10px; color:#7c2d12;
-          display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-        }}
-        .semantic-banner button {{ background:#c2410c; border-color:#c2410c; }}
-        .semantic-banner button:hover {{ background:#9a3412; border-color:#9a3412; }}
-        table.idx {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-        table.idx th, table.idx td {{ border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }}
-        table.idx th {{ background: #f9fafb; font-weight: 600; }}
-        table.idx td.doc-id {{ font-size: 11px; color: #6b7280; word-break: break-all; max-width: min(280px, 28vw); }}
-        .idx-toolbar {{ margin: 8px 0; display:flex; gap:10px; align-items:center; }}
-        button.row-delete-btn {{
-          background: transparent; border: 1px solid #fecaca; color: #b91c1c;
-          padding: 2px 8px; border-radius: 6px; font-size: 14px; line-height: 1;
-          cursor: pointer;
-        }}
-        button.row-delete-btn:hover {{ background:#fee2e2; }}
-        button.danger {{ background:#b91c1c; border-color:#b91c1c; }}
-        button.danger:hover {{ background:#991b1b; border-color:#991b1b; }}
-        .danger-zone {{ border-color:#fecaca; background:#fff7f7; }}
-        .danger-actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }}
-        textarea.mono-cfg {{
-          width: 100%; min-height: 420px; font-size: 12px; line-height: 1.4;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          padding: 10px 12px; border-radius: 10px; border: 1px solid #e5e7eb; box-sizing: border-box;
-        }}
-      </style>
-    </head>
-    <body>
-      <h2>doc-rag — управление индексом</h2>
-      <p class="muted">LAN UI. MCP endpoint: <code>/mcp</code></p>
-
-      <div id="semantic-banner" class="semantic-banner" style="display:{("none" if ic0.get("semantic_search_ready") else "flex")};">
-        <strong>Семантический поиск недоступен.</strong>
-        FAISS-индекс отсутствует или повреждён — клиенты получают только лексические результаты.
-        <form action="/ui/rebuild{key_q}" method="post" style="display:inline-block; margin-left:8px;">
-          <input type="hidden" name="key" value="{key}"/>
-          <button type="submit" id="semantic-banner-rebuild-btn"{" disabled" if state.get("running") else ""}>Запустить rebuild</button>
-        </form>
-      </div>
-
-      {upload_banner}
-
-      <div class="row">
-        <div class="card">
-          <h3>Загрузка документов</h3>
-          <form action="/ui/upload{key_q}" method="post" enctype="multipart/form-data">
-            <input type="hidden" name="key" value="{key}"/>
-            <input type="file" name="files" accept=".pdf,.docx,.doc,.md,.txt,.PDF,.DOCX,.DOC,.MD,.TXT" multiple required />
-            <div style="height: 12px;"></div>
-            <button type="submit" id="ui-btn-upload" {"disabled" if state.get("running") else ""}>Загрузить в sources/incoming</button>
-          </form>
-          <p class="muted">PDF, DOCX, DOC, MD, TXT; можно выбрать несколько файлов сразу (лимит: env <code>DOC_RAG_UI_MAX_UPLOAD_FILES</code>, по умолчанию 48).</p>
-        </div>
-
-        <div class="card">
-          <h3>Ingest / rebuild</h3>
-          <form action="/ui/ingest{key_q}" method="post">
-            <input type="hidden" name="key" value="{key}"/>
-            <button type="submit" id="ui-btn-ingest" {"disabled" if state.get("running") else ""}>Запустить ingest</button>
-          </form>
-          <div style="height:12px;"></div>
-          <form action="/ui/rebuild{key_q}" method="post">
-            <input type="hidden" name="key" value="{key}"/>
-            <button type="submit" id="ui-btn-rebuild" class="secondary" onclick="return confirm('Полный rebuild очистит build/docs markdown и chunks, затем пересканирует archived и incoming. Продолжить?');" {"disabled" if state.get("running") else ""}>Rebuild индекса</button>
-          </form>
-          <p class="muted">Фоновая задача: <code id="ingest-running-badge">{(state.get("job") or ("busy")) if state.get("running") else "idle"}</code></p>
-          <p class="muted" id="ingest-progress-line" style="display:none">
-            Сейчас: <code id="ingest-current-doc">—</code>
-            <span id="ingest-progress-counts" class="muted"></span>
-            <span id="ingest-eta" class="muted"></span>
-          </p>
-          <p class="muted">Последний результат: <code id="ingest-last-ok">{state.get("last_ok")}</code></p>
-          <p class="muted">Ошибка: <code id="ingest-last-error">{(state.get("last_error") or "-")}</code></p>
-          <p><a href="/ui/status{key_q}">/ui/status</a></p>
-          <p><a href="/ui/mcp/cursor.json{key_q}">Скачать MCP config для Cursor</a></p>
-          <p><a href="/ui/mcp/vscode.json{key_q}">Скачать MCP config для VSCode</a></p>
-          <p class="muted">MCP URL: <code>{mcp_url}</code></p>
-        </div>
-
-        <div class="card">
-          <h3>Incoming ({len(files)})</h3>
-          <div class="muted" style="max-height: 240px; overflow:auto;">
-            {"<br/>".join(files) if files else "<span class='muted'>empty</span>"}
-          </div>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="card" style="flex: 1 1 100%; min-width: min(960px, 100%);">
-          <h3>Конфигурация</h3>
-          <p class="muted">Файл: <code>{cfg_path_esc}</code>. После правок часть параметров подхватывается при следующем запросе; для смены порта или переменных systemd может понадобиться перезапуск.</p>
-          <textarea id="cfg-yaml" class="mono-cfg" name="content" spellcheck="false">{cfg_yaml_esc}</textarea>
-          <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-            <button type="button" id="cfg-save-btn">Сохранить</button>
-            <button type="button" id="srv-restart-btn" class="secondary"{restart_disabled_attr}>Перезапустить сервис</button>
-          </div>
-          <p id="cfg-save-msg" class="muted" style="margin-top:8px;"></p>
-          {restart_note_html}
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="card" style="flex: 1 1 100%; min-width: min(960px, 100%);">
-          <h3>Проиндексированные документы</h3>
-          <div id="indexed-summary">{idx_summary_html}</div>
-          <div id="indexed-cap-note">{idx_cap_html}</div>
-          <div class="idx-toolbar">
-            <button type="button" id="idx-bulk-delete-btn" class="secondary" disabled>Удалить выбранные (<span id="idx-bulk-count">0</span>)</button>
-            <span class="muted" id="idx-bulk-msg"></span>
-          </div>
-          <div style="overflow:auto; max-height: min(55vh, 520px); border: 1px solid #e5e7eb; border-radius: 10px;">
-            <table class="idx" id="indexed-table">
-              <thead>
-                <tr>
-                  <th style="width:32px;"><input type="checkbox" id="idx-select-all" title="Выбрать все" /></th>
-                  <th style="width:36px;">#</th>
-                  <th>Файл</th>
-                  <th>doc_id</th>
-                  <th style="width:88px;">Чанков</th>
-                  <th style="width:72px;">Год</th>
-                  <th style="width:120px;">SHA256</th>
-                  <th style="width:40px;"></th>
-                </tr>
-              </thead>
-              <tbody id="indexed-tbody">{idx_tbody_html}</tbody>
-            </table>
-          </div>
-          <p class="muted" style="margin-top:10px;">Список берётся из <code>build/manifest.json</code> после ingest/rebuild. После завершения задачи таблица обновится автоматически.</p>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="card danger-zone" style="flex: 1 1 100%; min-width: min(960px, 100%);">
-          <h3>Опасная зона</h3>
-          <p class="muted">Эти операции необратимы. Дождитесь завершения текущего ingest/rebuild.</p>
-          <div class="danger-actions">
-            <button type="button" id="dz-wipe-btn" class="danger">Удалить всё (sources/archived + build/)</button>
-            <button type="button" id="dz-orphans-btn" class="secondary">Удалить осиротевшие артефакты</button>
-            <button type="button" id="dz-incoming-btn" class="secondary">Очистить sources/incoming</button>
-          </div>
-          <p id="dz-msg" class="muted" style="margin-top:10px;"></p>
-        </div>
-      </div>
-
-      <div class="card" id="http-log-wrap" style="margin-top:24px;">
-        <h3>Журнал HTTP-сервера (запросы)</h3>
-        <p class="muted">
-          Кольцевой буфер в памяти — без <code>journalctl</code>. Запросы к <code>/health</code>, <code>/ui/status</code> и <code>/ui/document-preview</code> не пишутся (чтобы не забивать лог опросами).
-        </p>
-        {http_log_file_note}
-        <pre id="http-log-pre" class="mono-log-pre">{http_log_pre_esc}</pre>
-      </div>
-
-      <div class="card" id="ingest-log-wrap" style="margin-top:24px;">
-        <h3>Лог ingest / rebuild (stderr + ошибки пайплайна)</h3>
-        <p class="muted">
-          Авто‑обновление каждые {poll_ms_js} ms через <code>/ui/status</code>.
-          При длинном прогрессе промежуточные строки с <code>\r</code> схлопываются.
-        </p>
-        <pre id="ingest-log-pre" class="mono-log-pre">{log_pre_esc}</pre>
-      </div>
-
-      <div id="doc-preview-modal" class="modal-root" aria-hidden="true">
-        <div class="modal-backdrop" id="doc-preview-backdrop"></div>
-        <div class="modal-panel" role="dialog" aria-labelledby="doc-preview-heading">
-          <button type="button" class="modal-close" id="doc-preview-close" aria-label="Закрыть">&times;</button>
-          <h4 id="doc-preview-heading"></h4>
-          <p class="muted" id="doc-preview-meta"></p>
-          <p id="doc-preview-text"></p>
-        </div>
-      </div>
-
-      <script>
-      (function () {{
-        var pollMs = {poll_ms_js};
-        var statusPath = "/ui/status" + {status_query_json};
-        var uiKey = {json.dumps(key)};
-        var elIng = document.getElementById("ingest-log-pre");
-        var elHttp = document.getElementById("http-log-pre");
-        function esc(s) {{
-          if (s === null || s === undefined) return "";
-          return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-        }}
-        function renderIndexed(idx) {{
-          var sumEl = document.getElementById("indexed-summary");
-          var capEl = document.getElementById("indexed-cap-note");
-          var tbEl = document.getElementById("indexed-tbody");
-          if (!sumEl || !tbEl) return;
-          if (!idx || idx.error) {{
-            sumEl.innerHTML = idx && idx.error ? '<p class="muted">Не удалось прочитать индекс: <code>' + esc(idx.error) + '</code></p>' : '<p class="muted">Нет данных.</p>';
-            tbEl.innerHTML = "";
-            if (capEl) capEl.innerHTML = "";
-            return;
-          }}
-          var n = idx.document_count || 0;
-          var mg = idx.manifest_generated_at_utc ? '<code>' + esc(String(idx.manifest_generated_at_utc)) + '</code>' : '<code>—</code>';
-          var pv = idx.pipeline_version ? '<code>' + esc(String(idx.pipeline_version)) + '</code>' : '<code>—</code>';
-          var corp = idx.corpus_content_sha256 ? String(idx.corpus_content_sha256) : '';
-          var corpDisp = corp ? '<code>' + esc(corp.length > 20 ? corp.slice(0, 20) + '…' : corp) + '</code>' : '<code>—</code>';
-          var bits = [
-            'Записей в <code>manifest</code>: <strong>' + n + '</strong>.',
-            'Файл manifest: <strong>' + (idx.manifest_present ? 'есть' : 'нет') + '</strong>.',
-            '<code>chunks.jsonl</code>: <strong>' + (idx.chunks_jsonl_present ? 'есть' : 'нет') + '</strong>.',
-            'Векторный индекс (FAISS): <strong>' + (idx.semantic_index_present ? 'есть' : 'нет') + '</strong>.',
-            'Лексический поиск (doc_search): <strong>' + (idx.lexical_search_ready ? 'готов' : 'не готов') + '</strong>.',
-            'Семантический поиск: <strong>' + (idx.semantic_search_ready ? 'готов' : 'не готов') + '</strong>.',
-            'Время генерации manifest (UTC): ' + mg + '.',
-            'Версия пайплайна: ' + pv + '. Fingerprint корпуса (SHA): ' + corpDisp + '. API: <code>/api/v1/manifest</code>.'
-          ];
-          sumEl.innerHTML = '<p class="muted">' + bits.join(' ') + '</p>';
-          var docs = idx.documents || [];
-          var maxR = 300;
-          var slice = docs.slice(0, maxR);
-          if (capEl) {{
-            capEl.innerHTML = docs.length > maxR ? '<p class="muted">Показаны первые ' + maxR + ' из ' + docs.length + ' документов.</p>' : '';
-          }}
-          function ocrBadge(cov) {{
-            if (!cov || !cov.ocr || !cov.ocr.applied) return '';
-            var parts = ['OCR применился (RapidOCR через Docling)'];
-            var pr = cov.ocr.pages_recognized;
-            if (typeof pr === 'number' && pr > 0) parts.push('страниц: ' + pr);
-            var conf = cov.ocr.confidence;
-            if (typeof conf === 'number') parts.push('средняя уверенность: ' + conf.toFixed(2));
-            return '<span class="ocr-badge" title="' + esc(parts.join(' · ')) + '">OCR</span>';
-          }}
-          tbEl.innerHTML = slice.map(function (d, i) {{
-            var bn = esc(d.basename || '—');
-            var sf = esc(d.source_file || '');
-            var didRaw = d.doc_id != null ? String(d.doc_id) : '';
-            var didAttr = esc(didRaw);
-            var didCell = esc(didRaw || '—');
-            var nameCell = didRaw
-              ? '<button type="button" class="doc-preview-btn" data-doc-id="' + didAttr + '">' + bn + '</button>'
-              : bn;
-            var cc = d.chunk_count != null ? esc(String(d.chunk_count)) : '—';
-            var yr = d.edition_year != null && d.edition_year !== undefined ? esc(String(d.edition_year)) : '—';
-            var sh = d.sha256 ? String(d.sha256) : '';
-            var shDisp = sh.length > 16 ? esc(sh.slice(0, 16)) + '…' : esc(sh || '—');
-            var chk = didRaw ? '<input type="checkbox" class="row-check" data-doc-id="' + didAttr + '" />' : '';
-            var del = didRaw ? '<button type="button" class="row-delete-btn" data-doc-id="' + didAttr + '" data-name="' + esc(d.basename || '') + '" title="Удалить документ">✕</button>' : '';
-            var badge = ocrBadge(d.coverage);
-            return '<tr data-doc-id="' + didAttr + '"><td>' + chk + '</td><td>' + (i + 1) + '</td><td title="' + sf + '">' + badge + nameCell + '</td><td class="doc-id">' + didCell + '</td><td>' + cc + '</td><td>' + yr + '</td><td class="muted">' + shDisp + '</td><td>' + del + '</td></tr>';
-          }}).join('');
-          updateBulkDeleteState();
-        }}
-        function poll() {{
-          fetch(statusPath, {{credentials: "same-origin"}})
-            .then(function (r) {{ return r.json(); }})
-            .then(function (j) {{
-              if (!j || j.error === "unauthorized") return;
-              if (elIng) {{
-                var lines = j.log_tail || [];
-                elIng.textContent = lines.join("\\n");
-              }}
-              if (elHttp) {{
-                var hlines = j.http_log_tail || [];
-                elHttp.textContent = hlines.join("\\n");
-              }}
-              var b = document.getElementById("ingest-running-badge");
-              var job = j.job || "";
-              if (b) b.textContent = j.running ? (job || "busy") : "idle";
-              var busy = !!j.running;
-              var prog = document.getElementById("ingest-progress-line");
-              var progCur = document.getElementById("ingest-current-doc");
-              var progCnt = document.getElementById("ingest-progress-counts");
-              var progEta = document.getElementById("ingest-eta");
-              if (prog) {{
-                if (busy) {{
-                  prog.style.display = "";
-                  if (progCur) progCur.textContent = j.current_doc || "(ожидание…)";
-                  if (progCnt) {{
-                    var d = (j.docs_done != null) ? j.docs_done : 0;
-                    var t = (j.docs_total != null) ? j.docs_total : "?";
-                    progCnt.textContent = " · " + d + "/" + t;
-                  }}
-                  if (progEta) {{
-                    progEta.textContent = j.eta_human ? (" · осталось ~" + j.eta_human) : "";
-                  }}
-                }} else {{
-                  prog.style.display = "none";
-                }}
-              }}
-              var bu = document.getElementById("ui-btn-upload");
-              var bi = document.getElementById("ui-btn-ingest");
-              var br = document.getElementById("ui-btn-rebuild");
-              if (bu) bu.disabled = busy;
-              if (bi) bi.disabled = busy;
-              if (br) br.disabled = busy;
-              var lk = document.getElementById("ingest-last-ok");
-              if (lk) lk.textContent = (j.last_ok === null || j.last_ok === undefined) ? "-" : String(j.last_ok);
-              var le = document.getElementById("ingest-last-error");
-              if (le) le.textContent = (j.last_error != null && String(j.last_error).length) ? String(j.last_error) : "-";
-              renderIndexed(j.indexed);
-              var sb = document.getElementById("semantic-banner");
-              if (sb) {{
-                var ready = j.indexed && j.indexed.semantic_search_ready;
-                sb.style.display = ready ? "none" : "flex";
-              }}
-              var sbBtn = document.getElementById("semantic-banner-rebuild-btn");
-              if (sbBtn) sbBtn.disabled = busy;
-              if (j.running && elIng) {{
-                elIng.scrollTop = elIng.scrollHeight;
-              }}
-            }})
-            .catch(function () {{}});
-        }}
-        var modal = document.getElementById("doc-preview-modal");
-        var elPrevHead = document.getElementById("doc-preview-heading");
-        var elPrevMeta = document.getElementById("doc-preview-meta");
-        var elPrevText = document.getElementById("doc-preview-text");
-        function closeDocPreview() {{
-          if (!modal) return;
-          modal.classList.remove("is-open");
-          modal.setAttribute("aria-hidden", "true");
-        }}
-        function openDocPreview(did) {{
-          if (!modal || !elPrevHead || !elPrevText) return;
-          elPrevHead.textContent = "Загрузка…";
-          if (elPrevMeta) elPrevMeta.textContent = "";
-          elPrevText.textContent = "";
-          modal.classList.add("is-open");
-          modal.setAttribute("aria-hidden", "false");
-          var u = "/ui/document-preview?doc_id=" + encodeURIComponent(did);
-          if (typeof uiKey === "string" && uiKey.length) u += "&key=" + encodeURIComponent(uiKey);
-          fetch(u, {{ credentials: "same-origin" }})
-            .then(function (r) {{ return r.json(); }})
-            .then(function (j) {{
-              if (j && j.error === "unauthorized") {{
-                elPrevHead.textContent = "Доступ запрещён";
-                elPrevText.textContent = "";
-                return;
-              }}
-              if (!j || !j.ok) {{
-                elPrevHead.textContent = "Документ";
-                elPrevText.textContent = j && j.error ? String(j.error) : "Не удалось загрузить аннотацию.";
-                return;
-              }}
-              var t = j.title && String(j.title).trim() ? String(j.title).trim() : (j.basename || did);
-              elPrevHead.textContent = t;
-              if (elPrevMeta) {{
-                var bits = [];
-                if (j.source_file) bits.push(esc(String(j.source_file)));
-                bits.push("<code>" + esc(String(j.doc_id || did)) + "</code>");
-                if (j.edition_year != null && j.edition_year !== undefined) bits.push("год редакции: " + esc(String(j.edition_year)));
-                elPrevMeta.innerHTML = bits.join(" · ");
-              }}
-              elPrevText.textContent = j.preview || "";
-            }})
-            .catch(function () {{
-              elPrevHead.textContent = "Ошибка сети";
-              elPrevText.textContent = "";
-            }});
-        }}
-        document.addEventListener("click", function (ev) {{
-          var btn = ev.target && ev.target.closest ? ev.target.closest(".doc-preview-btn") : null;
-          if (!btn) return;
-          var did = btn.getAttribute("data-doc-id");
-          if (!did) return;
-          ev.preventDefault();
-          openDocPreview(did);
-        }});
-        var bd = document.getElementById("doc-preview-backdrop");
-        var bx = document.getElementById("doc-preview-close");
-        if (bd) bd.addEventListener("click", closeDocPreview);
-        if (bx) bx.addEventListener("click", closeDocPreview);
-        var keyQ = {json.dumps(key_q)};
-        (function () {{
-          var saveBtn = document.getElementById("cfg-save-btn");
-          var restartBtn = document.getElementById("srv-restart-btn");
-          var msgEl = document.getElementById("cfg-save-msg");
-          var ta = document.getElementById("cfg-yaml");
-          if (saveBtn && ta) saveBtn.addEventListener("click", function () {{
-            if (msgEl) msgEl.textContent = "";
-            var fd = new FormData();
-            if (uiKey) fd.append("key", uiKey);
-            fd.append("content", ta.value);
-            fetch("/ui/config/save" + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
-              .then(function (r) {{ return r.json(); }})
-              .then(function (j) {{
-                if (msgEl) msgEl.textContent = j && j.ok ? "Сохранено." : ("Ошибка: " + (j && j.error ? j.error : "?"));
-              }})
-              .catch(function () {{ if (msgEl) msgEl.textContent = "Ошибка сети."; }});
-          }});
-          if (restartBtn) restartBtn.addEventListener("click", function () {{
-            if (!confirm("Запустить настроенную команду перезапуска сервиса?")) return;
-            if (msgEl) msgEl.textContent = "";
-            var fd = new FormData();
-            if (uiKey) fd.append("key", uiKey);
-            fetch("/ui/restart" + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
-              .then(function (r) {{ return r.json(); }})
-              .then(function (j) {{
-                if (msgEl) msgEl.textContent = j && j.ok ? (j.message || "OK") : ("Ошибка: " + (j && j.error ? j.error : "?"));
-              }})
-              .catch(function () {{ if (msgEl) msgEl.textContent = "Ошибка сети."; }});
-          }});
-        }})();
-
-        function getCheckedDocIds() {{
-          var nodes = document.querySelectorAll(".row-check:checked");
-          var ids = [];
-          for (var i = 0; i < nodes.length; i++) {{
-            var v = nodes[i].getAttribute("data-doc-id");
-            if (v) ids.push(v);
-          }}
-          return ids;
-        }}
-        function updateBulkDeleteState() {{
-          var ids = getCheckedDocIds();
-          var btn = document.getElementById("idx-bulk-delete-btn");
-          var cnt = document.getElementById("idx-bulk-count");
-          var sa = document.getElementById("idx-select-all");
-          if (cnt) cnt.textContent = String(ids.length);
-          if (btn) btn.disabled = ids.length === 0;
-          if (sa) {{
-            var rows = document.querySelectorAll(".row-check");
-            sa.checked = rows.length > 0 && ids.length === rows.length;
-            sa.indeterminate = ids.length > 0 && ids.length < rows.length;
-          }}
-        }}
-        document.addEventListener("change", function (ev) {{
-          var t = ev.target;
-          if (!t) return;
-          if (t.id === "idx-select-all") {{
-            var rows = document.querySelectorAll(".row-check");
-            for (var i = 0; i < rows.length; i++) rows[i].checked = t.checked;
-            updateBulkDeleteState();
-            return;
-          }}
-          if (t.classList && t.classList.contains("row-check")) {{
-            updateBulkDeleteState();
-          }}
-        }});
-
-        function postForm(path, fields) {{
-          var fd = new FormData();
-          if (uiKey) fd.append("key", uiKey);
-          for (var k in fields) {{ if (Object.prototype.hasOwnProperty.call(fields, k)) fd.append(k, fields[k]); }}
-          return fetch(path + keyQ, {{ method: "POST", body: fd, credentials: "same-origin" }})
-            .then(function (r) {{ return r.json().then(function (j) {{ return {{ status: r.status, body: j }}; }}); }});
-        }}
-        function flashBulkMsg(text) {{
-          var el = document.getElementById("idx-bulk-msg");
-          if (el) el.textContent = text;
-        }}
-        function flashDangerMsg(text) {{
-          var el = document.getElementById("dz-msg");
-          if (el) el.textContent = text;
-        }}
-
-        document.addEventListener("click", function (ev) {{
-          var btn = ev.target && ev.target.closest ? ev.target.closest(".row-delete-btn") : null;
-          if (!btn) return;
-          var did = btn.getAttribute("data-doc-id");
-          var nm = btn.getAttribute("data-name") || did;
-          if (!did) return;
-          ev.preventDefault();
-          if (!confirm("Удалить документ «" + nm + "» из базы знаний?\\nЭта операция необратима.")) return;
-          flashBulkMsg("Удаляем «" + nm + "»…");
-          postForm("/ui/delete", {{ doc_ids: did }}).then(function (resp) {{
-            if (resp.body && resp.body.ok) {{
-              flashBulkMsg("Удалено: " + (resp.body.deleted || 0) + " док., чанков: " + (resp.body.removed_chunks || 0));
-              poll();
-            }} else {{
-              flashBulkMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
-            }}
-          }}).catch(function () {{ flashBulkMsg("Ошибка сети."); }});
-        }});
-
-        var bulkBtn = document.getElementById("idx-bulk-delete-btn");
-        if (bulkBtn) bulkBtn.addEventListener("click", function () {{
-          var ids = getCheckedDocIds();
-          if (!ids.length) return;
-          if (!confirm("Удалить " + ids.length + " документ(ов) из базы знаний?\\nЭта операция необратима.")) return;
-          flashBulkMsg("Удаляем " + ids.length + " документ(ов)…");
-          postForm("/ui/delete", {{ doc_ids: ids.join(",") }}).then(function (resp) {{
-            if (resp.body && resp.body.ok) {{
-              flashBulkMsg("Удалено: " + (resp.body.deleted || 0) + " док., чанков: " + (resp.body.removed_chunks || 0) + ", векторов: " + ((resp.body.index && resp.body.index.removed_vectors) || 0));
-              poll();
-            }} else {{
-              flashBulkMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
-            }}
-          }}).catch(function () {{ flashBulkMsg("Ошибка сети."); }});
-        }});
-
-        var wipeBtn = document.getElementById("dz-wipe-btn");
-        if (wipeBtn) wipeBtn.addEventListener("click", function () {{
-          var ans = prompt("Это удалит ВСЕ документы, чанки, индекс и архив. Введите DELETE для подтверждения:");
-          if (ans !== "DELETE") {{
-            flashDangerMsg(ans === null ? "" : "Отменено (нужно ввести строго DELETE).");
-            return;
-          }}
-          flashDangerMsg("Удаление всего…");
-          postForm("/ui/wipe", {{ confirm: "DELETE" }}).then(function (resp) {{
-            if (resp.body && resp.body.ok) {{
-              flashDangerMsg("Готово. Удалено записей: " + (resp.body.removed_entries || 0));
-              poll();
-            }} else {{
-              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
-            }}
-          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
-        }});
-
-        var orphBtn = document.getElementById("dz-orphans-btn");
-        if (orphBtn) orphBtn.addEventListener("click", function () {{
-          if (!confirm("Удалить осиротевшие файлы (md/чанки/векторы без записи в manifest)?")) return;
-          flashDangerMsg("Удаление осиротевших…");
-          postForm("/ui/clean-orphans", {{}}).then(function (resp) {{
-            if (resp.body && resp.body.ok) {{
-              flashDangerMsg("Удалено md: " + (resp.body.orphan_md_removed || 0) + ", чанков: " + (resp.body.orphan_chunks_removed || 0) + ", векторов: " + ((resp.body.index && resp.body.index.removed_vectors) || 0));
-              poll();
-            }} else {{
-              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
-            }}
-          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
-        }});
-
-        var incBtn = document.getElementById("dz-incoming-btn");
-        if (incBtn) incBtn.addEventListener("click", function () {{
-          if (!confirm("Удалить все файлы из sources/incoming/?")) return;
-          flashDangerMsg("Очистка incoming…");
-          postForm("/ui/clear-incoming", {{}}).then(function (resp) {{
-            if (resp.body && resp.body.ok) {{
-              flashDangerMsg("Удалено файлов: " + (resp.body.removed || 0));
-              poll();
-            }} else {{
-              flashDangerMsg("Ошибка: " + (resp.body && resp.body.error ? resp.body.error : ("HTTP " + resp.status)));
-            }}
-          }}).catch(function () {{ flashDangerMsg("Ошибка сети."); }});
-        }});
-
-        updateBulkDeleteState();
-        poll();
-        setInterval(poll, pollMs);
-      }})();
-      </script>
-
-    </body>
-  </html>
-  """
-    return HTMLResponse(body)
-
-
-@app.get("/ui/mcp/cursor.json")
-async def ui_mcp_cursor(request: Request, key: str = "") -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
-    base = _public_base_url(request)
-    payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
-    return _download_json(payload, "cursor-mcp-doc-rag.json")
-
-
-@app.get("/ui/mcp/vscode.json")
-async def ui_mcp_vscode(request: Request, key: str = "") -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
-    base = _public_base_url(request)
-    payload = _mcp_config_payload("doc-rag", f"{base}/mcp", key)
-    return _download_json(payload, "vscode-mcp-doc-rag.json")
-
-
 @app.get("/ui/status")
-async def ui_status(request: Request, key: str = "") -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+async def ui_status() -> JSONResponse:
     return JSONResponse(_ui_status_payload())
 
 
 @app.get("/ui/quality")
-async def ui_quality(request: Request, key: str = "") -> JSONResponse:
+async def ui_quality() -> JSONResponse:
     """Return quality summary from build/quality/summary.json."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         data = _load_quality_summary()
         return JSONResponse({"ok": True, **data})
@@ -2784,10 +1912,8 @@ async def ui_quality(request: Request, key: str = "") -> JSONResponse:
 
 
 @app.get("/ui/doc-stats")
-async def ui_doc_stats(request: Request, key: str = "") -> JSONResponse:
+async def ui_doc_stats() -> JSONResponse:
     """Return detailed statistics for all documents."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         root = _root_dir()
         cfg_path = _config_path()
@@ -2870,14 +1996,12 @@ async def ui_doc_stats(request: Request, key: str = "") -> JSONResponse:
 
 
 @app.get("/ui/documents")
-async def ui_documents(request: Request, key: str = "") -> JSONResponse:
+async def ui_documents() -> JSONResponse:
     """List ALL source files (incoming + archived) cross-referenced with manifest.
 
     Returns indexed docs (with chunk_count, quality) and pending files
     (from sources/incoming and sources/archived not yet in manifest).
     """
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         result = await asyncio.to_thread(_build_documents_list)
         return JSONResponse(result)
@@ -2953,6 +2077,7 @@ def _build_documents_list() -> dict[str, Any]:
                         "edition_year": d.get("edition_year"),
                         "size": sz,
                         "indexed": True,
+                        "coverage": d.get("coverage", {}),
                     }
                 )
         except Exception:
@@ -3006,17 +2131,13 @@ def _build_documents_list() -> dict[str, Any]:
 
 
 @app.get("/ui/document-preview")
-async def ui_document_preview(request: Request, doc_id: str = "", key: str = "") -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+async def ui_document_preview(doc_id: str = "") -> JSONResponse:
     return JSONResponse(document_preview(doc_id))
 
 
 @app.get("/api/v1/download")
-async def api_v1_download(request: Request, filename: str = "", key: str = "") -> Response:
+async def api_v1_download(filename: str = "") -> Response:
     """Download a source document by filename."""
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not filename:
         return JSONResponse({"error": "требуется имя файла"}, status_code=400)
     root = _root_dir()
@@ -3047,11 +2168,7 @@ async def api_v1_download(request: Request, filename: str = "", key: str = "") -
 async def ui_upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],
-    key: str = Form(""),
 ) -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
-
     incoming = _sources_incoming_dir()
     incoming.mkdir(parents=True, exist_ok=True)
 
@@ -3087,9 +2204,6 @@ async def ui_upload(
         )
 
     qdict: dict[str, str] = {}
-    k = (key or "").strip()
-    if k:
-        qdict["key"] = k
     if saved > 0:
         qdict["up_saved"] = str(saved)
     if errors:
@@ -3098,47 +2212,36 @@ async def ui_upload(
     if dups:
         qdict["up_dup"] = str(len(dups))
         qdict["up_dup_msg"] = dups[0][:280]
-    loc = "/ui?" + urlencode(qdict)
+    loc = "/ui-next/?" + urlencode(qdict)
     return RedirectResponse(url=loc, status_code=303)
 
 
 @app.post("/ui/rebuild")
-async def ui_rebuild(request: Request, key: str = Form("")) -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
+async def ui_rebuild(request: Request) -> Response:
     force = request.query_params.get("force", "").lower() in ("1", "true", "yes")
     asyncio.create_task(_run_rebuild_background(force=force))
-    kq = f"?key={key}" if key else ""
-    return RedirectResponse(url=f"/ui{kq}", status_code=303)
+    return RedirectResponse(url="/ui-next/", status_code=303)
 
 
 @app.post("/ui/rebuild-index")
-async def ui_rebuild_index(request: Request, key: str = Form("")) -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
+async def ui_rebuild_index() -> Response:
     asyncio.create_task(
         _run_index_job_background(
             "rebuild-index", lambda: _pipeline_rebuild_index(str(_config_path()))
         )
     )
-    kq = f"?key={key}" if key else ""
-    return RedirectResponse(url=f"/ui{kq}", status_code=303)
+    return RedirectResponse(url="/ui-next/", status_code=303)
 
 
 @app.post("/ui/rebuild-skip-index")
-async def ui_rebuild_skip_index(request: Request, key: str = Form("")) -> Response:
+async def ui_rebuild_skip_index() -> Response:
     """Full rebuild: parse + chunk only, no vector index (for local GPU processing)."""
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
     asyncio.create_task(_run_rebuild_background(force=True, skip_index=True))
-    kq = f"?key={key}" if key else ""
-    return RedirectResponse(url=f"/ui{kq}", status_code=303)
+    return RedirectResponse(url="/ui-next/", status_code=303)
 
 
 @app.post("/ui/rebuild-docs")
 async def ui_rebuild_docs(request: Request) -> JSONResponse:
-    if not _ui_key_ok(request, request.query_params.get("key", "")):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
@@ -3161,12 +2264,10 @@ async def ui_rebuild_docs(request: Request) -> JSONResponse:
 
 
 @app.post("/ui/ingest")
-async def ui_ingest(request: Request, key: str = Form("")) -> Response:
-    if not _ui_key_ok(request, key):
-        return PlainTextResponse("Unauthorized", status_code=401)
+async def ui_ingest() -> Response:
     # Fire-and-forget
     asyncio.create_task(_run_ingest_background())
-    return RedirectResponse(url=f"/ui?key={key}", status_code=303)
+    return RedirectResponse(url="/ui-next/", status_code=303)
 
 
 def _busy_response() -> JSONResponse:
@@ -3177,58 +2278,56 @@ def _busy_response() -> JSONResponse:
 
 
 @app.post("/ui/delete")
-async def ui_delete(request: Request, key: str = Form(""), doc_ids: str = Form("")) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    if _INGEST_STATE.get("running"):
-        return _busy_response()
+async def ui_delete(doc_ids: str = Form("")) -> JSONResponse:
     ids = [s.strip() for s in (doc_ids or "").split(",") if s.strip()]
     if not ids:
         return JSONResponse({"ok": False, "error": "doc_ids не указаны"}, status_code=400)
     try:
-        result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
+        async with _exclusive_job("delete"):
+            result = await asyncio.to_thread(_pipeline_delete_documents, str(_config_path()), ids)
+    except _JobBusyError:
+        return _busy_response()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/wipe")
-async def ui_wipe(request: Request, key: str = Form(""), confirm: str = Form("")) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    if _INGEST_STATE.get("running"):
-        return _busy_response()
+async def ui_wipe(confirm: str = Form("")) -> JSONResponse:
     if (confirm or "").strip() != "DELETE":
         return JSONResponse(
             {"ok": False, "error": "Подтверждение: введите слово DELETE."},
             status_code=400,
         )
     try:
-        result = await asyncio.to_thread(_pipeline_wipe_index, str(_config_path()))
+        async with _exclusive_job("wipe"):
+            result = await asyncio.to_thread(_pipeline_wipe_index, str(_config_path()))
+    except _JobBusyError:
+        return _busy_response()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/clean-orphans")
-async def ui_clean_orphans(request: Request, key: str = Form("")) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    if _INGEST_STATE.get("running"):
-        return _busy_response()
+async def ui_clean_orphans() -> JSONResponse:
     try:
-        result = await asyncio.to_thread(_pipeline_clean_orphans, str(_config_path()))
+        async with _exclusive_job("clean-orphans"):
+            result = await asyncio.to_thread(_pipeline_clean_orphans, str(_config_path()))
+    except _JobBusyError:
+        return _busy_response()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, **result})
 
 
 @app.post("/ui/clear-incoming")
-async def ui_clear_incoming(request: Request, key: str = Form("")) -> JSONResponse:
-    if not _ui_key_ok(request, key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+async def ui_clear_incoming() -> JSONResponse:
     try:
-        result = await asyncio.to_thread(_pipeline_clear_incoming, str(_config_path()))
+        async with _exclusive_job("clear-incoming"):
+            result = await asyncio.to_thread(_pipeline_clear_incoming, str(_config_path()))
+    except _JobBusyError:
+        return _busy_response()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, **result})
@@ -3240,9 +2339,6 @@ async def mcp_get(request: Request) -> Response:
     origin = request.headers.get("origin")
     if not _origin_allowed(origin):
         return PlainTextResponse("Origin not allowed", status_code=403)
-
-    if not _check_api_key(request):
-        return PlainTextResponse("Unauthorized", status_code=401)
 
     if not _accepts_sse(request):
         # Spec allows 405 if SSE is not offered; here we *do* offer SSE, but require Accept.
@@ -3282,9 +2378,6 @@ async def mcp_post(request: Request) -> Response:
     origin = request.headers.get("origin")
     if not _origin_allowed(origin):
         return PlainTextResponse("Origin not allowed", status_code=403)
-
-    if not _check_api_key(request):
-        return PlainTextResponse("Unauthorized", status_code=401)
 
     try:
         payload: Json = await request.json()

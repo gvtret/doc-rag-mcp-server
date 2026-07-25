@@ -153,11 +153,12 @@ class FaissVectorStore:
         except ImportError as exc:
             raise RuntimeError("faiss-cpu is not installed") from exc
 
+        ids_set = set(ids)
         keep_positions = []
         keep_ids = []
         removed = 0
         for i, cid in enumerate(self._meta.chunk_ids):
-            if cid in ids:
+            if cid in ids_set:
                 removed += 1
             else:
                 keep_positions.append(i)
@@ -172,7 +173,13 @@ class FaissVectorStore:
             self._id_to_pos = {}
             return removed
 
-        vecs = np.vstack([self._index.reconstruct(p) for p in keep_positions]).astype(np.float32)
+        # Reconstruct straight into the final array instead of building a
+        # Python list of per-vector arrays and `np.vstack`-ing it — that
+        # briefly doubles peak memory (list + the vstack copy) for a large
+        # index, which matters on a CPU-only, memory-constrained server.
+        vecs = np.empty((len(keep_positions), self._meta.dim), dtype=np.float32)
+        for out_i, p in enumerate(keep_positions):
+            vecs[out_i] = self._index.reconstruct(p)
 
         if self._meta.metric == "ip":
             self._index = faiss.IndexFlatIP(self._meta.dim)

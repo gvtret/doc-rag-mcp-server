@@ -294,6 +294,63 @@ def test_build_documents_list_dedup_indexed_by_doc_id(
     assert result["indexed_count"] == 2
 
 
+def test_build_documents_list_includes_coverage_for_ocr_badge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `/ui/documents` response must carry `coverage.ocr` per document —
+    the Svelte Documents page reads it to render the OCR badge. Regression
+    for a gap where this endpoint dropped `coverage` (only `/ui/doc-stats`
+    had it), so the badge had no data to render from.
+    """
+    from doc_rag.server import mcp_http
+
+    archived = tmp_path / "sources" / "archived"
+    archived.mkdir(parents=True)
+    (tmp_path / "sources" / "incoming").mkdir(parents=True)
+    (tmp_path / "build").mkdir(parents=True)
+
+    (tmp_path / "build" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "doc_id": "scanned",
+                        "source_file": "scanned.pdf",
+                        "sha256": "aaa",
+                        "chunk_count": 1,
+                        "coverage": {
+                            "ocr": {
+                                "applied": True,
+                                "pages_recognized": 3,
+                                "confidence": 0.97,
+                            }
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    (archived / "scanned.pdf").write_text("x")
+
+    (tmp_path / "config.yaml").write_text(
+        textwrap.dedent("""\
+        paths:
+          sources_archived: sources/archived
+          sources_incoming: sources/incoming
+          manifest_path: build/manifest.json
+    """)
+    )
+
+    monkeypatch.setattr(mcp_http, "_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(mcp_http, "_config_path", lambda: tmp_path / "config.yaml")
+
+    result = mcp_http._build_documents_list()
+    doc = result["indexed"][0]
+    assert doc["coverage"]["ocr"]["applied"] is True
+    assert doc["coverage"]["ocr"]["pages_recognized"] == 3
+    assert doc["coverage"]["ocr"]["confidence"] == 0.97
+
+
 # ── rebuild_docs() dedup ───────────────────────────────────────────────
 
 
@@ -362,3 +419,156 @@ def test_rebuild_docs_deduplicates_chunks(tmp_path: Path) -> None:
             loaded.append(json.loads(line))
     cids = [c["chunk_id"] for c in loaded]
     assert len(cids) == len(set(cids)), f"Duplicate chunk_ids: {cids}"
+
+
+def test_rebuild_docs_drops_orphaned_chunks_when_content_hash_changes(tmp_path: Path) -> None:
+    """rebuild_docs() regenerates doc_id from the file's content hash, so a
+    document whose content actually changed gets a *new* doc_id. The old
+    doc_id's chunks must not survive in chunks.jsonl — otherwise stale
+    content keeps showing up in search results forever.
+    """
+    from doc_rag.raglib.pipeline import rebuild_docs
+
+    config_path = _make_root(tmp_path)
+    manifest_path = tmp_path / "build" / "manifest.json"
+    chunks_path = tmp_path / "build" / "chunks" / "chunks.jsonl"
+    docs_md = tmp_path / "build" / "docs_md"
+
+    manifest = {
+        "schema_version": 1,
+        "documents": [
+            {
+                "doc_id": "keep_me",
+                "source_file": "keep.txt",
+                "sha256": "111",
+                "md_path": "build/docs_md/keep_me.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "target",
+                "source_file": "target.txt",
+                "sha256": "222",
+                "md_path": "build/docs_md/target.md",
+                "chunk_count": 1,
+            },
+        ],
+    }
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f)
+
+    _write_chunks(
+        chunks_path,
+        [
+            {"doc_id": "keep_me", "chunk_id": "keep_me:0", "text": "keep chunk text"},
+            {"doc_id": "target", "chunk_id": "target:0", "text": "stale old text"},
+        ],
+    )
+    (docs_md / "keep_me.md").write_text("keep content")
+    # Content differs from what produced sha256 "222", so rebuild_docs will
+    # compute a brand-new doc_id for this file.
+    (tmp_path / "sources" / "archived" / "target.txt").write_text("updated target content")
+
+    rebuild_docs(str(config_path), doc_ids=["target"], filenames=[])
+
+    with open(manifest_path) as f:
+        m = json.load(f)
+    final_doc_ids = {d["doc_id"] for d in m["documents"]}
+    assert "target" not in final_doc_ids, "old doc_id should be gone from the manifest"
+
+    loaded = []
+    with open(chunks_path) as f:
+        for line in f:
+            loaded.append(json.loads(line))
+    chunk_doc_ids = {c["doc_id"] for c in loaded}
+    assert chunk_doc_ids == final_doc_ids, (
+        f"chunks.jsonl references doc_ids not in the manifest (orphans): "
+        f"{chunk_doc_ids - final_doc_ids}"
+    )
+    assert not any(c["text"] == "stale old text" for c in loaded), "old chunk text must be gone"
+
+
+def test_rebuild_docs_only_reembeds_target_document(tmp_path: Path, monkeypatch) -> None:
+    """rebuild_docs() must not re-embed chunks belonging to documents that
+    weren't targeted — only the rebuilt doc's (new) chunks should hit the
+    embedder. Regression for a full-corpus re-embed on every rebuild_docs
+    call (`vi.reset()` + `vi.build(..., force=True)` on all chunks).
+    """
+    import doc_rag.raglib.pipeline as pipeline_mod
+    from doc_rag.raglib.pipeline import rebuild_docs
+
+    pipeline_mod._VECTOR_INDEX = None  # this test's tmp_path root is unique; start clean
+
+    config_path = _make_root(tmp_path)
+    manifest_path = tmp_path / "build" / "manifest.json"
+    chunks_path = tmp_path / "build" / "chunks" / "chunks.jsonl"
+    docs_md = tmp_path / "build" / "docs_md"
+
+    manifest = {
+        "schema_version": 1,
+        "documents": [
+            {
+                "doc_id": "keep_me",
+                "source_file": "keep.txt",
+                "sha256": "111",
+                "md_path": "build/docs_md/keep_me.md",
+                "chunk_count": 1,
+            },
+            {
+                "doc_id": "target",
+                "source_file": "target.txt",
+                "sha256": "222",
+                "md_path": "build/docs_md/target.md",
+                "chunk_count": 1,
+            },
+        ],
+    }
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f)
+
+    _write_chunks(
+        chunks_path,
+        [
+            {"doc_id": "keep_me", "chunk_id": "keep_me:0", "text": "keep chunk text"},
+            {"doc_id": "target", "chunk_id": "target:0", "text": "old target text"},
+        ],
+    )
+    (docs_md / "keep_me.md").write_text("keep content")
+    (tmp_path / "sources" / "archived" / "target.txt").write_text("new target content")
+
+    encoded_texts: list[str] = []
+
+    class _RecordingEmbedder:
+        def encode(self, texts, batch_size=32, show_progress_bar=False, normalize_embeddings=True):
+            import numpy as np
+
+            encoded_texts.extend(texts)
+            return np.random.RandomState(0).randn(len(texts), 8).astype(np.float32)
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _RecordingEmbedder()
+    )
+
+    # Pre-populate the index with both docs' current chunks, as if a prior
+    # ingest/rebuild had already embedded the whole corpus.
+    from doc_rag.raglib.pipeline import load_config
+
+    cfg = load_config(str(config_path))
+    vi = pipeline_mod._get_vector_index(cfg)
+    vi.build(
+        [
+            {"doc_id": "keep_me", "chunk_id": "keep_me:0", "text": "keep chunk text"},
+            {"doc_id": "target", "chunk_id": "target:0", "text": "old target text"},
+        ],
+        force=True,
+        log=lambda *a: None,
+    )
+    assert vi.size == 2
+    encoded_texts.clear()  # only care about what rebuild_docs() triggers below
+
+    rebuild_docs(str(config_path), doc_ids=["target"], filenames=[])
+
+    assert vi.size == 2, "index should still hold exactly one chunk per document"
+    assert not any("keep" in t for t in encoded_texts), (
+        f"keep_me's chunk was re-embedded, expected only target's: {encoded_texts}"
+    )
+    assert len(encoded_texts) == 1, f"expected exactly target's one new chunk, got {encoded_texts}"

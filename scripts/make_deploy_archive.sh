@@ -44,8 +44,11 @@ cat > "${staging}/DEPLOY.txt" <<'EOF'
 
   1) tar xzf doc-rag-deploy-*.tar.gz && cd doc-rag
   2) cp .env.example .env
-  3) Отредактируйте .env (порты, DOC_RAG_ALLOWED_ORIGINS, при необходимости API key).
-  4) docker compose up -d --build
+  3) Отредактируйте .env (порты, DOC_RAG_ALLOWED_ORIGINS).
+  4) Контейнер работает от непривилегированного пользователя (uid 1000), поэтому
+     bind-mount каталоги должны быть ему доступны на запись:
+       mkdir -p build sources/incoming sources/archived && chown -R 1000:1000 build sources
+  5) docker compose up -d --build
 
 Проверка: curl -sS http://127.0.0.1:3333/health
 Индексация в контейнере: docker compose exec doc-rag-mcp doc-rag ingest

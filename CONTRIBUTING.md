@@ -39,8 +39,7 @@ pytest
 pytest --cov=doc_rag --cov-report=term-missing
 ```
 
-CI runs on Python 3.10, 3.11, and 3.12. Your patch must pass on all
-three.
+CI runs on Python 3.11 and 3.12. Your patch must pass on both.
 
 ## Linting and formatting
 

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # --- UI builder stage --------------------------------------------------------
-# v2.2+ ships a Svelte + Vite frontend under `ui/`. Build it in a Node
-# stage so the runtime image stays Python-only. If `ui/` is missing the
-# stage's COPY still succeeds (empty dir copy) and the build is a no-op.
+# The Svelte + Vite frontend under `ui/` is the only web UI doc-rag ships —
+# there is no inline HTML fallback, so this stage is required, not optional.
+# Built in a separate Node stage so the runtime image stays Python-only.
 FROM node:22-alpine AS ui-builder
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json* /ui/
@@ -60,6 +60,13 @@ RUN if [ -f scripts/rapidocr/arch_config.yaml ]; then \
         echo "[doc-rag] patched rapidocr: installed arch_config.yaml"; \
       fi; \
     fi
+
+# Drop root: bind-mounted ./build and ./sources must be writable by this
+# UID on the host — see DEPLOY.txt for the pre-create/chown step.
+RUN groupadd --gid 1000 docrag \
+    && useradd --uid 1000 --gid docrag --no-create-home --shell /usr/sbin/nologin docrag \
+    && chown -R docrag:docrag /app
+USER docrag
 
 EXPOSE 3333
 

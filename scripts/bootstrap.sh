@@ -134,21 +134,22 @@ fi
 
 echo "[doc-rag] Bootstrap complete."
 
-# --- Optional: Svelte UI build ----------------------------------------------
-# v2.2+ ships a Svelte + Vite frontend under `ui/`. Build it if Node is
-# available on PATH; otherwise leave the legacy inline `/ui` as canonical
-# and let users build manually later.
+# --- Svelte UI build (required) ----------------------------------------------
+# The Svelte + Vite frontend under `ui/` is the only web UI doc-rag ships —
+# there is no inline HTML fallback. `/ui` and `/ui-next/` 404 without a
+# built `ui/dist`, so a missing Node/npm is a hard failure, not a skip.
 if [[ -f "${ROOT}/ui/package.json" ]]; then
-  if command -v npm >/dev/null 2>&1; then
-    echo "[doc-rag] Building Svelte UI bundle (ui/)…"
-    pushd "${ROOT}/ui" >/dev/null
-    npm ci --no-audit --no-fund
-    npm run build
-    popd >/dev/null
-    echo "[doc-rag] ui/dist ready."
-  else
-    echo "[doc-rag] Node/npm not on PATH — skipping ui/ build. The legacy"
-    echo "[doc-rag] inline /ui keeps serving. Install Node >= 20 and run"
-    echo "[doc-rag] 'cd ui && npm ci && npm run build' to enable /ui-next."
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[doc-rag] ERROR: Node/npm not found on PATH." >&2
+    echo "[doc-rag] The Web UI (Svelte, ui/) has no fallback and requires Node >= 20." >&2
+    echo "[doc-rag] Install Node >= 20, then re-run this script (or run" >&2
+    echo "[doc-rag] 'cd ui && npm ci && npm run build' manually and re-run bootstrap)." >&2
+    exit 1
   fi
+  echo "[doc-rag] Building Svelte UI bundle (ui/)…"
+  pushd "${ROOT}/ui" >/dev/null
+  npm ci --no-audit --no-fund
+  npm run build
+  popd >/dev/null
+  echo "[doc-rag] ui/dist ready."
 fi

@@ -5,16 +5,20 @@ is the canonical "did OCR fire on this page?" signal. A non-NaN positive
 value means RapidOCR produced text for that page; NaN means the page had
 a native text layer and OCR was skipped.
 
-We aggregate that signal at three layers:
+We aggregate that signal at two layers:
 
   1. `_ocr_signal_from_confidence` (docling_backend.py): page-level →
      dict of {ocr_pages_count, ocr_pages, ocr_mean_score}.
   2. `_build_ocr_stats_block` (parsers.py): the aggregate → the
      `stats.ocr` shape that downstream callers (manifest, UI) already
      read.
-  3. `_ocr_badge_html` (mcp_http.py): coverage dict from a manifest
-     entry → inline `<span class="ocr-badge">OCR</span>` for the UI
-     document table, or empty string when OCR did not fire.
+
+A third layer used to exist server-side: `_ocr_badge_html` (mcp_http.py),
+coverage dict → inline `<span class="ocr-badge">OCR</span>`, for the
+legacy inline `/ui` page. That page (and the helper) is gone; the badge
+now renders client-side in `ui/src/pages/Documents.svelte` from the raw
+`coverage.ocr` field `GET /ui/documents` returns (see
+`_build_documents_list` in mcp_http.py).
 """
 
 from __future__ import annotations
@@ -118,43 +122,3 @@ def test_build_ocr_block_when_signal_present_reports_truth():
     assert block["pages_recognized"] == 3
     assert block["confidence"] == 0.94
     assert block["ocr_pages"] == [1, 2, 3]
-
-
-# --------------------------------------------------------------------------
-# Layer 3 — mcp_http._ocr_badge_html
-# --------------------------------------------------------------------------
-
-
-def test_badge_empty_when_no_coverage():
-    from doc_rag.server.mcp_http import _ocr_badge_html
-
-    assert _ocr_badge_html(None) == ""
-    assert _ocr_badge_html({}) == ""
-
-
-def test_badge_empty_when_ocr_not_applied():
-    from doc_rag.server.mcp_http import _ocr_badge_html
-
-    cov = {"ocr": {"applied": False, "pages_recognized": 0}}
-    assert _ocr_badge_html(cov) == ""
-
-
-def test_badge_renders_when_ocr_applied_with_tooltip():
-    from doc_rag.server.mcp_http import _ocr_badge_html
-
-    cov = {"ocr": {"applied": True, "pages_recognized": 3, "confidence": 0.97}}
-    html = _ocr_badge_html(cov)
-    assert "ocr-badge" in html
-    assert ">OCR<" in html
-    assert "страниц: 3" in html
-    assert "0.97" in html
-
-
-def test_badge_omits_unknown_fields_gracefully():
-    from doc_rag.server.mcp_http import _ocr_badge_html
-
-    cov = {"ocr": {"applied": True}}
-    html = _ocr_badge_html(cov)
-    assert ">OCR<" in html
-    assert "страниц:" not in html
-    assert "уверенность" not in html
