@@ -11,6 +11,10 @@ coverage.xml
 # Generated artifacts
 build/
 
+# Model artefacts (fetch: python scripts/fetch_model.py)
+models/*
+!models/.gitkeep
+
 # Local document corpus (NEVER ship internal documents publicly).
 # A maintainer testing locally drops files into sources/incoming/ and
 # the ingest pipeline archives them to sources/archived/. Neither
