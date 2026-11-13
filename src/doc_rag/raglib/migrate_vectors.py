@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from doc_rag.raglib import model_paths
 from doc_rag.raglib.vector_index import VectorIndex
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -74,11 +75,17 @@ def migrate_vectors(
         stats["message"] = "Cannot determine source dimension"
         return stats
 
-    # Initialize target
+    # Initialize target: migration re-encodes the corpus with the current
+    # weights, so the target index is stamped with their fingerprint.
     embedder_cfg = cfg.get("embeddings", {})
     model_name = embedder_cfg.get("model_name", "")
     normalize = embedder_cfg.get("normalize", True)
-    target_store.init(dim=dim, model_name=model_name, normalize=normalize)
+    target_store.init(
+        dim=dim,
+        model_name=model_name,
+        normalize=normalize,
+        weights_sha256=model_paths.fingerprint_for_cfg(cfg) or "",
+    )
 
     # Load embeddings model
     from doc_rag.raglib.vector_index import _load_embedder

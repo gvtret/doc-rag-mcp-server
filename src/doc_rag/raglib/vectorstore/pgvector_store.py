@@ -40,6 +40,9 @@ class PgvectorVectorStore:
         self._dsn = dsn
         self._conn: Any = None
         self._dim: int = 0
+        # Accepted for API parity with the FAISS backend; not persisted yet.
+        # BUG-006 fingerprint guard is FAISS-only until the fingerprint is
+        # stored server-side (payload field / service table) -- TODO.
         self._weights_sha256: str = ""
 
     def _ensure_conn(self) -> Any:

@@ -102,6 +102,7 @@ def test_old_meta_without_field_loads_empty():
 
 
 def test_init_persists_fingerprint_to_meta_json(tmp_path: Path):
+    """init() + save() roundtrip: the fingerprint survives a disk reload."""
     index_path = tmp_path / "faiss.index"
     meta_path = tmp_path / "index_meta.json"
     store = FaissVectorStore(str(index_path), str(meta_path), metric="ip")
@@ -109,8 +110,66 @@ def test_init_persists_fingerprint_to_meta_json(tmp_path: Path):
     import faiss  # noqa: F401  (init imports faiss itself; skip if missing)
 
     store.init(dim=8, model_name="m", weights_sha256="deadbeef")
-    meta = store.get_meta()
+    store.save()
+
+    reloaded = FaissVectorStore(str(index_path), str(meta_path), metric="ip")
+    reloaded._ensure_loaded()
+    meta = reloaded.get_meta()
     assert meta is not None and meta.weights_sha256 == "deadbeef"
+
+
+def test_migrate_stamps_fingerprint_into_target_meta(tmp_path: Path, monkeypatch):
+    """Migration re-encodes with current weights: the target index meta
+    must carry their fingerprint (review finding 1)."""
+    import faiss  # noqa: F401
+    import numpy as np
+
+    from doc_rag.raglib.migrate_vectors import migrate_vectors
+
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True)
+    (root / "build" / "chunks_jsonl").mkdir(parents=True)
+
+    chunks = [{"chunk_id": f"doc:000{i}", "doc_id": "doc", "text": f"chunk {i}"} for i in range(3)]
+    with (root / "build" / "chunks_jsonl" / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+
+    vecs = np.random.RandomState(7).randn(3, 8).astype(np.float32)
+    index = faiss.IndexFlatIP(8)
+    index.add(vecs)
+    faiss.write_index(index, str(root / "build" / "index" / "faiss.index"))
+    meta = {
+        "protocol_version": "1.0.0",
+        "model_name": "m",
+        "metric": "ip",
+        "normalize": True,
+        "dim": 8,
+        "chunk_ids": [c["chunk_id"] for c in chunks],
+        "weights_sha256": "src-fp",
+    }
+    (root / "build" / "index" / "index_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    cfg = {
+        "_root": str(root),
+        "index": {"backend": "faiss", "metric": "ip"},
+        "paths": {
+            "index_dir": "build/index",
+            "chunks_dir": "build/chunks_jsonl",
+        },
+        "embeddings": {"model_name": "test-model", "device": "cpu", "normalize": True},
+    }
+    monkeypatch.setattr("doc_rag.raglib.vector_index._load_embedder", lambda c: _StubEmbedder())
+    monkeypatch.setattr(
+        "doc_rag.raglib.migrate_vectors.model_paths.fingerprint_for_cfg", lambda c: "new-fp"
+    )
+
+    stats = migrate_vectors(cfg, source_backend="faiss", target_backend="faiss")
+    assert stats["success"] is True
+    assert stats["vectors_migrated"] == 3
+
+    stored = json.loads((root / "build" / "index" / "index_meta.json").read_text())
+    assert stored["weights_sha256"] == "new-fp"
 
 
 # ---------------------------------------------------------------------------

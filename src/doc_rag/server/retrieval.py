@@ -19,6 +19,7 @@ _SEMANTIC_CACHE: dict[str, Any] = {
     "index": None,
 }
 _VECTOR_INDEX_CACHE: dict[str, Any] = {"cfg_root": None, "index": None}
+_INDEX_META_CACHE: dict[str, Any] = {"path": None, "mtime": None, "fp": None}
 
 
 def project_root() -> str:
@@ -271,7 +272,7 @@ def indexed_catalog() -> dict[str, Any]:
     semantic_ready = semantic_index_present and chunks_present and doc_n > 0
 
     # Weights fingerprint staleness (BUG-006 companion report): read
-    # index_meta.json directly — no expensive manifest parsing on this path.
+    # index_meta.json directly -- no expensive manifest parsing on this path.
     model_status = model_loader.status()
     model_ready = bool(model_status.get("ready"))
     model_fp = model_status.get("fingerprint")
@@ -279,15 +280,34 @@ def indexed_catalog() -> dict[str, Any]:
 
     index_fp: str | None = None
     if meta_path and os.path.isfile(meta_path):
+        # index_meta.json embeds the full chunk_ids list (hundreds of KB),
+        # but only the fingerprint is needed here: cache the parse behind
+        # the file's mtime so /ui/status does not re-read it every call.
         try:
-            with open(meta_path, encoding="utf-8") as f:
-                meta_data = json.load(f)
-            if isinstance(meta_data, dict):
-                raw_fp = meta_data.get("weights_sha256")
-                if isinstance(raw_fp, str) and raw_fp.strip():
-                    index_fp = raw_fp.strip()
+            st = os.stat(meta_path)
         except Exception:
-            index_fp = None
+            st = None
+        cached = _INDEX_META_CACHE
+        if (
+            st is not None
+            and cached.get("path") == meta_path
+            and cached.get("mtime") == st.st_mtime
+        ):
+            index_fp = cached.get("fp")
+        else:
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta_data = json.load(f)
+                if isinstance(meta_data, dict):
+                    raw_fp = meta_data.get("weights_sha256")
+                    if isinstance(raw_fp, str) and raw_fp.strip():
+                        index_fp = raw_fp.strip()
+            except Exception:
+                index_fp = None
+            if st is not None:
+                cached["path"] = meta_path
+                cached["mtime"] = st.st_mtime
+                cached["fp"] = index_fp
 
     index_stale = bool(model_ready and model_fp_s and index_fp and model_fp_s != index_fp)
     stale_reason = "weights fingerprint mismatch" if index_stale else None
@@ -308,6 +328,7 @@ def indexed_catalog() -> dict[str, Any]:
         "weights_sha256": index_fp,
         "index_stale": index_stale,
         "stale_reason": stale_reason,
+        # Wired by the HF model watcher (Task 6).
         "model_update_available": False,
     }
 

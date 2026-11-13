@@ -152,7 +152,6 @@ def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=
     normalize = bool(cfg.get("embeddings", {}).get("normalize", True))
     model_name = str(cfg.get("embeddings", {}).get("model_name", ""))
     protocol_version = str(cfg.get("pipeline_version", "1"))
-    weights_sha256 = model_paths.fingerprint_for_cfg(cfg) or ""
 
     meta: IndexMeta | None = None
     if meta_file.exists() and not force_rebuild:
@@ -187,6 +186,10 @@ def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=
             meta = None
 
     if meta is None or not index_file.exists():
+        # Fingerprint the weights at full-build time only: the incremental
+        # branch below predates fingerprinting (legacy path, no live
+        # callers) and does not compare or update the fingerprint.
+        weights_sha256 = model_paths.fingerprint_for_cfg(cfg) or ""
         log("[doc-rag][index] Building FAISS index from scratch...")
         texts = [str(c.get("text", "")) for c in chunks]
         batch_size = int(cfg.get("embeddings", {}).get("batch_size", 32))

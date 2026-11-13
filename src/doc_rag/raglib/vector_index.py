@@ -77,47 +77,61 @@ class VectorIndex:
     def _store_matches_config(self, store: VectorStore) -> bool:
         """True if the on-disk index was built with the current embed settings.
 
-        Guards the incremental path against mixing vectors from different
-        embedding models / dimensions / weight revisions (BUG-006). Compares
-        against the FAISS backend's `IndexMeta` when available; otherwise
-        falls back to the vector dimension. Returns True when no comparison
-        is possible, so backends without metadata keep the old incremental
-        behaviour.
+        Guard against mixing vectors from different embedding models /
+        dimensions / weight revisions (BUG-006). Compares against the
+        FAISS backend's `IndexMeta`; backends without metadata keep the
+        old incremental behaviour (True). Errors reading the store
+        metadata or computing the fingerprint fail closed (False): an
+        unverifiable index must be rebuilt, not incrementally mixed.
         """
         try:
             from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
 
-            if isinstance(store, FaissVectorStore):
-                store._ensure_loaded()
-                meta = store._meta
-                if meta is None:
-                    return True
-                want_model = str(self._cfg.get("embeddings", {}).get("model_name", ""))
-                want_norm = self._normalize()
-                if meta.model_name and meta.model_name != want_model:
-                    return False
-                if meta.normalize != want_norm:
-                    return False
-                want_fp = model_paths.fingerprint_for_cfg(self._cfg) or ""
-                have_fp = str(meta.weights_sha256 or "")
-                if want_fp:
-                    if not have_fp:
-                        # Legacy index built before fingerprints existed:
-                        # its vectors may come from any revision of the
-                        # weights, so incremental mixing is unsafe.
-                        logger.warning("index has no weights fingerprint: full rebuild required")
-                        return False
-                    if have_fp != want_fp:
-                        logger.warning(
-                            "index weights fingerprint mismatch (have=%s want=%s): "
-                            "full rebuild required",
-                            have_fp[:12],
-                            want_fp[:12],
-                        )
-                        return False
-                return True
+            is_faiss = isinstance(store, FaissVectorStore)
         except Exception:
+            # Backend check itself failed: keep the legacy fail-open behaviour.
             return True
+        if not is_faiss:
+            return True
+        try:
+            store._ensure_loaded()
+            meta = store._meta
+        except Exception:
+            # Unreadable store metadata: cannot verify settings -> rebuild.
+            logger.warning("could not read index metadata: refusing incremental update")
+            return False
+        if meta is None:
+            return True
+        want_model = str(self._cfg.get("embeddings", {}).get("model_name", ""))
+        want_norm = self._normalize()
+        if meta.model_name and meta.model_name != want_model:
+            return False
+        if meta.normalize != want_norm:
+            return False
+        try:
+            want_fp = model_paths.fingerprint_for_cfg(self._cfg) or ""
+        except Exception as e:
+            # Weights unreadable: cannot prove the index matches them.
+            logger.warning(
+                "could not compute weights fingerprint (%s): refusing incremental update",
+                e,
+            )
+            return False
+        have_fp = str(meta.weights_sha256 or "")
+        if want_fp:
+            if not have_fp:
+                # Legacy index built before fingerprints existed:
+                # its vectors may come from any revision of the
+                # weights, so incremental mixing is unsafe.
+                logger.warning("index has no weights fingerprint: full rebuild required")
+                return False
+            if have_fp != want_fp:
+                logger.warning(
+                    "index weights fingerprint mismatch (have=%s want=%s): full rebuild required",
+                    have_fp[:12],
+                    want_fp[:12],
+                )
+                return False
         return True
 
     def _ensure_store(self) -> VectorStore:
