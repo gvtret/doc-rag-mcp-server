@@ -15,7 +15,6 @@ _SEMANTIC_CACHE: dict[str, Any] = {
     "index_mtime": None,
     "model_key": None,
     "index": None,
-    "embedder": None,
 }
 _VECTOR_INDEX_CACHE: dict[str, Any] = {"cfg_root": None, "index": None}
 
@@ -510,14 +509,19 @@ def semantic_search(
     try:
         import faiss  # type: ignore
         import numpy as np  # type: ignore
-        import torch  # type: ignore
-        from sentence_transformers import SentenceTransformer  # type: ignore
     except Exception:
         return None
 
+    from doc_rag.raglib.model_loader import load_embedder
+
     device = emb.get("device", "auto")
     if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            import torch  # type: ignore
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
 
     model_key = f"{model_name}|{device}"
     try:
@@ -531,18 +535,20 @@ def semantic_search(
         and _SEMANTIC_CACHE.get("index_mtime") == index_mtime
         and _SEMANTIC_CACHE.get("model_key") == model_key
         and _SEMANTIC_CACHE.get("index") is not None
-        and _SEMANTIC_CACHE.get("embedder") is not None
     ):
         index = _SEMANTIC_CACHE["index"]
-        model = _SEMANTIC_CACHE["embedder"]
+        model = load_embedder(cfg)
+        if model is None:
+            return None
     else:
         index = faiss.read_index(index_path)
-        model = SentenceTransformer(model_name, device=device)
+        model = load_embedder(cfg)
+        if model is None:
+            return None
         _SEMANTIC_CACHE["index_path"] = index_path
         _SEMANTIC_CACHE["index_mtime"] = index_mtime
         _SEMANTIC_CACHE["model_key"] = model_key
         _SEMANTIC_CACHE["index"] = index
-        _SEMANTIC_CACHE["embedder"] = model
 
     vec = model.encode([query], normalize_embeddings=True)
     vec = np.asarray(vec, dtype=np.float32)

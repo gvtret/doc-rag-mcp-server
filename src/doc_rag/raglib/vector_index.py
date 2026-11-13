@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from doc_rag.raglib import model_loader
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -19,34 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def _load_embedder(cfg: dict[str, Any]) -> Any:
-    """Load sentence-transformers embedder (same logic as indexer.py)."""
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        return None
+    """Load the embedder via the shared model_loader (single load site).
 
-    model_name = cfg.get("embeddings", {}).get("model_name", "BAAI/bge-large-en-v1.5")
-    device = cfg.get("embeddings", {}).get("device", "cpu")
-    if device == "auto":
-        try:
-            import torch
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            device = "cpu"
-    try:
-        model = SentenceTransformer(model_name, device=device)
-    except Exception:
-        return None
-    # Cap the sequence length to the configured value (chunks are ~512
-    # tokens; bge-m3 defaults to 8192, which only wastes memory/time).
-    max_seq = cfg.get("embeddings", {}).get("max_seq_length")
-    if max_seq:
-        try:
-            model.max_seq_length = int(max_seq)
-        except Exception:
-            pass
-    return model
+    The name and signature are load-bearing: tests monkeypatch this
+    function by string path, so it must stay module-level here.
+    """
+    return model_loader.load_embedder(cfg)
 
 
 class VectorIndex:

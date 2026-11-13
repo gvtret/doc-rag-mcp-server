@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from doc_rag.raglib import model_loader
+
 
 @dataclass
 class IndexMeta:
@@ -60,12 +62,8 @@ def _try_import_faiss():
 
 
 def _try_import_sentence_transformers():
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-
-        return SentenceTransformer
-    except Exception:
-        return None
+    """Kept for backward compatibility; the loader owns model creation now."""
+    return model_loader.SentenceTransformer
 
 
 def _resolve_device(device: str) -> str:
@@ -94,29 +92,12 @@ def _resolve_device(device: str) -> str:
 
 
 def _load_embedder(cfg: dict[str, Any]):
-    SentenceTransformer = _try_import_sentence_transformers()
-    if SentenceTransformer is None:
-        return None
-    model = cfg.get("embeddings", {}).get("model_name", "")
-    device = _resolve_device(str(cfg.get("embeddings", {}).get("device", "auto")))
-    max_seq = cfg.get("embeddings", {}).get("max_seq_length")
+    """Delegate to the shared loader.
 
-    def _cap(m):
-        if m is not None and max_seq:
-            try:
-                m.max_seq_length = int(max_seq)
-            except Exception:
-                pass
-        return m
-
-    try:
-        return _cap(SentenceTransformer(model, device=device))
-    except Exception:
-        # Fallback: some stacks reject unknown device strings (e.g. 'auto').
-        try:
-            return _cap(SentenceTransformer(model, device="cpu"))
-        except Exception:
-            return None
+    The name and signature are load-bearing: tests monkeypatch this
+    function by string path, so it must stay module-level here.
+    """
+    return model_loader.load_embedder(cfg)
 
 
 def _read_chunks_jsonl(chunks_jsonl_path: Path) -> list[dict[str, Any]]:
