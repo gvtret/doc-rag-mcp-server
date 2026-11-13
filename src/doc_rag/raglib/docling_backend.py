@@ -25,6 +25,7 @@ with an actionable message instead of importing-on-every-call.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -34,6 +35,26 @@ from doc_rag.raglib.blocks import Block
 #: initialised on first `parse_pdf_docling()` call. Initialisation is
 #: expensive (model load) and the converter is reusable across documents.
 _CONVERTER: Any = None
+
+
+class _DropEmptyTextDetectionWarning(logging.Filter):
+    """Silence RapidOCR's benign "text detection result is empty" warning.
+
+    RapidOCR raises this per image/region where its detector finds no text
+    boxes (blank pages, figures, graphic-only areas). doc-rag catches the
+    RapidOCRError and logs it as a WARNING, which spams the ingest log for
+    scanned documents without carrying any actionable signal. Drop exactly
+    that message and keep every other RapidOCR record.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return "text detection result is empty" not in record.getMessage()
+
+
+def _silence_benign_rapidocr_warnings() -> None:
+    lg = logging.getLogger("RapidOCR")
+    if not any(isinstance(f, _DropEmptyTextDetectionWarning) for f in lg.filters):
+        lg.addFilter(_DropEmptyTextDetectionWarning())
 
 
 def _get_converter() -> Any:
@@ -53,6 +74,9 @@ def _get_converter() -> Any:
             "Docling is not installed. Install the optional extra: pip install -e .[docling]"
         ) from e
     _CONVERTER = DocumentConverter()
+    # docling imports rapidocr during conversion; attach the filter now so
+    # the noise never reaches the ingest log.
+    _silence_benign_rapidocr_warnings()
     return _CONVERTER
 
 
@@ -509,6 +533,41 @@ def _parse_pdf_single(path: str) -> tuple[str, list[Block], dict[str, Any]]:
     return text, blocks, stats
 
 
+def _repair_pdf_with_mutool(path: str) -> str | None:
+    """Repair a PDF with a broken xref using `mutool clean`, if available.
+
+    Returns the path to a repaired temporary file, or None if mutool is not
+    installed or the repair failed. The caller is responsible for cleaning up
+    the temporary file (it lives next to the source in the system temp dir).
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    mutool = shutil.which("mutool")
+    if mutool is None:
+        return None
+    fd, out = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            [mutool, "clean", "-gggg", path, out],
+            capture_output=True,
+            timeout=600,
+        )
+        if proc.returncode != 0 or not os.path.getsize(out):
+            os.unlink(out)
+            return None
+        return out
+    except Exception:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        return None
+
+
 def _parse_pdf_chunked(
     path: str, max_pages_per_chunk: int = 100
 ) -> tuple[str, list[Block], dict[str, Any]]:
@@ -521,8 +580,24 @@ def _parse_pdf_chunked(
 
     from pypdf import PdfReader, PdfWriter
 
-    reader = PdfReader(path)
-    total_pages = len(reader.pages)
+    # Some IEC/ISO PDFs ship with a broken/truncated xref table; pypdf then
+    # raises `PdfStreamError: Stream has ended unexpectedly` and every page
+    # is lost. Fall back to a mutool-repaired temporary copy before giving up.
+    try:
+        reader = PdfReader(path)
+        total_pages = len(reader.pages)
+    except Exception as e:
+        repaired = _repair_pdf_with_mutool(path)
+        if repaired is None:
+            raise
+        print(
+            f"[doc-rag][WARN] pypdf could not read '{os.path.basename(path)}' "
+            f"({e}); parsing a mutool-repaired copy",
+            file=os.sys.stderr,
+        )
+        reader = PdfReader(repaired)
+        total_pages = len(reader.pages)
+
     all_text_parts: list[str] = []
     all_blocks: list[Block] = []
     total_ocr_pages = 0

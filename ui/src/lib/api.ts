@@ -225,6 +225,9 @@ export type AllDocumentsResponse = {
     current_doc: string | null;
     docs_done: number;
     docs_total: number | null;
+    phase?: string | null;
+    idx_done?: number;
+    idx_total?: number | null;
   } | null;
   error?: string;
 };

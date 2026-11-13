@@ -138,3 +138,64 @@ def test_status_payload_includes_progress_fields():
     assert payload["docs_total"] == 4
     assert "eta_seconds" in payload
     assert "eta_human" in payload
+
+
+def test_documents_list_exposes_live_progress_during_ingest(tmp_corpus_root):
+    """Regression: /ui/documents must show per-doc progress for `ingest`, not only `rebuild`.
+
+    Before the fix, `_build_documents_list` gated live status on
+    `"rebuild" in job`, so an `ingest` run (job name "ingest") produced no
+    `rebuild_progress` and no per-document `status`, and the UI list never
+    updated while documents were being parsed.
+    """
+    incoming = tmp_corpus_root / "sources" / "incoming"
+    (incoming / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    (incoming / "b.pdf").write_bytes(b"%PDF-1.4\n")
+
+    mcp_http._reset_progress_state()
+    mcp_http._INGEST_STATE["running"] = True
+    mcp_http._INGEST_STATE["job"] = "ingest"
+    mcp_http._INGEST_STATE["docs_total"] = 2
+    mcp_http._INGEST_STATE["docs_done"] = 1
+    mcp_http._INGEST_STATE["current_doc"] = "b.pdf"
+    mcp_http._INGEST_STATE["processed_doc_ids"] = {"a.pdf"}
+
+    out = mcp_http._build_documents_list()
+
+    assert out["rebuild_progress"] is not None
+    assert out["rebuild_progress"]["current_doc"] == "b.pdf"
+    assert out["rebuild_progress"]["docs_done"] == 1
+    assert out["rebuild_progress"]["docs_total"] == 2
+
+    statuses = {d["basename"]: d.get("status") for d in out["pending"]}
+    assert statuses.get("a.pdf") == "processed"
+    assert statuses.get("b.pdf") == "processing"
+
+
+def test_pipeline_progress_hook_sets_phase_and_counts():
+    mcp_http._on_pipeline_progress("embed", 128, 18413)
+    assert mcp_http._INGEST_STATE["phase"] == "embed"
+    assert mcp_http._INGEST_STATE["idx_done"] == 128
+    assert mcp_http._INGEST_STATE["idx_total"] == 18413
+    assert mcp_http._INGEST_STATE["phase_started_at"] is not None
+
+    # switching phase resets the phase clock
+    first_ts = mcp_http._INGEST_STATE["phase_started_at"]
+    mcp_http._on_pipeline_progress("index", 18413, 18413)
+    assert mcp_http._INGEST_STATE["phase"] == "index"
+    assert mcp_http._INGEST_STATE["phase_started_at"] >= first_ts
+
+
+def test_status_payload_reports_index_phase_eta():
+    mcp_http._INGEST_STATE["running"] = True
+    mcp_http._INGEST_STATE["last_started"] = time.time() - 120
+    mcp_http._on_pipeline_progress("embed", 100, 1000)
+    mcp_http._INGEST_STATE["phase_started_at"] = time.time() - 10  # 10s for 100 chunks
+    payload = mcp_http._ui_status_payload()
+    assert payload["phase"] == "embed"
+    assert payload["idx_done"] == 100
+    assert payload["idx_total"] == 1000
+    assert payload["phase_elapsed_s"] is not None
+    # ~10s/100 * 900 remaining ≈ 90s
+    assert payload["idx_eta_s"] is not None and 80 < payload["idx_eta_s"] < 100
+    assert payload["idx_eta_human"]

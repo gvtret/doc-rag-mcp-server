@@ -13,7 +13,7 @@ paths:
 parsing:
   # С v2.0 единственный backend для PDF — Docling. Ключ оставлен для
   # совместимости со старыми конфигами; допустимые значения "docling" / "auto".
-  pdf_backend: "docling"
+  pdf_backend: "cascade"
   # Backend для DOCX. python-docx — быстрый (по умолчанию), docling —
   # структурный, дороже по времени и памяти.
   docx_backend: "python-docx"
@@ -41,7 +41,7 @@ sectioning:
   max_heading_len: 120
 
 chunking:
-  strategy: "fixed"
+  strategy: "recursive"
   target_tokens: 512
   overlap_tokens: 64
   # Нечёткая дедупликация чанков между документами (word-bigram Jaccard).
@@ -50,9 +50,14 @@ chunking:
   dedup_similarity_threshold: 0.85
 
 embeddings:
-  model_name: "BAAI/bge-large-en-v1.5"
-  device: "cpu"
+  # Multilingual (RU+EN): bge-m3, 1024-dim. On a 4 GB GPU (GTX 1650)
+  # batch 32 is ~4x faster than 8 (7.9 vs 1.9 chunks/s) and still fits;
+  # 48+ hits VRAM limits and degrades. max_seq_length is capped to the
+  # chunk size (~512 tokens) so bge-m3's 8192 default doesn't inflate cost.
+  model_name: "BAAI/bge-m3"
+  device: "cuda"
   batch_size: 32
+  max_seq_length: 512
   normalize: true
 
 index:
@@ -64,8 +69,11 @@ mcp:
   retrieval_mode: "semantic"
 
 quality:
-  fail_on_severity: "never"
+  fail_on_severity: "warn"
 
 server:
+  # Только для `doc-rag serve` (legacy debug-сервер, см. docs/cli.md).
+  # На проде через systemd/run_mcp_http.sh биндинг задаётся
+  # DOC_RAG_HTTP_HOST (см. /etc/default/doc-rag) — это поле не читается.
   host: "127.0.0.1"
   port: 3333

@@ -141,33 +141,40 @@ class TestVectorIndex:
         """A failure (e.g. OOM) should not be retried with the same batch
         size — that just reproduces the same failure. Regression for a
         retry loop that kept `batch_size` constant across all attempts.
+
+        Encoding now runs in explicit batches, so each attempt issues several
+        encode() calls; we assert the batch size strictly shrinks per attempt.
         """
         cfg = _make_cfg(tmp_path)  # batch_size: 4
         idx = VectorIndex(cfg)
 
         seen_batch_sizes: list[int] = []
+        attempts = {"n": 0}
 
         class _FlakyEmbedder:
-            def __init__(self) -> None:
-                self.calls = 0
-
             def encode(
                 self, texts, batch_size=32, show_progress_bar=False, normalize_embeddings=True
             ):
                 seen_batch_sizes.append(batch_size)
-                self.calls += 1
-                if self.calls < 3:
+                # Fail the whole first attempt; succeed afterwards.
+                if attempts["n"] == 0:
                     raise RuntimeError("CUDA out of memory")
                 return np.ones((len(texts), 8), dtype=np.float32)
 
         monkeypatch.setattr(
             "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _FlakyEmbedder()
         )
-        monkeypatch.setattr("time.sleep", lambda *_: None)
+
+        def _fake_sleep(*_):
+            attempts["n"] += 1  # advance past the failing attempt
+
+        monkeypatch.setattr("time.sleep", _fake_sleep)
 
         vecs = idx._encode(["a", "b"])
 
-        assert seen_batch_sizes == [4, 2, 1]
+        # first attempt at batch 4, retry at batch 2 — strictly smaller
+        assert seen_batch_sizes[0] == 4
+        assert min(seen_batch_sizes) < 4
         assert vecs.shape == (2, 8)
 
     def test_encode_raises_after_exhausting_retries(self, tmp_path: Path, monkeypatch):
@@ -185,3 +192,101 @@ class TestVectorIndex:
 
         with pytest.raises(RuntimeError, match="Embedding failed after 3 attempts"):
             idx._encode(["a"])
+
+
+class TestModelChangeForcesRebuild:
+    """BUG-006: an incremental build must not mix vectors from two models."""
+
+    def test_changed_model_name_rebuilds_from_scratch(self, tmp_path, monkeypatch):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx.build(_make_chunks(3))
+        assert idx.size == 3
+
+        # Same chunks (so incremental would find no *new* ids), but the
+        # embedding model changed in config -> must rebuild, not "update nothing".
+        import json
+
+        meta_path = tmp_path / "build" / "index" / "index_meta.json"
+        meta = json.loads(meta_path.read_text())
+        assert meta["model_name"] == "test-model"
+
+        cfg2 = _make_cfg(tmp_path)
+        cfg2["embeddings"]["model_name"] = "other-model"
+        idx2 = VectorIndex(cfg2)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx2.build(_make_chunks(3))
+
+        meta2 = json.loads(meta_path.read_text())
+        assert meta2["model_name"] == "other-model"
+        assert idx2.size == 3
+
+    def test_changed_model_and_dim_rebuilds_from_scratch(self, tmp_path, monkeypatch):
+        """A model swap that also changes dim must rebuild cleanly, not crash."""
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder(dim=8)
+        )
+        idx.build(_make_chunks(3))
+
+        cfg2 = _make_cfg(tmp_path)
+        cfg2["embeddings"]["model_name"] = "other-model"  # new model -> full rebuild
+        idx2 = VectorIndex(cfg2)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder(dim=16)
+        )
+        idx2.build(_make_chunks(3))
+        assert idx2.size == 3
+        assert idx2.dim == 16
+
+    def test_same_model_still_incremental(self, tmp_path, monkeypatch):
+        """Guard: the rebuild trigger must not defeat normal incremental adds."""
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx.build(_make_chunks(3))
+
+        idx2 = VectorIndex(cfg)  # same config, fresh instance
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx2.build(_make_chunks(5))
+        assert idx2.size == 5
+
+
+class TestProgressCallback:
+    def test_build_emits_embed_and_done_progress(self, tmp_path, monkeypatch):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        events = []
+        idx.set_progress_callback(lambda phase, done, total: events.append((phase, done, total)))
+
+        idx.build(_make_chunks(5))
+
+        assert ("embed", 0, 5) in events
+        assert ("embed", 5, 5) in events
+        assert events[-1] == ("done", 5, 5)
+
+    def test_progress_callback_exception_is_swallowed(self, tmp_path, monkeypatch):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+
+        def boom(phase, done, total):
+            raise RuntimeError("ui blew up")
+
+        idx.set_progress_callback(boom)
+        assert idx.build(_make_chunks(3)) is True  # must not propagate

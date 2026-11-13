@@ -412,6 +412,12 @@ _INGEST_STATE: dict[str, Any] = {
     "docs_done": 0,
     "docs_total": None,
     "current_doc_started_at": None,
+    # Indexing phase progress (set via the pipeline progress hook):
+    # phase is one of parse|chunk|embed|index|done; idx_* count chunks.
+    "phase": None,
+    "idx_done": 0,
+    "idx_total": None,
+    "phase_started_at": None,
     # Doc_ids processed during the current job (for live /ui/documents updates)
     "processed_doc_ids": set(),
 }
@@ -422,7 +428,23 @@ def _reset_progress_state() -> None:
     _INGEST_STATE["docs_done"] = 0
     _INGEST_STATE["docs_total"] = None
     _INGEST_STATE["current_doc_started_at"] = None
+    _INGEST_STATE["phase"] = None
+    _INGEST_STATE["idx_done"] = 0
+    _INGEST_STATE["idx_total"] = None
+    _INGEST_STATE["phase_started_at"] = None
     _INGEST_STATE["processed_doc_ids"] = set()
+
+
+def _on_pipeline_progress(phase: str, done: int, total: int) -> None:
+    """Progress hook wired into pipeline.set_progress_callback.
+
+    Called from the index-build worker thread during `ingest`/`rebuild`.
+    """
+    if _INGEST_STATE.get("phase") != phase:
+        _INGEST_STATE["phase_started_at"] = time.time()
+    _INGEST_STATE["phase"] = phase
+    _INGEST_STATE["idx_done"] = int(done)
+    _INGEST_STATE["idx_total"] = int(total) if total else None
 
 
 # Markers from pipeline._log lines we use to derive per-doc progress.
@@ -676,7 +698,13 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
     ok = False
     err = None
     try:
-        await asyncio.to_thread(sync_runner)
+        from doc_rag.raglib import pipeline as _pipeline
+
+        _pipeline.set_progress_callback(_on_pipeline_progress)
+        try:
+            await asyncio.to_thread(sync_runner)
+        finally:
+            _pipeline.set_progress_callback(None)
         ok = True
     except Exception as exc:
         ok = False
@@ -1816,6 +1844,20 @@ def _ui_status_payload() -> dict[str, Any]:
     eta_s, eta_h = _compute_eta()
     out["eta_seconds"] = eta_s
     out["eta_human"] = eta_h
+    # Indexing-phase elapsed/ETA (chunk-based, independent of doc count).
+    out["phase_elapsed_s"] = None
+    out["idx_eta_s"] = None
+    out["idx_eta_human"] = None
+    phase_started = _INGEST_STATE.get("phase_started_at")
+    if _INGEST_STATE.get("running") and phase_started:
+        elapsed = max(0.0, time.time() - phase_started)
+        out["phase_elapsed_s"] = elapsed
+        idx_done = int(_INGEST_STATE.get("idx_done") or 0)
+        idx_total = _INGEST_STATE.get("idx_total")
+        if idx_done > 0 and idx_total and idx_done < idx_total:
+            remaining = (elapsed / idx_done) * (idx_total - idx_done)
+            out["idx_eta_s"] = remaining
+            out["idx_eta_human"] = _format_eta_seconds(remaining)
     # Detect interrupted rebuild via lock file.  The lock is written at
     # rebuild start and removed on success.  After a server restart the
     # in-memory state is gone, so on success `_run_index_job_background`
@@ -2010,7 +2052,9 @@ async def ui_documents() -> JSONResponse:
 
 
 def _build_documents_list() -> dict[str, Any]:
-    root = _root_dir()
+    # Honor DOC_RAG_ROOT like the other helpers (it was the only caller
+    # that read _root_dir() directly, so tests and overrides were ignored).
+    root = Path((os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir()))
     cfg_path = _config_path()
     with cfg_path.open(encoding="utf-8") as f:
         import yaml
@@ -2099,7 +2143,16 @@ def _build_documents_list() -> dict[str, Any]:
             )
 
     rebuild_progress = None
-    if _INGEST_STATE.get("running") and "rebuild" in (_INGEST_STATE.get("job") or ""):
+    job = _INGEST_STATE.get("job") or ""
+    # Applies to any job that reports per-document progress, not only
+    # "rebuild*". ingest() also emits "found N file(s)" and ok/skip/failed
+    # lines, so `docs_total`/`processed_doc_ids` are populated for it too —
+    # without this the UI never updated during an ingest run.
+    if _INGEST_STATE.get("running") and (
+        "rebuild" in job
+        or _INGEST_STATE.get("docs_total") is not None
+        or _INGEST_STATE.get("phase") is not None
+    ):
         processed = _INGEST_STATE.get("processed_doc_ids", set())
         current = _INGEST_STATE.get("current_doc")
         rebuild_progress = {
@@ -2107,6 +2160,9 @@ def _build_documents_list() -> dict[str, Any]:
             "docs_done": _INGEST_STATE.get("docs_done", 0),
             "docs_total": _INGEST_STATE.get("docs_total"),
             "processed_basenames": list(processed),
+            "phase": _INGEST_STATE.get("phase"),
+            "idx_done": _INGEST_STATE.get("idx_done", 0),
+            "idx_total": _INGEST_STATE.get("idx_total"),
         }
         for d in indexed_docs:
             bn = d["basename"]

@@ -20,6 +20,38 @@ from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
 # VectorIndex cache for the pipeline
 _VECTOR_INDEX: Any = None
 
+# Optional progress hook for the indexing phase: cb(phase, done, total).
+# The HTTP server sets this to surface "embedding X/N" in the UI.
+_PROGRESS_CB: Any = None
+
+
+def set_progress_callback(cb: Any) -> None:
+    """Register a progress callback used during the index build phase."""
+    global _PROGRESS_CB
+    _PROGRESS_CB = cb
+
+
+def _build_index_with_progress(cfg: dict[str, Any], chunks: list[dict], force: bool) -> None:
+    """Build the vector index with the module progress hook wired in.
+
+    Shared by ingest/rebuild/rebuild-index so the UI always sees the
+    indexing phase (embed X/N) regardless of the entry point.
+    """
+    vi = _get_vector_index(cfg)
+    cb = _PROGRESS_CB
+    if cb is not None and hasattr(vi, "set_progress_callback"):
+        vi.set_progress_callback(cb)
+    try:
+        vi.build(chunks, force=force, log=print)
+    finally:
+        if cb is not None and hasattr(vi, "set_progress_callback"):
+            vi.set_progress_callback(None)
+        if cb is not None:
+            try:
+                cb("done", 0, 0)
+            except Exception:
+                pass
+
 
 def _get_vector_index(cfg: dict[str, Any]) -> Any:
     """Get or create a VectorIndex instance (per-root cache)."""
@@ -693,16 +725,17 @@ def ingest(config_path: str) -> None:
                         )
                     appended_chunks += len(chunks)
 
-                    # Per-file index update
-                    try:
-                        vi = _get_vector_index(cfg)
-                        file_chunk_dicts = [
-                            {"doc_id": doc_id, "chunk_id": f"{doc_id}:{idx}", "text": c}
-                            for idx, c in enumerate(chunks)
-                        ]
-                        vi.build(file_chunk_dicts, force=False, log=print)
-                    except Exception:
-                        pass
+                    # NOTE: intentionally no per-file `vi.build()` here.
+                    # Building the index once per document is O(n^2) work
+                    # (the whole index is rewritten N times) and blew RSS up
+                    # to several GB on a real 60-document corpus. The index
+                    # is built once after all documents are chunked (see the
+                    # "Best-effort semantic index update" block below).
+                    if _PROGRESS_CB is not None:
+                        try:
+                            _PROGRESS_CB("chunk", appended_chunks, None)
+                        except Exception:
+                            pass
 
                     cov = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
                     ed_y = resolve_edition_year(
@@ -759,8 +792,6 @@ def ingest(config_path: str) -> None:
 
     # Best-effort semantic index update. If embeddings are missing, we keep lexical search.
     try:
-        vi = _get_vector_index(cfg)
-        # Load chunks and build/update index
         chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
         if os.path.exists(chunks_path):
             chunks = []
@@ -770,7 +801,7 @@ def ingest(config_path: str) -> None:
                     if line:
                         chunks.append(json.loads(line))
             if chunks:
-                vi.build(chunks, force=False, log=print)
+                _build_index_with_progress(cfg, chunks, force=False)
     except Exception as e:
         _log("WARN", f"index update skipped: {e}")
 
@@ -1106,7 +1137,7 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             if os.path.exists(chunks_path):
                 chunks = _load_existing_chunks(chunks_path)
                 if chunks:
-                    vi.build(chunks, force=True, log=print)
+                    _build_index_with_progress(cfg, chunks, force=True)
             else:
                 _log("INFO", "rebuild: no chunks — index unchanged")
         except Exception as e:
@@ -1144,7 +1175,7 @@ def rebuild_index(config_path: str) -> None:
         chunks = _load_existing_chunks(chunks_path)
         _log("INFO", f"rebuild_index: {len(chunks)} chunks loaded")
         if chunks:
-            vi.build(chunks, force=True, log=print)
+            _build_index_with_progress(cfg, chunks, force=True)
             _log("INFO", f"rebuild_index: done, {vi.size} vectors in index")
         else:
             _log("WARN", "rebuild_index: no chunks found")
@@ -1442,7 +1473,7 @@ def rebuild_docs(
         vi = _get_vector_index(cfg)
         vi.delete(target_ids)
         if all_chunks:
-            vi.build(all_chunks, force=False, log=print)
+            _build_index_with_progress(cfg, all_chunks, force=False)
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 

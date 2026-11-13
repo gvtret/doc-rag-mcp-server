@@ -99,12 +99,22 @@ def _load_embedder(cfg: dict[str, Any]):
         return None
     model = cfg.get("embeddings", {}).get("model_name", "")
     device = _resolve_device(str(cfg.get("embeddings", {}).get("device", "auto")))
+    max_seq = cfg.get("embeddings", {}).get("max_seq_length")
+
+    def _cap(m):
+        if m is not None and max_seq:
+            try:
+                m.max_seq_length = int(max_seq)
+            except Exception:
+                pass
+        return m
+
     try:
-        return SentenceTransformer(model, device=device)
+        return _cap(SentenceTransformer(model, device=device))
     except Exception:
         # Fallback: some stacks reject unknown device strings (e.g. 'auto').
         try:
-            return SentenceTransformer(model, device="cpu")
+            return _cap(SentenceTransformer(model, device="cpu"))
         except Exception:
             return None
 

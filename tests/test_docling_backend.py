@@ -317,3 +317,71 @@ def test_converter_cached_across_calls(monkeypatch):
 
     assert call_count["n"] == 1
     reset_converter_cache()
+
+
+def test_rapidocr_empty_text_warning_filtered():
+    import logging
+
+    from doc_rag.raglib.docling_backend import (
+        _DropEmptyTextDetectionWarning,
+        _silence_benign_rapidocr_warnings,
+    )
+
+    f = _DropEmptyTextDetectionWarning()
+    empty = logging.LogRecord(
+        "RapidOCR", logging.WARNING, "main.py", 132,
+        "The text detection result is empty", None, None,
+    )
+    other = logging.LogRecord(
+        "RapidOCR", logging.WARNING, "main.py", 132, "some other warning", None, None,
+    )
+    assert f.filter(empty) is False
+    assert f.filter(other) is True
+
+    # idempotent attach, and it actually lands on the RapidOCR logger
+    _silence_benign_rapidocr_warnings()
+    _silence_benign_rapidocr_warnings()
+    attached = [x for x in logging.getLogger("RapidOCR").filters
+                if isinstance(x, _DropEmptyTextDetectionWarning)]
+    assert len(attached) == 1
+
+
+def test_repair_pdf_with_mutool_returns_none_without_mutool(monkeypatch):
+    import shutil as _shutil
+
+    from doc_rag.raglib import docling_backend as db
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    assert db._repair_pdf_with_mutool("/nonexistent.pdf") is None
+
+
+def test_repair_pdf_with_mutool_runs_mutool_clean(tmp_path, monkeypatch):
+    from doc_rag.raglib import docling_backend as db
+
+    src = tmp_path / "broken.pdf"
+    src.write_bytes(b"%PDF-1.4\nbroken")
+    captured = {}
+
+    def fake_which(name):
+        return "/usr/bin/mutool" if name == "mutool" else None
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        # emulate mutool writing a repaired output file
+        out = cmd[-1]
+        with open(out, "wb") as fh:
+            fh.write(b"%PDF-1.4\nrepaired")
+        return type("P", (), {"returncode": 0})()
+
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(_shutil, "which", fake_which)
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+
+    out = db._repair_pdf_with_mutool(str(src))
+    assert out is not None
+    assert open(out, "rb").read().endswith(b"repaired")
+    assert captured["cmd"][:3] == ["/usr/bin/mutool", "clean", "-gggg"]
+    import os
+    os.unlink(out)

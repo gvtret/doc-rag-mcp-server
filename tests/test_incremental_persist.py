@@ -275,8 +275,13 @@ def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
 # ── Test 6: ingest incremental per-file index update ───────────────────
 
 
-def test_ingest_per_file_index_update(tmp_path: Path) -> None:
-    """ingest() incremental should update the vector index per-file."""
+def test_ingest_builds_index_once_after_all_documents(tmp_path: Path) -> None:
+    """ingest() must parse/chunk every document first, then build the index once.
+
+    Regression for the old per-file `vi.build()`: it rebuilt the whole index
+    on every document (O(n^2) work, multi-GB RSS growth) and stalled on large
+    PDFs. The index is now built a single time from the complete chunks.jsonl.
+    """
     from doc_rag.raglib.pipeline import ingest
 
     config_path = _make_root(tmp_path)
@@ -286,10 +291,12 @@ def test_ingest_per_file_index_update(tmp_path: Path) -> None:
     _create_txt(incoming / "b.txt", "Document B content. " * 20)
 
     build_calls = []
+    chunks_at_build = []
     original_build = None
 
     def tracking_build(self, chunks, force=False, log=print):
         build_calls.append({"force": force, "chunk_count": len(chunks)})
+        chunks_at_build.append(len(chunks))
         return original_build(self, chunks, force=force, log=log)
 
     from doc_rag.raglib import vector_index
@@ -298,9 +305,16 @@ def test_ingest_per_file_index_update(tmp_path: Path) -> None:
     with patch.object(vector_index.VectorIndex, "build", tracking_build):
         ingest(str(config_path))
 
-    # Should have at least 2 incremental builds (one per file)
-    assert len(build_calls) >= 2, f"Expected >=2 build calls, got {len(build_calls)}"
-    assert all(not c["force"] for c in build_calls), "All builds should be incremental"
+    # Exactly one index build, and it saw chunks from BOTH documents.
+    assert len(build_calls) == 1, f"Expected 1 build call, got {len(build_calls)}"
+    assert chunks_at_build[0] >= 2
+
+    doc_ids = {
+        json.loads(line)["doc_id"]
+        for line in (tmp_path / "build" / "chunks" / "chunks.jsonl").read_text().splitlines()
+        if line.strip()
+    }
+    assert len(doc_ids) == 2
 
 
 def test_ingest_incremental_persists_quality_report(tmp_path: Path) -> None:

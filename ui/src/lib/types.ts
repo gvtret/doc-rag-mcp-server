@@ -48,6 +48,13 @@ export type StatusPayload = {
   current_doc_started_at?: number | null;
   eta_seconds?: number | null;
   eta_human?: string | null;
+  // Indexing-phase progress (chunk-based).
+  phase?: string | null;
+  idx_done?: number;
+  idx_total?: number | null;
+  phase_elapsed_s?: number | null;
+  idx_eta_s?: number | null;
+  idx_eta_human?: string | null;
   // Tail logs.
   log_tail?: string[];
   http_log_tail?: string[];

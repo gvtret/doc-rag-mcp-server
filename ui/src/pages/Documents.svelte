@@ -21,7 +21,44 @@
   let selected = $state<Set<string>>(new Set());
   let busy = $state(false);
   let banner: { tone: "ok" | "err" | "info"; text: string } | null = $state(null);
-  let rebuildProgress = $state<{ current_doc: string | null; docs_done: number; docs_total: number | null } | null>(null);
+  let rebuildProgress = $state<{ current_doc: string | null; docs_done: number; docs_total: number | null; phase?: string | null; idx_done?: number; idx_total?: number | null } | null>(null);
+
+  const statusPhase = $derived(appState.status?.phase ?? null);
+  const phaseElapsed = $derived(appState.status?.phase_elapsed_s ?? null);
+  const idxEtaHuman = $derived(appState.status?.idx_eta_human ?? null);
+  const curPhase = $derived(rebuildProgress?.phase ?? statusPhase);
+  const curIdxDone = $derived(rebuildProgress?.idx_done ?? appState.status?.idx_done ?? 0);
+  const curIdxTotal = $derived(rebuildProgress?.idx_total ?? appState.status?.idx_total ?? null);
+  const inIndexPhase = $derived(!!curIdxTotal && curIdxTotal > 0);
+  const progressPct = $derived(
+    inIndexPhase
+      ? (curIdxDone / (curIdxTotal as number)) * 100
+      : rebuildProgress && rebuildProgress.docs_total
+        ? (rebuildProgress.docs_done / rebuildProgress.docs_total) * 100
+        : 100,
+  );
+
+  const PHASE_LABEL: Record<string, string> = {
+    parse: "Парсинг",
+    chunk: "Чанкинг",
+    embed: "Индексация (эмбеддинги)",
+    index: "Запись в FAISS",
+    done: "Завершение",
+  };
+  function phaseLabel(p?: string | null): string {
+    if (!p) return t("manage.info_running");
+    return PHASE_LABEL[p] ?? p;
+  }
+  function fmtDur(sec: number | null | undefined): string {
+    if (sec == null) return "";
+    const s = Math.max(0, Math.round(sec));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    if (h > 0) return `${h} ч ${String(m).padStart(2, "0")} мин`;
+    if (m > 0) return `${m} мин ${String(ss).padStart(2, "0")} с`;
+    return `${ss} с`;
+  }
 
   async function refresh() {
     try {
@@ -184,20 +221,31 @@
       {/if}
     </div>
 
-    {#if rebuildProgress}
+    {#if rebuildProgress || running}
       <div class="progress-bar">
         <div class="progress-info mono">
-          <span>{t("manage.info_running")} <strong>{rebuildProgress.current_doc ?? "…"}</strong></span>
-          <span>{rebuildProgress.docs_done} / {rebuildProgress.docs_total ?? "?"}</span>
+          <span>{t("manage.info_running")} <strong>{phaseLabel(curPhase)}</strong>
+            {#if !inIndexPhase && rebuildProgress?.current_doc}
+              · {rebuildProgress.current_doc}
+            {/if}
+          </span>
+          <span>
+            {#if inIndexPhase}
+              {curIdxDone} / {curIdxTotal} чанков
+            {:else if rebuildProgress}
+              {rebuildProgress.docs_done} / {rebuildProgress.docs_total ?? "?"} док.
+            {/if}
+            {#if phaseElapsed != null}
+              · прошло {fmtDur(phaseElapsed)}
+            {/if}
+            {#if idxEtaHuman}
+              · осталось ≈ {idxEtaHuman}
+            {/if}
+          </span>
         </div>
-        {#if rebuildProgress.docs_total && rebuildProgress.docs_total > 0}
-          <div class="progress-track">
-            <div
-              class="progress-fill"
-              style="width: {(rebuildProgress.docs_done / rebuildProgress.docs_total * 100).toFixed(1)}%"
-            ></div>
-          </div>
-        {/if}
+        <div class="progress-track">
+          <div class="progress-fill" style="width: {progressPct.toFixed(1)}%"></div>
+        </div>
       </div>
     {/if}
 

@@ -35,9 +35,18 @@ def _load_embedder(cfg: dict[str, Any]) -> Any:
         except ImportError:
             device = "cpu"
     try:
-        return SentenceTransformer(model_name, device=device)
+        model = SentenceTransformer(model_name, device=device)
     except Exception:
         return None
+    # Cap the sequence length to the configured value (chunks are ~512
+    # tokens; bge-m3 defaults to 8192, which only wastes memory/time).
+    max_seq = cfg.get("embeddings", {}).get("max_seq_length")
+    if max_seq:
+        try:
+            model.max_seq_length = int(max_seq)
+        except Exception:
+            pass
+    return model
 
 
 class VectorIndex:
@@ -57,6 +66,21 @@ class VectorIndex:
         self._embedder: Any = None
         self._chunk_ids: list[str] = []
         self._initialized = False
+        # Optional progress callback: cb(phase, done, total). Used by the
+        # UI to show "embedding X/N" instead of an opaque "running".
+        self._progress_cb: Any = None
+
+    def set_progress_callback(self, cb: Any) -> None:
+        """Register cb(phase: str, done: int, total: int) for long operations."""
+        self._progress_cb = cb
+
+    def _emit(self, phase: str, done: int, total: int) -> None:
+        if self._progress_cb is None:
+            return
+        try:
+            self._progress_cb(phase, done, total)
+        except Exception:
+            pass
 
     def _load_existing_ids(self) -> None:
         """Load existing chunk IDs from the store metadata if available."""
@@ -70,6 +94,34 @@ class VectorIndex:
                     self._chunk_ids = list(store._meta.chunk_ids)
         except Exception:
             pass
+
+    def _store_matches_config(self, store: VectorStore) -> bool:
+        """True if the on-disk index was built with the current embed settings.
+
+        Guards the incremental path against mixing vectors from different
+        embedding models / dimensions (BUG-006). Compares against the FAISS
+        backend's `IndexMeta` when available; otherwise falls back to the
+        vector dimension. Returns True when no comparison is possible, so
+        backends without metadata keep the old incremental behaviour.
+        """
+        try:
+            from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
+
+            if isinstance(store, FaissVectorStore):
+                store._ensure_loaded()
+                meta = store._meta
+                if meta is None:
+                    return True
+                want_model = str(self._cfg.get("embeddings", {}).get("model_name", ""))
+                want_norm = self._normalize()
+                if meta.model_name and meta.model_name != want_model:
+                    return False
+                if meta.normalize != want_norm:
+                    return False
+                return True
+        except Exception:
+            return True
+        return True
 
     def _ensure_store(self) -> VectorStore:
         if self._store is None:
@@ -100,15 +152,37 @@ class VectorIndex:
             raise RuntimeError("sentence-transformers not installed")
 
         batch_size = self._batch_size()
+        total = len(texts)
         last_error = None
         for attempt in range(max_retries):
             try:
-                return embedder.encode(
-                    texts,
-                    batch_size=batch_size,
-                    show_progress_bar=False,
-                    normalize_embeddings=self._normalize(),
-                ).astype(np.float32)
+                self._emit("embed", 0, total)
+                # Encode in explicit batches so `encode()` is only called with
+                # arguments every sentence-transformers version accepts
+                # (some versions reject an extra `callback=` kwarg), while
+                # still letting the UI see per-batch progress.
+                parts: list[np.ndarray] = []
+                done = 0
+                bs = batch_size
+                for start in range(0, total, bs):
+                    sl = texts[start : start + bs]
+                    parts.append(
+                        embedder.encode(
+                            sl,
+                            batch_size=bs,
+                            show_progress_bar=False,
+                            normalize_embeddings=self._normalize(),
+                        ).astype(np.float32)
+                    )
+                    done += len(sl)
+                    self._emit("embed", done, total)
+                vecs = (
+                    np.vstack(parts)
+                    if parts
+                    else np.zeros((0, self.dim or 0), dtype=np.float32)
+                )
+                self._emit("embed", total, total)
+                return vecs
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:
@@ -147,7 +221,7 @@ class VectorIndex:
             log("[doc-rag][index] No chunks with chunk_id -> skipping")
             return False
 
-        if not force and store.size > 0:
+        if not force and store.size > 0 and self._store_matches_config(store):
             # Load existing IDs from store metadata if not yet loaded
             if not self._chunk_ids:
                 self._load_existing_ids()
@@ -155,6 +229,7 @@ class VectorIndex:
             new_ids = [cid for cid in all_ids if cid not in existing]
             if not new_ids:
                 log("[doc-rag][index] Index up to date")
+                self._emit("done", store.size, store.size)
                 return True
             log(f"[doc-rag][index] Incremental update: +{len(new_ids)} chunks")
             new_chunks = [c for c in chunks if c.get("chunk_id") in set(new_ids)]
@@ -164,12 +239,18 @@ class VectorIndex:
             self._chunk_ids.extend(new_ids)
             store.save()
             log(f"[doc-rag][index] Updated: total={store.size}")
+            self._emit("done", store.size, store.size)
             return True
+
+        if not force and store.size > 0:
+            log("[doc-rag][index] Embedding settings changed -> forcing full rebuild")
 
         # Full build
         log("[doc-rag][index] Building index from scratch...")
+        self._emit("embed", 0, len(chunks))
         texts = [str(c.get("text", "")) for c in chunks]
         vecs = self._encode(texts)
+        self._emit("index", len(chunks), len(chunks))
         dim = int(vecs.shape[1])
         model_name = str(self._cfg.get("embeddings", {}).get("model_name", ""))
         store.init(dim=dim, model_name=model_name, normalize=self._normalize())
@@ -177,6 +258,7 @@ class VectorIndex:
         self._chunk_ids = list(all_ids)
         store.save()
         log(f"[doc-rag][index] Built: ntotal={store.size} dim={dim}")
+        self._emit("done", store.size, store.size)
         return True
 
     def search(self, query: str, top_k: int = 6) -> tuple[np.ndarray, list[str]]:
