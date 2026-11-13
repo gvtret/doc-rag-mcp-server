@@ -9,7 +9,9 @@ embeddings.model_name is configured, the model is loaded from the HF cache by
 name, also offline (source "hf_cache"), so existing installations keep working.
 
 Behaviour:
-- guarded module-level import: tests monkeypatch
+- guarded module-level import via _import_st(): catches Exception, not
+  just ImportError, so a broken torch/CUDA (OSError at import time)
+  leaves the module importable; tests monkeypatch
   doc_rag.raglib.model_loader.SentenceTransformer;
 - one threading.Lock guards the cache check + load (single-flight):
   concurrent callers with the same (model, device) key share one instance
@@ -28,10 +30,22 @@ from typing import Any
 
 from doc_rag.raglib.model_paths import fingerprint_for_cfg, resolve_model_path
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:  # pragma: no cover - exercised via monkeypatched None in tests
-    SentenceTransformer = None  # type: ignore[assignment,misc]
+
+def _import_st():
+    """Import sentence_transformers, returning None on any failure.
+
+    Exception (not just ImportError): a broken CUDA/torch installation
+    can raise OSError (e.g. missing libcudart.so) at import time, and the
+    module must stay importable so callers degrade to lexical search.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:  # pragma: no cover - covered via _import_st unit test
+        return None
+    return SentenceTransformer
+
+
+SentenceTransformer = _import_st()
 
 _lock = threading.Lock()
 _cache: dict[tuple[str, str], Any] = {}
@@ -48,7 +62,7 @@ _status: dict[str, Any] = dict(_EMPTY_STATUS)
 
 def _resolve_device(cfg: dict[str, Any]) -> str:
     """Normalize embeddings.device; '', 'auto' and 'gpu' pick cuda when available."""
-    dev = str((cfg.get("embeddings") or {}).get("device") or "cpu").strip().lower()
+    dev = str((cfg.get("embeddings") or {}).get("device") or "auto").strip().lower()
     if dev in ("", "auto", "gpu"):
         try:
             import torch
@@ -65,6 +79,8 @@ def load_embedder(cfg: dict[str, Any]) -> Any | None:
 
     Cache key is (model_dir as str, or model_name when no local directory
     exists, device). Failures are not cached: the next call retries.
+    Note: max_seq_length / normalize are not part of the key; changing
+    them in config requires a process restart to take effect.
     """
     device = _resolve_device(cfg)
     model_dir = resolve_model_path(cfg)
@@ -113,9 +129,8 @@ def _build(
         )
         return None
 
-    path = str(model_dir) if model_dir is not None else model_name
+    path = str(model_dir) if model_dir is not None else None
     source = "local" if model_dir is not None else "hf_cache"
-    fingerprint = fingerprint_for_cfg(cfg) if model_dir is not None else None
 
     model = None
     error: str | None = None
@@ -145,12 +160,17 @@ def _build(
             {
                 "ready": False,
                 "path": path,
-                "fingerprint": fingerprint,
+                "fingerprint": None,
                 "error": error or "embedder construction failed",
                 "source": None,
             }
         )
         return None
+
+    # Fingerprint only after a successful load: fingerprint_for_cfg can
+    # hash gigabytes of weights, which must not run on a request path
+    # that fails repeatedly under the loader lock.
+    fingerprint = fingerprint_for_cfg(cfg) if model_dir is not None else None
 
     # Cap the sequence length to the configured value (chunks are ~512
     # tokens; bge-m3 defaults to 8192, which only wastes memory/time).

@@ -159,7 +159,11 @@ def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=
 
     embedder = _load_embedder(cfg)
     if embedder is None:
-        log("[doc-rag][index] sentence-transformers not installed -> semantic search disabled")
+        err = model_loader.status().get("error")
+        if err:
+            log(f"[doc-rag][index] Embedder unavailable ({err}) -> semantic search disabled")
+        else:
+            log("[doc-rag][index] sentence-transformers not installed -> semantic search disabled")
         return False
 
     if force_rebuild:

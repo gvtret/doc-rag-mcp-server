@@ -509,20 +509,23 @@ def semantic_search(
     try:
         import faiss  # type: ignore
         import numpy as np  # type: ignore
+
+        from doc_rag.raglib.model_loader import load_embedder
     except Exception:
         return None
 
-    from doc_rag.raglib.model_loader import load_embedder
+    # The embedder must be available before the index is read from disk:
+    # otherwise a persistently failing load (no embeddings extra, broken
+    # torch, missing model) re-reads the index file on every request.
+    model = load_embedder(cfg)
+    if model is None:
+        return None
 
+    # model_key uses the raw cfg device while the loader resolves
+    # "auto" -> cuda/cpu internally; a switch in auto-detected device
+    # (e.g. cuda becomes available) does not invalidate the cached
+    # index itself, so keeping the raw value here is intentional.
     device = emb.get("device", "auto")
-    if device == "auto":
-        try:
-            import torch  # type: ignore
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            device = "cpu"
-
     model_key = f"{model_name}|{device}"
     try:
         st = os.stat(index_path)
@@ -537,14 +540,8 @@ def semantic_search(
         and _SEMANTIC_CACHE.get("index") is not None
     ):
         index = _SEMANTIC_CACHE["index"]
-        model = load_embedder(cfg)
-        if model is None:
-            return None
     else:
         index = faiss.read_index(index_path)
-        model = load_embedder(cfg)
-        if model is None:
-            return None
         _SEMANTIC_CACHE["index_path"] = index_path
         _SEMANTIC_CACHE["index_mtime"] = index_mtime
         _SEMANTIC_CACHE["model_key"] = model_key
