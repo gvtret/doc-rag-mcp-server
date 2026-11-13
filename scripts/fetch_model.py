@@ -108,8 +108,13 @@ def _remove_stale_cache(snapshot_dir: Path) -> None:
     cache = snapshot_dir / ".cache" / "huggingface"
     if cache.exists():
         shutil.rmtree(cache, ignore_errors=True)
-        # Leave no empty .cache parent behind either.
-        snapshot_dir.joinpath(".cache").rmdir()
+        # Leave no empty .cache parent behind either; a non-empty
+        # .cache (foreign content) must not fail an otherwise valid
+        # download.
+        try:
+            snapshot_dir.joinpath(".cache").rmdir()
+        except OSError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
