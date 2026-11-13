@@ -38,11 +38,7 @@ _SRC = _REPO_ROOT / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from doc_rag.raglib.model_paths import model_fingerprint, weight_files
-
-# Marker files that must exist in the snapshot for it to be usable by
-# sentence-transformers / the doc-rag resolver.
-_REQUIRED_FILES = ("config.json", "modules.json")
+from doc_rag.raglib.model_paths import MODEL_MARKER_FILES, model_fingerprint, weight_files
 
 # Large derived artefacts we never need server-side: ONNX exports and
 # documentation images ship inside the bge-m3 repo but are not weights.
@@ -75,11 +71,9 @@ def download_model(model: str, dest: Path, *, force: bool = False) -> dict[str, 
             local_dir=staging,
             ignore_patterns=_IGNORE_PATTERNS,
         )
-        for name in _REQUIRED_FILES:
+        for name in MODEL_MARKER_FILES:
             if not (staging / name).is_file():
-                raise RuntimeError(
-                    f"incomplete snapshot: missing {name} in {staging}"
-                )
+                raise RuntimeError(f"incomplete snapshot: missing {name} in {staging}")
         # Also writes the WEIGHTS.sha256.meta.json inventory sidecar.
         fingerprint = model_fingerprint(staging)
         if fingerprint is None:
@@ -91,7 +85,14 @@ def download_model(model: str, dest: Path, *, force: bool = False) -> dict[str, 
             if old.exists():
                 shutil.rmtree(old)
             os.replace(dest, old)
-        os.replace(staging, dest)
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            # The swap failed after dest was moved aside: restore the
+            # working model dir so the machine is never left without one.
+            if old.exists() and not dest.exists():
+                os.replace(old, dest)
+            raise
         if old.exists():
             shutil.rmtree(old)
     finally:
@@ -107,19 +108,25 @@ def _remove_stale_cache(snapshot_dir: Path) -> None:
     cache = snapshot_dir / ".cache" / "huggingface"
     if cache.exists():
         shutil.rmtree(cache, ignore_errors=True)
+        # Leave no empty .cache parent behind either.
+        snapshot_dir.joinpath(".cache").rmdir()
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(
-        description="Download the offline embedding model into the repo."
-    )
+    p = argparse.ArgumentParser(description="Download the offline embedding model into the repo.")
     p.add_argument("--model", default=_DEFAULT_MODEL, help=f"HF repo id (default {_DEFAULT_MODEL})")
-    p.add_argument("--dest", default=_DEFAULT_DEST, help=f"destination directory (default {_DEFAULT_DEST})")
-    p.add_argument("--force", action="store_true", help="remove a leftover staging directory before downloading")
+    p.add_argument(
+        "--dest", default=_DEFAULT_DEST, help=f"destination directory (default {_DEFAULT_DEST})"
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="remove a leftover staging directory before downloading",
+    )
     args = p.parse_args(argv)
 
     try:
-        info = download_model(args.model, Path(args.dest))
+        info = download_model(args.model, Path(args.dest), force=args.force)
     except Exception as e:
         print(f"fetch_model: FAILED: {e}", file=sys.stderr)
         return 1

@@ -20,8 +20,10 @@ from pathlib import Path
 from typing import Any
 
 # Marker files that identify a directory as a (sentence-transformers
-# style) embedding model, not just a random folder of weights.
-_MODEL_MARKER_FILES = ("config.json", "modules.json")
+# style) embedding model, not just a random folder of weights. Shared
+# with scripts/fetch_model.py, which validates a freshly downloaded
+# snapshot against the same tuple.
+MODEL_MARKER_FILES = ("config.json", "modules.json")
 
 # Weight file patterns and subdirectories excluded from the fingerprint.
 _WEIGHT_PATTERNS = ("pytorch_model*.bin", "*.safetensors", "*.pt")
@@ -48,7 +50,7 @@ def _default_root() -> Path | None:
 
 
 def _looks_like_model(d: Path) -> bool:
-    return d.is_dir() and all((d / name).is_file() for name in _MODEL_MARKER_FILES)
+    return d.is_dir() and all((d / name).is_file() for name in MODEL_MARKER_FILES)
 
 
 def resolve_model_path(cfg: dict[str, Any], root: str | None = None) -> Path | None:
