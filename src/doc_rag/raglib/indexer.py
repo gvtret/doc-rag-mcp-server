@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from doc_rag.raglib import model_loader
+from doc_rag.raglib import model_loader, model_paths
 
 
 @dataclass
@@ -29,6 +29,7 @@ class IndexMeta:
     normalize: bool
     dim: int
     chunk_ids: list[str]
+    weights_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class IndexMeta:
             "normalize": bool(self.normalize),
             "dim": int(self.dim),
             "chunk_ids": list(self.chunk_ids),
+            "weights_sha256": self.weights_sha256,
         }
 
     @staticmethod
@@ -49,6 +51,7 @@ class IndexMeta:
             normalize=bool(d.get("normalize", True)),
             dim=int(d.get("dim", 0)),
             chunk_ids=[str(x) for x in d.get("chunk_ids", [])],
+            weights_sha256=str(d.get("weights_sha256", "")),
         )
 
 
@@ -149,6 +152,7 @@ def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=
     normalize = bool(cfg.get("embeddings", {}).get("normalize", True))
     model_name = str(cfg.get("embeddings", {}).get("model_name", ""))
     protocol_version = str(cfg.get("pipeline_version", "1"))
+    weights_sha256 = model_paths.fingerprint_for_cfg(cfg) or ""
 
     meta: IndexMeta | None = None
     if meta_file.exists() and not force_rebuild:
@@ -203,6 +207,7 @@ def ensure_faiss_index(cfg: dict[str, Any], *, force_rebuild: bool = False, log=
             normalize=normalize,
             dim=dim,
             chunk_ids=all_chunk_ids,
+            weights_sha256=weights_sha256,
         )
         meta_file.write_text(json.dumps(meta.to_dict(), ensure_ascii=False, indent=2), "utf-8")
         log(f"[doc-rag][index] Built index: ntotal={index.ntotal} dim={dim}")

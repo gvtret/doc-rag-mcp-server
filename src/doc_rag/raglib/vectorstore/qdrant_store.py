@@ -66,6 +66,7 @@ class QdrantVectorStore:
         self._api_key = api_key
         self._client: Any = None
         self._dim: int = 0
+        self._weights_sha256: str = ""
 
     def _ensure_client(self) -> Any:
         if self._client is not None:
@@ -95,10 +96,13 @@ class QdrantVectorStore:
                 "Create it first or set index.qdrant.collection in config."
             )
 
-    def init(self, dim: int, model_name: str, normalize: bool = True) -> None:
+    def init(
+        self, dim: int, model_name: str, normalize: bool = True, weights_sha256: str = ""
+    ) -> None:
         client = self._ensure_client()
         QdrantClient, Distance, _, _, _, _, _, VectorParams = _import_qdrant()  # noqa: F841
         self._dim = dim
+        self._weights_sha256 = weights_sha256
         distance = Distance.COSINE if normalize else Distance.EUCLID
         try:
             client.get_collection(self._collection)

@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from doc_rag.raglib import model_loader
+from doc_rag.raglib import model_loader, model_paths
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -78,10 +78,11 @@ class VectorIndex:
         """True if the on-disk index was built with the current embed settings.
 
         Guards the incremental path against mixing vectors from different
-        embedding models / dimensions (BUG-006). Compares against the FAISS
-        backend's `IndexMeta` when available; otherwise falls back to the
-        vector dimension. Returns True when no comparison is possible, so
-        backends without metadata keep the old incremental behaviour.
+        embedding models / dimensions / weight revisions (BUG-006). Compares
+        against the FAISS backend's `IndexMeta` when available; otherwise
+        falls back to the vector dimension. Returns True when no comparison
+        is possible, so backends without metadata keep the old incremental
+        behaviour.
         """
         try:
             from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
@@ -97,6 +98,23 @@ class VectorIndex:
                     return False
                 if meta.normalize != want_norm:
                     return False
+                want_fp = model_paths.fingerprint_for_cfg(self._cfg) or ""
+                have_fp = str(meta.weights_sha256 or "")
+                if want_fp:
+                    if not have_fp:
+                        # Legacy index built before fingerprints existed:
+                        # its vectors may come from any revision of the
+                        # weights, so incremental mixing is unsafe.
+                        logger.warning("index has no weights fingerprint: full rebuild required")
+                        return False
+                    if have_fp != want_fp:
+                        logger.warning(
+                            "index weights fingerprint mismatch (have=%s want=%s): "
+                            "full rebuild required",
+                            have_fp[:12],
+                            want_fp[:12],
+                        )
+                        return False
                 return True
         except Exception:
             return True
@@ -155,11 +173,7 @@ class VectorIndex:
                     )
                     done += len(sl)
                     self._emit("embed", done, total)
-                vecs = (
-                    np.vstack(parts)
-                    if parts
-                    else np.zeros((0, self.dim or 0), dtype=np.float32)
-                )
+                vecs = np.vstack(parts) if parts else np.zeros((0, self.dim or 0), dtype=np.float32)
                 self._emit("embed", total, total)
                 return vecs
             except Exception as e:
@@ -232,7 +246,13 @@ class VectorIndex:
         self._emit("index", len(chunks), len(chunks))
         dim = int(vecs.shape[1])
         model_name = str(self._cfg.get("embeddings", {}).get("model_name", ""))
-        store.init(dim=dim, model_name=model_name, normalize=self._normalize())
+        weights_sha256 = model_paths.fingerprint_for_cfg(self._cfg) or ""
+        store.init(
+            dim=dim,
+            model_name=model_name,
+            normalize=self._normalize(),
+            weights_sha256=weights_sha256,
+        )
         store.add(vecs, all_ids)
         self._chunk_ids = list(all_ids)
         store.save()

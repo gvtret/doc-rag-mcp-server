@@ -7,6 +7,8 @@ import os
 import re
 from typing import Any
 
+from doc_rag.raglib import model_loader as model_loader
+
 _MANIFEST_CACHE: dict[str, Any] = {"root": None, "mtime": None, "map": None}
 _CFG_CACHE: dict[str, Any] = {"root": None, "mtime": None, "cfg": None}
 _CHUNKS_CACHE: dict[str, Any] = {"path": None, "mtime": None, "chunks": None}
@@ -268,6 +270,28 @@ def indexed_catalog() -> dict[str, Any]:
     lexical_ready = chunks_present and doc_n > 0
     semantic_ready = semantic_index_present and chunks_present and doc_n > 0
 
+    # Weights fingerprint staleness (BUG-006 companion report): read
+    # index_meta.json directly — no expensive manifest parsing on this path.
+    model_status = model_loader.status()
+    model_ready = bool(model_status.get("ready"))
+    model_fp = model_status.get("fingerprint")
+    model_fp_s = str(model_fp) if isinstance(model_fp, str) and model_fp.strip() else None
+
+    index_fp: str | None = None
+    if meta_path and os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta_data = json.load(f)
+            if isinstance(meta_data, dict):
+                raw_fp = meta_data.get("weights_sha256")
+                if isinstance(raw_fp, str) and raw_fp.strip():
+                    index_fp = raw_fp.strip()
+        except Exception:
+            index_fp = None
+
+    index_stale = bool(model_ready and model_fp_s and index_fp and model_fp_s != index_fp)
+    stale_reason = "weights fingerprint mismatch" if index_stale else None
+
     return {
         "manifest_present": manifest_present,
         "manifest_path": manifest_rel,
@@ -280,6 +304,11 @@ def indexed_catalog() -> dict[str, Any]:
         "semantic_index_present": semantic_index_present,
         "lexical_search_ready": lexical_ready,
         "semantic_search_ready": semantic_ready,
+        "model_ready": model_ready,
+        "weights_sha256": index_fp,
+        "index_stale": index_stale,
+        "stale_reason": stale_reason,
+        "model_update_available": False,
     }
 
 

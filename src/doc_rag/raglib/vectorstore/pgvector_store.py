@@ -40,6 +40,7 @@ class PgvectorVectorStore:
         self._dsn = dsn
         self._conn: Any = None
         self._dim: int = 0
+        self._weights_sha256: str = ""
 
     def _ensure_conn(self) -> Any:
         if self._conn is not None and not self._conn.closed:
@@ -64,9 +65,12 @@ class PgvectorVectorStore:
                 if row:
                     self._dim = row[0]
 
-    def init(self, dim: int, model_name: str, normalize: bool = True) -> None:
+    def init(
+        self, dim: int, model_name: str, normalize: bool = True, weights_sha256: str = ""
+    ) -> None:
         conn = self._ensure_conn()
         self._dim = dim
+        self._weights_sha256 = weights_sha256
         with conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {self._table}")
             cur.execute(f"""
