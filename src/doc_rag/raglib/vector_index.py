@@ -81,8 +81,16 @@ class VectorIndex:
             store = self._ensure_store()
             if isinstance(store, FaissVectorStore):
                 store._ensure_loaded()
-                if store._meta and store._meta.chunk_ids:
-                    self._chunk_ids = list(store._meta.chunk_ids)
+                meta = store._meta
+                if meta is not None and meta.chunk_ids:
+                    self._chunk_ids = list(meta.chunk_ids)
+                elif meta is None or not meta.chunk_ids:
+                    # Legacy pre-meta layout (or nothing built yet): WARN,
+                    # ids stay empty, incremental/rebuild proceeds.
+                    logger.warning(
+                        "no readable index metadata for %s: treating existing ids as empty",
+                        getattr(store, "_meta_path", "<unknown>"),
+                    )
         except Exception as e:
             meta_path = getattr(store, "_meta_path", None)
             if meta_path and os.path.exists(meta_path):
@@ -259,17 +267,35 @@ class VectorIndex:
             log("[doc-rag][index] No chunks with chunk_id -> skipping")
             return False
 
-        # Read the store size defensively: a corrupt index_meta.json makes
-        # plain `store.size` raise. That must NOT skip the index update with
-        # a WARN (current pipeline behaviour) -- it must fall through to a
-        # full rebuild, same as any other unverifiable-index condition.
+        # Read the store size defensively for FAISS stores: a corrupt
+        # index_meta.json makes plain `store.size` raise. That must NOT
+        # skip the index update with a WARN (pipeline would log and move
+        # on) -- it must fall through to a full rebuild, same as any other
+        # unverifiable-index condition. Non-FAISS stores keep the direct
+        # call: transient size errors there should surface, not silently
+        # trigger a full re-embed.
+        needs_full_rebuild = False
         try:
-            store_size = store.size
-        except Exception as e:
-            logger.warning("could not read index size (%s): forcing full rebuild", e)
-            store_size = 1  # nonzero -> enter the full-rebuild path below
+            from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
 
-        if not force and store_size > 0 and self._store_matches_config(store):
+            is_faiss = isinstance(store, FaissVectorStore)
+        except Exception:
+            is_faiss = False
+        if is_faiss:
+            try:
+                store_size = store.size
+            except Exception as e:
+                logger.warning("could not read index size (%s): forcing full rebuild", e)
+                needs_full_rebuild = True
+        else:
+            store_size = store.size
+
+        if (
+            not needs_full_rebuild
+            and not force
+            and store_size > 0
+            and self._store_matches_config(store)
+        ):
             # Load existing IDs from store metadata if not yet loaded
             if not self._chunk_ids:
                 self._load_existing_ids()
@@ -290,7 +316,7 @@ class VectorIndex:
             self._emit("done", store.size, store.size)
             return True
 
-        if not force and store_size > 0:
+        if not needs_full_rebuild and not force and store_size > 0:
             log("[doc-rag][index] Embedding settings changed -> forcing full rebuild")
 
         self._run_full_build(chunks, log)

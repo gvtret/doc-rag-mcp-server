@@ -291,9 +291,13 @@ class TestCorruptMetaForcesFullRebuild:
         assert meta2["model_name"] == "test-model"
         assert len(meta2["chunk_ids"]) == 3
 
-    def test_missing_meta_incremental_stays_functional(self, tmp_path, monkeypatch, caplog):
-        """Meta file absent (legacy pre-meta layout): _load_existing_ids
-        treats ids as empty with a WARN, no ERROR, and incremental add works."""
+    def test_missing_meta_full_rebuilds_what_it_knows(self, tmp_path, monkeypatch, caplog):
+        """Meta file absent (legacy pre-meta layout): the store reports no
+        usable state, so build() does a full rebuild over the given chunks
+        without any ERROR (missing meta is not corruption). Note: the
+        _load_existing_ids WARN branch is not reachable through build()
+        here -- the store is empty before _load_existing_ids is called --
+        see TestLoadExistingIdsPolicy for the direct unit tests."""
         cfg = _make_cfg(tmp_path)
         idx = VectorIndex(cfg)
         monkeypatch.setattr(
@@ -314,12 +318,45 @@ class TestCorruptMetaForcesFullRebuild:
                 ]
             )
         assert ok is True
-        # No ERROR (missing meta is not corruption): the ids of the old
-        # vectors are unknowable without meta, so the store reports empty
-        # and build() cleanly rebuilds what it can (legacy behaviour).
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
         meta2 = json.loads((tmp_path / "build" / "index" / "index_meta.json").read_text())
         assert meta2["chunk_ids"] == ["doc3:0"]
+
+
+class TestLoadExistingIdsPolicy:
+    """Direct unit tests for _load_existing_ids' fail-closed policy:
+    meta present-but-unreadable -> ERROR (incompatibility signal); meta
+    absent -> WARN and empty id list (legacy layout stays functional)."""
+
+    def test_corrupt_meta_logs_error(self, tmp_path, caplog):
+        cfg = _make_cfg(tmp_path)
+        index_dir = tmp_path / "build" / "index"
+        index_dir.mkdir(parents=True)
+        (index_dir / "index_meta.json").write_text("{corrupt", encoding="utf-8")
+        # No faiss.index: _ensure_loaded hits the meta parse (needs both
+        # files) only if an index exists; write a stub one so the corrupt
+        # meta is actually parsed and raises.
+        import faiss as _faiss
+
+        _faiss.write_index(_faiss.IndexFlatIP(8), str(index_dir / "faiss.index"))
+
+        idx = VectorIndex(cfg)
+        with caplog.at_level(logging.ERROR, logger="doc_rag.raglib.vector_index"):
+            idx._load_existing_ids()
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, "expected an ERROR about unreadable meta"
+        assert "full rebuild required" in errors[0].getMessage()
+        assert idx._chunk_ids == []  # incompatibility signal: no ids loaded
+
+    def test_missing_meta_warns_and_yields_empty(self, tmp_path, caplog):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)  # no index files written at all
+        with caplog.at_level(logging.WARNING, logger="doc_rag.raglib.vector_index"):
+            idx._load_existing_ids()
+        assert idx._chunk_ids == []
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warns, "expected a WARN about missing meta"
 
 
 class TestProgressCallback:
