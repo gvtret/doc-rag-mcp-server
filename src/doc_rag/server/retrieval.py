@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Shared chunk retrieval (lexical fallback + optional vector store) for MCP HTTP and debug HTTP."""
 
+import collections
 import json
 import os
 import re
@@ -18,7 +19,37 @@ _SEMANTIC_CACHE: dict[str, Any] = {
     "model_key": None,
     "index": None,
 }
-_VECTOR_INDEX_CACHE: dict[str, Any] = {"cfg_root": None, "index": None}
+# VectorIndex instances cached per "{root}:{namespace}". Each entry keeps
+# the mtimes of faiss.index / index_meta.json it was created from so a
+# rebuild on disk is detected without a restart. Ordered dict with LRU
+# eviction: namespace comes from MCP arguments (untrusted), so the cache
+# is capped at 8 entries.
+_VECTOR_INDEX_CACHE_CAP = 8
+_VECTOR_INDEX_CACHE: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+
+
+def invalidate_index_cache() -> None:
+    """Drop every cached VectorIndex (e.g. after an ingest/rebuild job)."""
+    _VECTOR_INDEX_CACHE.clear()
+
+
+def _vector_index_cache_paths(cfg: dict[str, Any], root: str, namespace: str) -> tuple[str, str]:
+    """Resolve (faiss.index, index_meta.json) paths exactly as the store does.
+
+    Mirrors the path computation in raglib.vectorstore.factory for the faiss
+    backend: the default collection lives directly under index_dir, named
+    collections in a per-namespace subdirectory.
+    """
+    paths = cfg.get("paths", {}) or {}
+    index_dir = paths.get("index_dir", "build/index")
+    base = (
+        os.path.join(root, index_dir, namespace)
+        if namespace != "default"
+        else os.path.join(root, index_dir)
+    )
+    return os.path.join(base, "faiss.index"), os.path.join(base, "index_meta.json")
+
+
 _INDEX_META_CACHE: dict[str, Any] = {"path": None, "mtime": None, "fp": None}
 
 
@@ -535,14 +566,34 @@ def semantic_search(
 
         root = str(cfg.get("_root", project_root()))
         cache_key = f"{root}:{namespace}"
-        if _VECTOR_INDEX_CACHE.get("cfg_root") != cache_key:
-            _VECTOR_INDEX_CACHE["cfg_root"] = cache_key
-            _VECTOR_INDEX_CACHE["index"] = None
+        index_path, meta_path = _vector_index_cache_paths(cfg, root, namespace)
 
-        vi = _VECTOR_INDEX_CACHE.get("index")
-        if vi is None:
+        def _mtimes() -> tuple[float | None, float | None]:
+            try:
+                idx_mt: float | None = os.stat(index_path).st_mtime
+            except Exception:
+                idx_mt = None
+            try:
+                meta_mt: float | None = os.stat(meta_path).st_mtime
+            except Exception:
+                meta_mt = None
+            return idx_mt, meta_mt
+
+        entry = _VECTOR_INDEX_CACHE.get(cache_key)
+        idx_mt, meta_mt = _mtimes()
+        if entry is not None and (entry["index_mtime"], entry["meta_mtime"]) != (idx_mt, meta_mt):
+            # Index files changed on disk (rewritten, deleted or appeared):
+            # drop the stale VectorIndex and create a fresh one.
+            entry = None
+        if entry is not None:
+            _VECTOR_INDEX_CACHE.move_to_end(cache_key)
+        if entry is None:
             vi = VectorIndex(cfg, namespace=namespace)
-            _VECTOR_INDEX_CACHE["index"] = vi
+            entry = {"index": vi, "index_mtime": idx_mt, "meta_mtime": meta_mt}
+            _VECTOR_INDEX_CACHE[cache_key] = entry
+            while len(_VECTOR_INDEX_CACHE) > _VECTOR_INDEX_CACHE_CAP:
+                _VECTOR_INDEX_CACHE.popitem(last=False)
+        vi = entry["index"]
 
         if not vi.is_available():
             return None

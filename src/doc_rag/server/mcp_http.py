@@ -712,6 +712,16 @@ async def _run_index_job_background(job: str, sync_runner: Callable[[], None]) -
         for ln in traceback.format_exc().strip().split("\n"):
             if ln.strip():
                 _append_ingest_ui_line(ln.rstrip("\r"), ansi_strip=False)
+    finally:
+        # The index job may have rewritten faiss.index / index_meta.json:
+        # drop cached VectorIndex instances so search sees the fresh index
+        # (belt-and-suspenders alongside the mtime validation in retrieval).
+        try:
+            from doc_rag.server.retrieval import invalidate_index_cache
+
+            invalidate_index_cache()
+        except Exception:
+            pass
 
     async with _INGEST_LOCK:
         _INGEST_STATE["running"] = False

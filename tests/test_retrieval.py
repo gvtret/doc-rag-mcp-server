@@ -218,3 +218,144 @@ def test_legacy_working_embedder_reads_index_once(
         assert out is not None and len(out) == 1
 
     assert reads == [str(index_dir / "faiss.index")]  # read exactly once
+
+
+def _make_vector_cfg(tmp_path) -> dict:
+    """Minimal cfg for the VectorIndex (pluggable-backend) path of
+    semantic_search: faiss backend, stubbed embedder, tmp index dir."""
+    return {
+        "_root": str(tmp_path),
+        "index": {"backend": "faiss", "metric": "ip"},
+        "paths": {"index_dir": "build/index", "chunks_dir": "build/chunks_jsonl"},
+        "embeddings": {"model_name": "stub", "device": "cpu"},
+    }
+
+
+def _write_vector_index(
+    root, texts: list[str], chunk_ids: list[str] | None = None, namespace: str = "default"
+) -> None:
+    """Write faiss.index + index_meta.json directly (bypasses VectorIndex.build
+    and its embedder): each text gets its own deterministic vector."""
+    import faiss as _faiss
+    import numpy as np
+
+    ids = chunk_ids if chunk_ids is not None else [f"d{i}:0" for i in range(len(texts))]
+    index_dir = (
+        root / "build" / "index" / namespace if namespace != "default" else root / "build" / "index"
+    )
+    index_dir.mkdir(parents=True, exist_ok=True)
+    dim = 8
+    vecs = np.linspace(0.1, 0.9, len(texts) * dim, dtype="float32").reshape(len(texts), dim)
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    vecs = vecs / norms
+    index = _faiss.IndexFlatIP(dim)
+    index.add(vecs)
+    _faiss.write_index(index, str(index_dir / "faiss.index"))
+    meta = {
+        "model_name": "stub",
+        "dim": dim,
+        "metric": "ip",
+        "chunk_ids": ids,
+    }
+    (index_dir / "index_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+class _StubQueryEmbedder:
+    """Encode each query as a unit vector along a distinct axis."""
+
+    def __init__(self, dim: int = 8):
+        self._dim = dim
+
+    def encode(self, texts, batch_size=32, show_progress_bar=False, normalize_embeddings=True):
+        import numpy as np
+
+        out = []
+        for t in texts:
+            v = np.zeros((1, self._dim), dtype="float32")
+            v[0, int(t) % self._dim] = 1.0
+            out.append(v)
+        return np.vstack(out)
+
+
+def test_vectorindex_cache_sees_rebuilt_index(tmp_path, monkeypatch) -> None:
+    """After an in-process rebuild overwrites faiss.index + index_meta.json,
+    the cached VectorIndex must be recreated: a search then returns the new
+    chunk ids without a restart (mtime validation, task 3)."""
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    chunks_a = [{"chunk_id": "d0:0", "doc_id": "d0", "text": "old content", "source_file": "a.pdf"}]
+    chunks_b = [{"chunk_id": "d9:0", "doc_id": "d9", "text": "new content", "source_file": "b.pdf"}]
+    cfg = _make_vector_cfg(tmp_path)
+
+    _write_vector_index(tmp_path, ["0"], chunk_ids=["d0:0"])
+    out = semantic_search(cfg, chunks_a, "0", top_k=2)
+    assert out is not None and [c["chunk_id"] for c in out] == ["d0:0"]
+
+    # Simulate the rebuild: rewrite both files with a different index set.
+    import time
+
+    time.sleep(0.02)  # ensure st_mtime strictly increases (ns resolution)
+    old_ids = set(retrieval._VECTOR_INDEX_CACHE)
+    _write_vector_index(tmp_path, ["1"], chunk_ids=["d9:0"])
+
+    out = semantic_search(cfg, chunks_b, "1", top_k=2)
+    assert out is not None and [c["chunk_id"] for c in out] == ["d9:0"]
+    # The stale entry was replaced, not reused.
+    assert set(retrieval._VECTOR_INDEX_CACHE) == old_ids
+
+
+def test_vectorindex_cache_per_namespace_and_invalidation(tmp_path, monkeypatch) -> None:
+    """Entries are keyed by "{root}:{namespace}"; invalidate_index_cache()
+    drops them all; the LRU cap evicts the oldest entry beyond 8."""
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    chunks = [{"chunk_id": "d0:0", "doc_id": "d0", "text": "content", "source_file": "a.pdf"}]
+    cfg = _make_vector_cfg(tmp_path)
+    _write_vector_index(tmp_path, ["0"], namespace="ns1")
+
+    out = semantic_search(cfg, chunks, "0", top_k=2, namespace="ns1")
+    assert out is not None and [c["chunk_id"] for c in out] == ["d0:0"]
+    assert f"{tmp_path}:ns1" in retrieval._VECTOR_INDEX_CACHE
+
+    retrieval.invalidate_index_cache()
+    assert len(retrieval._VECTOR_INDEX_CACHE) == 0
+
+    # LRU cap: fill 9 namespaces, the first must be evicted.
+    for i in range(9):
+        ns = f"ns{i}"
+        _write_vector_index(tmp_path, ["0"], namespace=ns)
+        out = semantic_search(cfg, chunks, "0", top_k=2, namespace=ns)
+        assert out is not None
+    assert len(retrieval._VECTOR_INDEX_CACHE) == 8
+    assert f"{tmp_path}:ns0" not in retrieval._VECTOR_INDEX_CACHE
+    assert f"{tmp_path}:ns8" in retrieval._VECTOR_INDEX_CACHE
+
+
+def test_vectorindex_cache_missing_files_recreated(tmp_path, monkeypatch) -> None:
+    """If index files disappear after caching, the next search recreates the
+    VectorIndex (which then reports unavailable -> None, legacy fallback)."""
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    chunks = [{"chunk_id": "d0:0", "doc_id": "d0", "text": "content", "source_file": "a.pdf"}]
+    cfg = _make_vector_cfg(tmp_path)
+    _write_vector_index(tmp_path, ["0"])
+
+    out = semantic_search(cfg, chunks, "0", top_k=2)
+    assert out is not None
+
+    (tmp_path / "build" / "index" / "faiss.index").unlink()
+    (tmp_path / "build" / "index" / "index_meta.json").unlink()
+    out = semantic_search(cfg, chunks, "0", top_k=2)
+    # Files gone: new VectorIndex finds no index -> falls through to legacy
+    # path, which also finds nothing -> None (no stale results served).
+    assert out is None
