@@ -127,6 +127,68 @@ def test_non_lfs_and_foreign_files_do_not_participate(tmp_path):
     assert model_watcher.state()["update_available"] is False
 
 
+def test_no_participating_remote_weights_is_not_an_update(tmp_path):
+    """All siblings non-LFS: nothing comparable must not look like an update.
+
+    Regression: fingerprint_from_pairs([]) is sha256(""), which can never
+    match the local fingerprint and produced a permanent false
+    "update available" + WARN on every check.
+    """
+    d = _make_local_model(tmp_path)
+    cfg = _check_cfg(d)
+    info = SimpleNamespace(
+        siblings=[
+            _sib("model.safetensors"),  # non-LFS: no cheap hash
+            _sib("weights.pt"),
+        ]
+    )
+
+    assert asyncio.run(model_watcher.check_once(cfg, api=_api(info))) is None
+    st = model_watcher.state()
+    assert st["update_available"] is False
+    assert st["error"] == "no LFS weight files on the Hub"
+    assert st["checked_at"] is not None
+
+
+def test_default_interval_used_when_key_missing(tmp_path):
+    """A missing interval key falls back to the default instead of disabling."""
+    model = tmp_path / "build" / "models" / "bge-m3"
+    model.mkdir(parents=True)
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "modules.json").write_text("[]", encoding="utf-8")
+    (model / "model.safetensors").write_bytes(b"w")
+    cfg = {"_root": str(tmp_path), "embeddings": {"model_name": "BAAI/bge-m3"}}
+
+    assert model_watcher._parse_interval(cfg) == 72.0
+
+
+def test_start_skips_stale_task_from_dead_loop(tmp_path, monkeypatch):
+    """A leftover task from a closed event loop must not block a new start."""
+    cfg = _start_cfg(tmp_path, 72)
+
+    async def fake_check(c):
+        return None
+
+    monkeypatch.setattr(model_watcher, "check_once", fake_check)
+
+    async def first_loop():
+        task = model_watcher.start(cfg)
+        assert task is not None
+        return task
+
+    old_task = asyncio.run(first_loop())
+
+    async def second_loop():
+        task = model_watcher.start(cfg)
+        assert task is not None
+        assert task is not old_task
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(second_loop())
+
+
 def test_hf_error_is_swallowed(tmp_path):
     d = _make_local_model(tmp_path)
     cfg = _check_cfg(d)

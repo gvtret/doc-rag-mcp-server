@@ -26,8 +26,15 @@ from typing import Any
 MODEL_MARKER_FILES = ("config.json", "modules.json")
 
 # Weight file patterns and subdirectories excluded from the fingerprint.
-_WEIGHT_PATTERNS = ("pytorch_model*.bin", "*.safetensors", "*.pt")
-_WEIGHT_EXCLUDED_DIRS = {"onnx", "imgs"}
+# Public: the remote verification side (server/model_watcher.py) must
+# filter Hub siblings with exactly the same inventory as the local
+# fingerprint uses, otherwise the two aggregates are not comparable.
+WEIGHT_PATTERNS = ("pytorch_model*.bin", "*.safetensors", "*.pt")
+WEIGHT_EXCLUDED_DIRS = {"onnx", "imgs"}
+
+# Backwards-compatible aliases (existing private-name users keep working).
+_WEIGHT_PATTERNS = WEIGHT_PATTERNS
+_WEIGHT_EXCLUDED_DIRS = WEIGHT_EXCLUDED_DIRS
 
 _WEIGHTS_SHA256_NAME = "WEIGHTS.sha256"
 
@@ -93,17 +100,33 @@ def resolve_model_path(cfg: dict[str, Any], root: str | None = None) -> Path | N
     return None
 
 
+def is_weight_relpath(rel: str) -> bool:
+    """True when rel is a weight file per the fingerprint inventory rules.
+
+    Shared by weight_files (local side) and server/model_watcher.py
+    (remote side) so both aggregates can never drift apart. Matches
+    pytorch_model*.bin, *.safetensors and *.pt, rejecting anything inside
+    an excluded subdirectory (onnx/, imgs/).
+    """
+    parts = rel.split("/")
+    if any(part in WEIGHT_EXCLUDED_DIRS for part in parts[:-1]):
+        return False
+    name = parts[-1]
+    return any(fnmatch.fnmatch(name, pat) for pat in WEIGHT_PATTERNS)
+
+
 def weight_files(model_dir: Path) -> list[Path]:
     """Weight files inside model_dir, sorted by path relative to model_dir.
 
-    Matches pytorch_model*.bin, *.safetensors and *.pt at any depth,
-    skipping the onnx/ and imgs/ subdirectories.
+    Selection goes through is_weight_relpath so the local fingerprint and
+    the remote Hub comparison use exactly the same inventory.
     """
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(model_dir):
         dirnames[:] = [d for d in dirnames if d not in _WEIGHT_EXCLUDED_DIRS]
         for fn in filenames:
-            if any(fnmatch.fnmatch(fn, pat) for pat in _WEIGHT_PATTERNS):
+            rel = Path(dirpath).relative_to(model_dir).joinpath(fn).as_posix()
+            if is_weight_relpath(rel):
                 out.append(Path(dirpath) / fn)
     return sorted(out, key=lambda p: p.relative_to(model_dir).as_posix())
 

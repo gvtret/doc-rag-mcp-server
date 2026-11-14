@@ -13,9 +13,10 @@ Design constraints:
   extra. This module itself never imports it at module level.
 - Only LFS siblings carry a cheap content hash (lfs.sha256). Non-LFS
   files (e.g. weights shipped as plain *.pt) cannot be hashed without
-  downloading, so they must NOT participate in the comparison —
+  downloading, so they must NOT participate in the comparison --
   otherwise every non-LFS deployment would report a permanent false
-  "update available".
+  "update available". An empty remote LFS set (nothing comparable)
+  is likewise never reported as an update.
 - The loop is a plain asyncio task: check immediately after startup,
   then sleep(interval) between checks. Task cancellation is the only
   stop mechanism (stop()).
@@ -24,29 +25,24 @@ Design constraints:
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import logging
 import time
 from collections.abc import Iterable
 from typing import Any
 
 from doc_rag.raglib.model_paths import (
-    _WEIGHT_EXCLUDED_DIRS,
-    _WEIGHT_PATTERNS,
     fingerprint_from_pairs,
+    is_weight_relpath,
     model_fingerprint,
     resolve_model_path,
 )
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_INTERVAL_HOURS = 72
+# Used when embeddings.update_check_interval_hours is absent from the
+# config; an explicit 0/garbage value still disables the watcher.
+_DEFAULT_INTERVAL_HOURS = 72.0
 _HUB_TIMEOUT_S = 10
-
-# Weight-name filter shared with model_paths: only files that the local
-# fingerprint also counts may take part in the remote comparison.
-_WEIGHT_PATTERNS = tuple(_WEIGHT_PATTERNS)
-_WEIGHT_EXCLUDED_DIRS = set(_WEIGHT_EXCLUDED_DIRS)
 
 _state: dict[str, Any] = {
     "update_available": False,
@@ -69,23 +65,17 @@ def _import_hf_api():
     return HfApi
 
 
-def _is_weight(rel: str) -> bool:
-    """True when relpath matches the local weight patterns and is not
-    inside an excluded subdirectory (mirrors model_paths.weight_files)."""
-    parts = rel.split("/")
-    if any(part in _WEIGHT_EXCLUDED_DIRS for part in parts[:-1]):
-        return False
-    name = parts[-1]
-    return any(fnmatch.fnmatch(name, pat) for pat in _WEIGHT_PATTERNS)
-
-
 def _parse_interval(cfg: dict[str, Any]) -> float:
     """embeddings.update_check_interval_hours as hours, 0.0 when disabled.
 
     Tolerates garbage: unparseable values and negatives disable the
-    watcher instead of raising.
+    watcher instead of raising. A missing key falls back to the default
+    interval; an explicit value always wins.
     """
-    raw = (cfg.get("embeddings") or {}).get("update_check_interval_hours")
+    embed = cfg.get("embeddings") or {}
+    if "update_check_interval_hours" not in embed:
+        return _DEFAULT_INTERVAL_HOURS
+    raw = embed.get("update_check_interval_hours")
     try:
         hours = float(raw)
     except (TypeError, ValueError):
@@ -123,10 +113,21 @@ def _remote_pairs(siblings: Iterable[Any]) -> list[tuple[str, str]]:
         if not rel or lfs is None:
             continue
         sha = getattr(lfs, "sha256", None)
-        if not sha or not _is_weight(str(rel)):
+        if not sha or not is_weight_relpath(str(rel)):
             continue
         pairs.append((str(sha), str(rel)))
     return pairs
+
+
+def _log_check_failure(exc: Exception) -> None:
+    """Record a failed check and log it at INFO.
+
+    A network problem or a missing package is an ordinary condition for a
+    background checker (the brief reserves WARN for a found update); the
+    error string stays visible in state().
+    """
+    _set_state(error=f"{type(exc).__name__}: {exc}")
+    log.info("Сверка весов с HF Hub не выполнена (%s: %s).", type(exc).__name__, exc)
 
 
 async def check_once(cfg: dict[str, Any], *, api: Any | None = None) -> str | None:
@@ -142,19 +143,15 @@ async def check_once(cfg: dict[str, Any], *, api: Any | None = None) -> str | No
     try:
         return await asyncio.to_thread(_check_once_inner, cfg, api)
     except Exception as exc:
-        _set_state(error=f"{type(exc).__name__}: {exc}")
-        log.warning(
-            "Сверка весов с HF Hub не выполнена (%s: %s).",
-            type(exc).__name__,
-            exc,
-        )
+        _log_check_failure(exc)
         return None
 
 
 def _check_once_inner(cfg: dict[str, Any], api: Any | None) -> str | None:
-    hf_api_cls = api if api is not None else _import_hf_api()
-    # Injection may also pass a bare api object; None only means "no hub".
-    if hf_api_cls is None:
+    # ``api`` is either a ready-to-call object (test injection) or None;
+    # in the latter case a lazily imported HfApi class is instantiated.
+    hf = api if api is not None else _import_hf_api()
+    if hf is None:
         _set_state(error="huggingface_hub is not installed")
         return None
 
@@ -173,9 +170,22 @@ def _check_once_inner(cfg: dict[str, Any], api: Any | None) -> str | None:
         return None
 
     if api is None:
-        api = hf_api_cls()
-    info = api.model_info(repo_id, files_metadata=True, timeout=_HUB_TIMEOUT_S)
-    remote_fp = fingerprint_from_pairs(_remote_pairs(getattr(info, "siblings", None)))
+        hf = hf()
+    info = hf.model_info(repo_id, files_metadata=True, timeout=_HUB_TIMEOUT_S)
+    remote_pairs = _remote_pairs(getattr(info, "siblings", None))
+    if not remote_pairs:
+        # Nothing comparable (all siblings non-LFS, e.g. *.pt weights, or
+        # an unexpected repo layout). fingerprint_from_pairs([]) would be
+        # sha256("") and could never match the local aggregate, so this
+        # must NOT be reported as an update.
+        _set_state(checked_at=time.time(), error="no LFS weight files on the Hub")
+        log.info(
+            "На HF Hub для %s нет LFS-файлов весов, сопоставление невозможно.",
+            repo_id,
+        )
+        return None
+
+    remote_fp = fingerprint_from_pairs(remote_pairs)
     _set_state(checked_at=time.time(), error=None)
 
     if remote_fp == local_fp:
@@ -210,10 +220,11 @@ def start(cfg: dict[str, Any]) -> asyncio.Task | None:
     explicit embeddings.model_path is set (the user manages the model
     manually, no Hub repo is implied), the model directory cannot be
     resolved, or huggingface_hub is unavailable. When a task is already
-    running it is returned unchanged (idempotent).
+    running it is returned unchanged (idempotent). A stale task left
+    over from a dead event loop does not block a new one.
     """
     global _task
-    if _task is not None and not _task.done():
+    if _task is not None and not _task.done() and _task.get_loop() is asyncio.get_running_loop():
         return _task
 
     if _parse_interval(cfg) == 0.0:
