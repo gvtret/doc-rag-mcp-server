@@ -178,7 +178,9 @@ def _check_once_inner(cfg: dict[str, Any], api: Any | None) -> str | None:
         # an unexpected repo layout). fingerprint_from_pairs([]) would be
         # sha256("") and could never match the local aggregate, so this
         # must NOT be reported as an update.
-        _set_state(checked_at=time.time(), error="no LFS weight files on the Hub")
+        _set_state(
+            checked_at=time.time(), error="no LFS weight files on the Hub", update_available=False
+        )
         log.info(
             "На HF Hub для %s нет LFS-файлов весов, сопоставление невозможно.",
             repo_id,

@@ -132,10 +132,19 @@ def test_no_participating_remote_weights_is_not_an_update(tmp_path):
 
     Regression: fingerprint_from_pairs([]) is sha256(""), which can never
     match the local fingerprint and produced a permanent false
-    "update available" + WARN on every check.
+    "update available" + WARN on every check. Also covers the stale-flag
+    case: a legitimate True from an earlier mismatch must be reset when
+    the next check finds nothing comparable.
     """
     d = _make_local_model(tmp_path)
     cfg = _check_cfg(d)
+
+    # Step 1: a legitimate mismatch raises the flag.
+    mismatch = SimpleNamespace(siblings=[_sib("model.safetensors", "a" * 64)])
+    assert asyncio.run(model_watcher.check_once(cfg, api=_api(mismatch))) is not None
+    assert model_watcher.state()["update_available"] is True
+
+    # Step 2: an empty remote LFS set resets the flag instead of keeping it.
     info = SimpleNamespace(
         siblings=[
             _sib("model.safetensors"),  # non-LFS: no cheap hash

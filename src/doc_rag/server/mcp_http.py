@@ -1217,7 +1217,7 @@ async def _lifespan(app: FastAPI):
         if task is not None:
             log.info(
                 "Фоновая сверка весов с HF Hub запущена (интервал %s ч).",
-                (cfg.get("embeddings") or {}).get("update_check_interval_hours"),
+                model_watcher._parse_interval(cfg),
             )
     except Exception as exc:  # watcher failures must not prevent serving
         log.warning("Не удалось запустить сверку весов с HF Hub (%s: %s).", type(exc).__name__, exc)
