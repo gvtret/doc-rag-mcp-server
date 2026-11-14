@@ -49,19 +49,25 @@ COPY --chown=docrag:docrag models/ /app/models/
 # Fail fast when the image must embed the model but models/bge-m3 is absent.
 RUN test "$REQUIRE_MODEL" = "0" || test -f /app/models/bge-m3/config.json || (echo "[doc-rag] models/bge-m3 missing: run scripts/fetch_model.py" && exit 1)
 
+# HF_HOME parent must exist and be writable even when the container runs
+# without compose bind mounts (./build is not always mounted).
+RUN mkdir -p /app/build/hf-cache && chown docrag:docrag /app/build /app/build/hf-cache
+
+# Single source of truth for the uv extras set: REQUIRE_MODEL=1 additionally
+# installs the faiss + embeddings extras (otherwise load_embedder returns
+# None and a Docker deploy answers 503). Both uv sync RUNs below read this
+# file so the two blocks cannot drift apart.
+RUN if [ "$REQUIRE_MODEL" = "1" ]; then \
+      printf -- "--extra server --extra faiss --extra embeddings" > /tmp/uv_extras; \
+    else \
+      printf -- "--extra server" > /tmp/uv_extras; \
+    fi
+
 # Copy lock + manifest first so dependency layer caches across code changes.
 COPY pyproject.toml uv.lock /app/
 
 # Reproducible install: --frozen refuses to update the lock.
-# We install the server extra explicitly; faiss/embeddings/metrics stay
-# opt-in for downstream images that need them. Docling is in base deps.
-# With REQUIRE_MODEL=1 the faiss + embeddings extras are mandatory too,
-# otherwise load_embedder returns None and a Docker deploy answers 503.
-RUN if [ "$REQUIRE_MODEL" = "1" ]; then \
-      uv sync --frozen --extra server --extra faiss --extra embeddings --no-install-project; \
-    else \
-      uv sync --frozen --extra server --no-install-project; \
-    fi
+RUN uv sync --frozen $(cat /tmp/uv_extras) --no-install-project
 
 # Copy the rest of the source and install the project itself (editable
 # is fine inside a container — the source tree is immutable at runtime).
@@ -73,11 +79,7 @@ COPY --exclude=models . /app
 # excluded it via .dockerignore on the host.
 COPY --from=ui-builder /ui/dist /app/ui/dist
 
-RUN if [ "$REQUIRE_MODEL" = "1" ]; then \
-      uv sync --frozen --extra server --extra faiss --extra embeddings; \
-    else \
-      uv sync --frozen --extra server; \
-    fi
+RUN uv sync --frozen $(cat /tmp/uv_extras)
 
 # When the image ships the offline model, its deps must really be installed.
 RUN if [ "$REQUIRE_MODEL" = "1" ]; then python -c "import sentence_transformers"; fi
@@ -96,8 +98,9 @@ RUN if [ -f scripts/rapidocr/arch_config.yaml ]; then \
 # UID on the host — see DEPLOY.txt for the pre-create/chown step.
 # models/ is deliberately NOT re-owned here: it was copied with
 # --chown=docrag:docrag in its own layer; chowning it now would copy up
-# the whole 2.3 GB model layer.
-RUN find /app -mindepth 1 -maxdepth 1 -not -name models -exec chown -R docrag:docrag {} +
+# the whole 2.3 GB model layer. The non-recursive chown of /app itself
+# touches only the /app inode, not its contents.
+RUN chown docrag:docrag /app && find /app -mindepth 1 -maxdepth 1 -not -name models -exec chown -R docrag:docrag {} +
 USER docrag
 
 EXPOSE 3333
