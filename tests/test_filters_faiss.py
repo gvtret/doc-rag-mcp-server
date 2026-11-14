@@ -303,3 +303,93 @@ def test_no_filters_keeps_old_behavior(tmp_path, _clean_caches):
     dists, ids, payloads = vi.search_with_filter("0", 1, None, chunk_meta=None)
     assert ids == ["doc-a:0"]
     assert payloads == [{"chunk_id": "doc-a:0"}]
+
+
+# --- review fixes -----------------------------------------------------------
+
+
+def test_l2_index_filter_order_matches_plain_search(tmp_path, _clean_caches):
+    """On an L2 index the filtered scan must rank by L2 distance (lower is
+    better) and return the same distances as the unfiltered store.search:
+    an IP-style descending dot-scan would invert the order (review finding)."""
+    import faiss as _faiss
+
+    cfg = _make_cfg(tmp_path)
+    cfg["index"]["metric"] = "l2"
+    index_dir = tmp_path / "build" / "index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    ids = ["doc-a:0", "doc-a:1", "doc-a:2"]
+    dim = 8
+    # Deliberately NOT normalized: query close to v1, far from v0.
+    vecs = np.array(
+        [[1.0, 0.1, 0, 0, 0, 0, 0, 0], [2.0, 0, 0, 0, 0, 0, 0, 0], [5.0, 0, 0, 0, 0, 0, 0, 0]],
+        dtype="float32",
+    )
+    index = _faiss.IndexFlatL2(dim)
+    index.add(vecs)
+    _faiss.write_index(index, str(index_dir / "faiss.index"))
+    (index_dir / "index_meta.json").write_text(
+        json.dumps({"model_name": "stub", "dim": dim, "metric": "l2", "chunk_ids": ids}),
+        encoding="utf-8",
+    )
+
+    chunks = _chunks_for(ids)
+    vi = VectorIndex(cfg)
+
+    # Plain L2 search ranks by distance ascending: v0 (0.01), v1 (1.0),
+    # v2 (16.0). An IP-style descending dot-scan would return the exact
+    # reverse order (q.v2 = 5 > q.v1 = 2 > q.v0 = 1) -- so this asserts the
+    # metric is actually honored, not just that filtering happens.
+    d_plain, ids_plain = vi.search("0", top_k=3)
+    assert ids_plain == ["doc-a:0", "doc-a:1", "doc-a:2"]
+
+    d_f, ids_f, _p = vi.search_with_filter(
+        "0", 3, {"doc_id": "doc-a"}, chunk_meta=_chunk_meta(chunks)
+    )
+    # Same order as the unfiltered search, and L2 distances (not IP scores).
+    assert ids_f == ids_plain == ["doc-a:0", "doc-a:1", "doc-a:2"]
+    np.testing.assert_allclose(d_f, d_plain, rtol=1e-5)
+    assert d_f[0] <= d_f[1] <= d_f[2]  # ascending distances, lower = better
+
+
+def test_empty_chunk_meta_raises(tmp_path, _clean_caches):
+    """chunk_meta={} is as useless as None: fail loud, not an empty result."""
+    cfg = _make_cfg(tmp_path)
+    _write_index(tmp_path, ["doc-a:0"])
+    vi = VectorIndex(cfg)
+    vi.is_available()
+    with pytest.raises(ValueError, match="filters require chunk metadata"):
+        vi.search_with_filter("0", 3, {"doc_id": "doc-a"}, chunk_meta={})
+
+
+def test_is_table_false_keeps_non_table(tmp_path, _clean_caches):
+    """is_table=False is honored symmetrically: only non-table chunks."""
+    ids = ["doc-a:0", "doc-a:1", "doc-a:2"]  # is_table on position 0 only
+    chunks = _chunks_for(ids)
+    # Make every chunk lexically match the query so the filter alone decides.
+    for c in chunks:
+        c["text"] = f"common needle {c['text']}"
+    out = retrieval.lexical_search(chunks, query="needle", top_k=5, filters={"is_table": False})
+    assert {r["chunk_id"] for r in out} == {"doc-a:1", "doc-a:2"}
+
+    cfg = _make_cfg(tmp_path)
+    _write_index(tmp_path, ids)
+    out = retrieval.semantic_search(cfg, chunks, "0", top_k=10, filters={"is_table": False})
+    assert out is not None
+    assert {r["chunk_id"] for r in out} == {"doc-a:1", "doc-a:2"}
+
+
+def test_unknown_filter_key_raises(tmp_path, _clean_caches):
+    """A typo'd key (e.g. table_only) must fail loud, not filter nothing."""
+    cfg = _make_cfg(tmp_path)
+    _write_index(tmp_path, ["doc-a:0"])
+    vi = VectorIndex(cfg)
+    vi.is_available()
+    with pytest.raises(ValueError, match="unsupported filter keys"):
+        vi.search_with_filter(
+            "0", 3, {"table_only": True}, chunk_meta={"doc-a:0": {"doc_id": "doc-a"}}
+        )
+
+    # Same policy in the lexical path.
+    with pytest.raises(ValueError, match="unsupported filter keys"):
+        retrieval.lexical_search(_chunks_for(["doc-a:0"]), "0", 3, filters={"table_only": True})
