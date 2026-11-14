@@ -1,8 +1,8 @@
 """FAISS vector-store backend.
 
-Wraps the existing FAISS-specific code from indexer.py into the
-VectorStore protocol. Retains full compatibility with the current
-on-disk format (faiss.index + index_meta.json).
+Holds the FAISS-specific code that used to live in raglib/indexer.py,
+behind the VectorStore protocol. Retains full compatibility with the
+current on-disk format (faiss.index + index_meta.json).
 """
 
 from __future__ import annotations

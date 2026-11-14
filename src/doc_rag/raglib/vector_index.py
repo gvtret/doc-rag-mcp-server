@@ -1,6 +1,7 @@
 """High-level vector index — wraps VectorStore + embedder + metadata.
 
-Replaces the raw FAISS calls in indexer.py, retrieval.py, and
+Replaces the raw FAISS calls that used to live in the legacy indexer.py
+(now doc_rag.raglib.vectorstore.faiss_store), retrieval.py, and
 pipeline.py with a backend-agnostic interface that works across
 FAISS, Qdrant, and pgvector.
 """
