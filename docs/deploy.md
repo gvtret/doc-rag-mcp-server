@@ -155,7 +155,7 @@ docker compose up -d --build
 ### Native systemd (rsync, protected)
 
 `scripts/install_server_native.sh` rsyncs the repo into `INSTALL_ROOT`
-with `--filter 'protect models/'` — an upgrade never deletes a model
+with `--filter 'protect models/'` - an upgrade never deletes a model
 already delivered to the server (same protection as `build/` and
 `sources/`). The model is copied separately after the rsync, so a
 partially downloaded snapshot can never clobber a working one:

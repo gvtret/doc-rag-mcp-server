@@ -197,20 +197,32 @@ uv run python scripts/fetch_model.py --model BAAI/bge-m3 --dest models/bge-m3 --
 
 The script downloads the HF snapshot into `<dest>.staging`, validates the
 sentence-transformers marker files, writes the weights fingerprint
-(`WEIGHTS.sha256`), then atomically swaps the directory into place
-(`models/bge-m3`). An existing copy is moved to `<dest>.old` first, so a
-failed download never leaves a half-written model in place. Exit code is
-non-zero on any download or validation failure and the staging directory
-is always removed.
+(`WEIGHTS.sha256`), then atomically swaps the staging directory into
+place at `models/bge-m3`. Only after a successful download does the
+previous copy get set aside (and removed once the swap succeeds), so a
+failed download never touches the working model; on a swap failure the
+old copy is restored. Exit code is non-zero on any download or
+validation failure and the staging directory is always removed.
+`--force` only clears a leftover stuck `.staging` directory before the
+download - it never touches the working copy.
 
-The resolved local directory is `models/<basename(model_name)>` next to
-`config/config.yaml`; point `embeddings.model_path` at it explicitly to
-manage the model manually (this also disables the background HF Hub
-update check, since no Hub repo is implied).
+Where the server looks for the model (in order,
+`doc_rag.raglib.model_paths.resolve_model_path`):
+
+1. `embeddings.model_path` from config (if set and valid);
+2. `<root>/build/models/bge-m3`;
+3. `<root>/models/bge-m3`.
+
+The directory counts as a model only when `config.json` and
+`modules.json` are present inside. `bge-m3` is the shipped layout and
+what `fetch_model.py` produces by default, regardless of
+`embeddings.model_name`; to run a different model, point
+`embeddings.model_path` at its snapshot explicitly (this also disables
+the background HF Hub update check, since no Hub repo is implied).
 
 `update_check_interval_hours` (default `72`, `0` disables) controls the
 read-only background comparison of the local weights against the HF Hub
-— no download, no swap; the result surfaces as
+- no download, no swap; the result surfaces as
 `model_update_available` in `/ui/status` and the Web UI banner.
 
 ### Chunking

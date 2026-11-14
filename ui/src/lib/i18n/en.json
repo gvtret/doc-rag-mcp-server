@@ -52,7 +52,7 @@
   "documents.semantic": "semantic:",
   "documents.active": "active",
   "documents.pipeline": "pipeline",
-  "documents.banner_model_missing": "Embedding model is missing or fails to load — semantic search is unavailable. See troubleshooting.md (offline model: scripts/fetch_model.py).",
+  "documents.banner_model_missing": "Embedding model is missing or fails to load - semantic search is unavailable. See troubleshooting.md (offline model: scripts/fetch_model.py).",
   "documents.banner_index_stale": "Index is stale: model weights changed after the index was built (fingerprint mismatch). Run rebuild to re-embed the corpus.",
   "documents.banner_model_update": "A new model weights revision is available on the HF Hub. The local index keeps working; updating the weights requires a rebuild.",
   "documents.error_read_index": "Failed to read index:",

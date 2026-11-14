@@ -156,7 +156,7 @@ export const CONFIG_SCHEMA: Section[] = [
         label: "Сверка весов с HF Hub (часы)",
         type: "int",
         min: 0,
-        hint: "Периодическая read-only сверка локальных весов с HF Hub (без скачивания); результат — флаг model_update_available. 0 = выключено. Не действует при заданном embeddings.model_path.",
+        hint: "Периодическая read-only сверка локальных весов с HF Hub (без скачивания); результат - флаг model_update_available. 0 = выключено. Не действует при заданном embeddings.model_path.",
       },
     ],
   },

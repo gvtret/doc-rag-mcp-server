@@ -13,6 +13,11 @@
 
   const indexed = $derived(appState.status?.indexed);
   const running = $derived(appState.status?.running ?? false);
+  // lexical mode does not need the embedding model at all; older
+  // backends omit retrieval_mode and are treated as semantic.
+  const semanticExpected = $derived(
+    (appState.health?.retrieval_mode ?? "semantic") !== "lexical",
+  );
 
   let allDocs = $state<AllDocument[]>([]);
   let pendingDocs = $state<AllDocument[]>([]);
@@ -221,7 +226,7 @@
       {/if}
     </div>
 
-    {#if indexed?.model_ready === false}
+    {#if semanticExpected && indexed?.model_ready === false}
       <div class="banner err">{t("documents.banner_model_missing")}</div>
     {/if}
     {#if indexed?.index_stale}

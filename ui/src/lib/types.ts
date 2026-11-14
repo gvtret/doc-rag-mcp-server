@@ -77,6 +77,8 @@ export type HealthReady = {
   job_running: boolean;
   job?: string | null;
   reasons?: string[];
+  // Present since the offline-model work; absent on older backends.
+  retrieval_mode?: string;
 };
 
 export type PageKey = "documents" | "config" | "manage" | "logs" | "docs" | "stats";
