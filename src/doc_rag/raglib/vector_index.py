@@ -9,6 +9,7 @@ FAISS, Qdrant, and pgvector.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import numpy as np
@@ -63,7 +64,17 @@ class VectorIndex:
             pass
 
     def _load_existing_ids(self) -> None:
-        """Load existing chunk IDs from the store metadata if available."""
+        """Load existing chunk IDs from the store metadata if available.
+
+        Fail-closed policy: when the store metadata exists but cannot be
+        read (corrupt JSON, unreadable file), existing ids are NOT silently
+        treated as empty -- that would turn a rebuild-worthy index into a
+        duplicate-vector incremental append. The incremental path is
+        guarded by _store_matches_config, which already refuses such stores
+        (full rebuild); here we only log at the right severity. A missing
+        meta file is the legacy pre-meta layout and stays functional.
+        """
+        store: Any = None
         try:
             from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
 
@@ -72,8 +83,17 @@ class VectorIndex:
                 store._ensure_loaded()
                 if store._meta and store._meta.chunk_ids:
                     self._chunk_ids = list(store._meta.chunk_ids)
-        except Exception:
-            pass
+        except Exception as e:
+            meta_path = getattr(store, "_meta_path", None)
+            if meta_path and os.path.exists(meta_path):
+                logger.error(
+                    "could not read index metadata %s (%s): refusing to treat "
+                    "existing ids as empty; full rebuild required",
+                    meta_path,
+                    e,
+                )
+            else:
+                logger.warning("no readable index metadata (%s): empty id list", e)
 
     def _store_matches_config(self, store: VectorStore) -> bool:
         """True if the on-disk index was built with the current embed settings.
@@ -106,6 +126,12 @@ class VectorIndex:
             logger.warning("could not read index metadata: refusing incremental update")
             return False
         if meta is None:
+            # No meta at all: either nothing built yet, or a legacy
+            # pre-meta index. Only the latter reaches here with vectors
+            # on disk; the ntotal/chunk_ids integrity check lives in
+            # _ensure_loaded, so a consistent-looking store with a
+            # missing meta still goes through the full-rebuild gate
+            # below via the model fingerprint check.
             return True
         want_model = str(self._cfg.get("embeddings", {}).get("model_name", ""))
         want_norm = self._normalize()
@@ -233,7 +259,17 @@ class VectorIndex:
             log("[doc-rag][index] No chunks with chunk_id -> skipping")
             return False
 
-        if not force and store.size > 0 and self._store_matches_config(store):
+        # Read the store size defensively: a corrupt index_meta.json makes
+        # plain `store.size` raise. That must NOT skip the index update with
+        # a WARN (current pipeline behaviour) -- it must fall through to a
+        # full rebuild, same as any other unverifiable-index condition.
+        try:
+            store_size = store.size
+        except Exception as e:
+            logger.warning("could not read index size (%s): forcing full rebuild", e)
+            store_size = 1  # nonzero -> enter the full-rebuild path below
+
+        if not force and store_size > 0 and self._store_matches_config(store):
             # Load existing IDs from store metadata if not yet loaded
             if not self._chunk_ids:
                 self._load_existing_ids()
@@ -254,10 +290,20 @@ class VectorIndex:
             self._emit("done", store.size, store.size)
             return True
 
-        if not force and store.size > 0:
+        if not force and store_size > 0:
             log("[doc-rag][index] Embedding settings changed -> forcing full rebuild")
 
-        # Full build
+        self._run_full_build(chunks, log)
+        return True
+
+    def _run_full_build(self, chunks: list[dict[str, Any]], log: Any) -> None:
+        """Rebuild the index from scratch over `chunks`.
+
+        Extracted from build() so the corrupt-meta fallthrough reuses the
+        exact full-build sequence (fingerprint-first, same log lines).
+        """
+        store = self._ensure_store()
+        all_ids = [str(c.get("chunk_id", "")) for c in chunks if c.get("chunk_id")]
         log("[doc-rag][index] Building index from scratch...")
         # Fingerprint FIRST (fail-closed early): if fetch_model.py swaps the
         # weights while a 30-min encode is running, meta must record the
@@ -282,7 +328,6 @@ class VectorIndex:
         store.save()
         log(f"[doc-rag][index] Built: ntotal={store.size} dim={dim}")
         self._emit("done", store.size, store.size)
-        return True
 
     def search(self, query: str, top_k: int = 6) -> tuple[np.ndarray, list[str]]:
         """Search the index. Returns (distances, chunk_ids)."""

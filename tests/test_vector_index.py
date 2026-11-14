@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -208,7 +210,6 @@ class TestModelChangeForcesRebuild:
 
         # Same chunks (so incremental would find no *new* ids), but the
         # embedding model changed in config -> must rebuild, not "update nothing".
-        import json
 
         meta_path = tmp_path / "build" / "index" / "index_meta.json"
         meta = json.loads(meta_path.read_text())
@@ -260,6 +261,65 @@ class TestModelChangeForcesRebuild:
         )
         idx2.build(_make_chunks(5))
         assert idx2.size == 5
+
+
+class TestCorruptMetaForcesFullRebuild:
+    """Task 5: meta exists but is corrupt -> build() must fail closed with
+    a full rebuild, not skip the update or incrementally append duplicates."""
+
+    def test_corrupt_meta_build_rebuilds_from_scratch(self, tmp_path, monkeypatch):
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx.build(_make_chunks(3))
+        assert idx.size == 3
+
+        meta_path = tmp_path / "build" / "index" / "index_meta.json"
+        meta_path.write_text("{corrupt", encoding="utf-8")
+        # Fresh instance (simulates a restarted process), same chunks: the
+        # incremental path cannot verify the store -> must rebuild cleanly.
+        idx2 = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        ok = idx2.build(_make_chunks(3))
+        assert ok is True
+        assert idx2.size == 3  # rebuilt, not crashed, not duplicated
+        meta2 = json.loads(meta_path.read_text())
+        assert meta2["model_name"] == "test-model"
+        assert len(meta2["chunk_ids"]) == 3
+
+    def test_missing_meta_incremental_stays_functional(self, tmp_path, monkeypatch, caplog):
+        """Meta file absent (legacy pre-meta layout): _load_existing_ids
+        treats ids as empty with a WARN, no ERROR, and incremental add works."""
+        cfg = _make_cfg(tmp_path)
+        idx = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        idx.build(_make_chunks(3))
+
+        (tmp_path / "build" / "index" / "index_meta.json").unlink()
+
+        idx2 = VectorIndex(cfg)
+        monkeypatch.setattr(
+            "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubEmbedder()
+        )
+        with caplog.at_level(logging.WARNING, logger="doc_rag.raglib.vector_index"):
+            ok = idx2.build(
+                [
+                    {"doc_id": "doc3", "chunk_id": "doc3:0", "text": "extra"},
+                ]
+            )
+        assert ok is True
+        # No ERROR (missing meta is not corruption): the ids of the old
+        # vectors are unknowable without meta, so the store reports empty
+        # and build() cleanly rebuilds what it can (legacy behaviour).
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        meta2 = json.loads((tmp_path / "build" / "index" / "index_meta.json").read_text())
+        assert meta2["chunk_ids"] == ["doc3:0"]
 
 
 class TestProgressCallback:

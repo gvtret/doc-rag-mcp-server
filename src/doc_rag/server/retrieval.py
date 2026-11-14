@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import os
 import re
 from typing import Any
 
 from doc_rag.raglib import model_loader as model_loader
+
+logger = logging.getLogger(__name__)
 
 _MANIFEST_CACHE: dict[str, Any] = {"root": None, "mtime": None, "map": None}
 _CFG_CACHE: dict[str, Any] = {"root": None, "mtime": None, "cfg": None}
@@ -617,13 +620,39 @@ def semantic_search(
     except Exception:
         pass
 
-    # Fallback: legacy FAISS path (backward compatibility)
+    # Fallback: legacy FAISS path (backward compatibility). Gate: when an
+    # index_meta.json exists, the legacy positional mapping (index position
+    # -> chunks[i]) is only safe if meta parses AND its chunk_ids length
+    # equals the index ntotal. Corrupt or mismatched meta -> do NOT enter
+    # legacy: return None so doc_search serves lexical results instead of
+    # silently wrong chunks. Meta absent = very old install, legacy allowed
+    # (its only legitimate scenario).
     root = str(cfg.get("_root", project_root()))
     paths = cfg.get("paths", {}) or {}
     index_dir = paths.get("index_dir", "build/index")
     index_path = os.path.join(root, index_dir, "faiss.index")
+    legacy_meta_path = os.path.join(root, index_dir, "index_meta.json")
     if not os.path.exists(index_path):
         return None
+
+    if os.path.exists(legacy_meta_path):
+        try:
+            with open(legacy_meta_path, encoding="utf-8") as f:
+                _legacy_meta = json.load(f)
+            _legacy_ids = _legacy_meta.get("chunk_ids") if isinstance(_legacy_meta, dict) else None
+            if not isinstance(_legacy_ids, list):
+                raise ValueError("index_meta.json has no chunk_ids list")
+        except Exception:
+            logger.warning(
+                "index_meta.json is corrupt (%s): legacy positional search disabled",
+                legacy_meta_path,
+            )
+            return None
+        # ntotal check requires reading the index; defer it to just after the
+        # cached read below (ntotal_mismatch gate before any search).
+        legacy_meta_len: int | None = len(_legacy_ids)
+    else:
+        legacy_meta_len = None  # meta absent: legacy layout, allowed
 
     emb = cfg.get("embeddings", {}) or {}
     model_name = emb.get("model_name")
@@ -670,6 +699,16 @@ def semantic_search(
         _SEMANTIC_CACHE["index_mtime"] = index_mtime
         _SEMANTIC_CACHE["model_key"] = model_key
         _SEMANTIC_CACHE["index"] = index
+
+    if legacy_meta_len is not None and int(index.ntotal) != legacy_meta_len:
+        # Meta/index desync: the position -> chunks[i] mapping is unsafe.
+        logger.warning(
+            "index ntotal=%d != len(index_meta.json chunk_ids)=%d: "
+            "legacy positional search disabled",
+            int(index.ntotal),
+            legacy_meta_len,
+        )
+        return None
 
     vec = model.encode([query], normalize_embeddings=True)
     vec = np.asarray(vec, dtype=np.float32)
