@@ -128,6 +128,51 @@ class TestFaissVectorStore:
         dists, ids = store2.search(np.array([[1, 0, 0, 0]], dtype=np.float32), top_k=2)
         assert len(dists) == 0 and ids == []
 
+    def test_degraded_latch_reads_disk_and_logs_once(self, tmp_path: Path, caplog):
+        """After the integrity check fails, the latch must keep later
+        _ensure_loaded calls from re-reading faiss from disk or re-logging
+        the ERROR: one read, one log, until reset()/init() clear it."""
+        import faiss
+
+        store = self._make_store(tmp_path)
+        store.init(dim=4, model_name="m")
+        store.add(np.eye(4, dtype=np.float32)[:3], ["a", "b", "c"])
+        store.save()
+
+        # Corrupt the pair: index holds 2 vectors, meta lists 3 ids.
+        bad = faiss.IndexFlatIP(4)
+        bad.add(np.eye(4, dtype=np.float32)[:2])
+        faiss.write_index(bad, str(tmp_path / "faiss.index"))
+
+        store2 = self._make_store(tmp_path)
+        reads = []
+        real_read_index = faiss.read_index
+
+        def counting_read_index(path):
+            reads.append(path)
+            return real_read_index(path)
+
+        with caplog.at_level(logging.ERROR):
+            faiss.read_index = counting_read_index
+            try:
+                for _ in range(3):
+                    store2._ensure_loaded()
+            finally:
+                faiss.read_index = real_read_index
+
+        assert len(reads) == 1, "latch must prevent re-reading the index"
+        error_logs = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and "chunk_ids" in r.getMessage()
+        ]
+        assert len(error_logs) == 1, "latch must prevent re-logging the ERROR"
+
+        # reset() clears the latch: a load is attempted again.
+        store2.reset()
+        assert store2._degraded is False
+        assert store2._index is None and store2._meta is None
+
     def test_reset(self, tmp_path: Path):
         store = self._make_store(tmp_path)
         dim = 4

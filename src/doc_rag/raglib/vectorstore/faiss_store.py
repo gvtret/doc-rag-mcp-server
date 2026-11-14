@@ -69,8 +69,14 @@ class FaissVectorStore:
         self._index: Any = None
         self._meta: IndexMeta | None = None
         self._id_to_pos: dict[str, int] = {}
+        # Latch: set when the on-disk index/meta pair failed the integrity
+        # check, so _ensure_loaded does not re-read the files (and re-log
+        # the ERROR) on every request. Cleared by reset() and init().
+        self._degraded: bool = False
 
     def _ensure_loaded(self) -> None:
+        if self._degraded:
+            return
         if self._index is not None:
             return
         try:
@@ -87,7 +93,8 @@ class FaissVectorStore:
             if int(index.ntotal) != len(meta.chunk_ids):
                 # Fail closed (crash window between the index replace and the
                 # meta write in save()): a positional mapping built from this
-                # pair would serve wrong chunks. Degrade instead of serving.
+                # pair would serve wrong chunks. Degrade instead of serving;
+                # the latch keeps later calls from re-reading and re-logging.
                 logger.error(
                     "faiss: index integrity check failed: ntotal=%d != len(chunk_ids)=%d "
                     "for %s -- degrading to unavailable (rebuild the index)",
@@ -98,6 +105,7 @@ class FaissVectorStore:
                 self._index = None
                 self._meta = None
                 self._id_to_pos = {}
+                self._degraded = True
             else:
                 self._index = index
                 self._meta = meta
@@ -140,6 +148,7 @@ class FaissVectorStore:
             weights_sha256=weights_sha256,
         )
         self._id_to_pos = {}
+        self._degraded = False
         logger.info("faiss: initialized empty %s index (dim=%d)", self._metric_type, dim)
 
     def add(self, vectors: np.ndarray, ids: list[str]) -> None:
@@ -236,11 +245,12 @@ class FaissVectorStore:
         #
         # Known window: a crash AFTER os.replace(index) but BEFORE the meta
         # write completes leaves a NEW index with the OLD meta (e.g. ntotal
-        # counts vectors that meta's chunk_ids do not list). The pair is not
-        # guaranteed mutually consistent in that case; detecting and
-        # repairing such drift at load time is out of scope here (tracked
-        # as a separate consistency-check task). A crash before the replace
-        # leaves the old index file completely intact.
+        # counts vectors that meta's chunk_ids do not list). Load time
+        # handles this fail-closed: _ensure_loaded verifies
+        # ntotal == len(chunk_ids) and latches a degraded (unavailable)
+        # state on mismatch, so the desynchronized pair is never served --
+        # a rebuild restores it. A crash before the replace leaves the old
+        # index file completely intact.
         tmp_index_path = self._index_path + ".tmp"
         try:
             faiss.write_index(self._index, tmp_index_path)
@@ -278,6 +288,7 @@ class FaissVectorStore:
         self._index = None
         self._meta = None
         self._id_to_pos = {}
+        self._degraded = False
         for p in (self._index_path, self._meta_path):
             if os.path.exists(p):
                 os.remove(p)

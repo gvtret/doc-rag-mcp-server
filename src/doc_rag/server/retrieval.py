@@ -642,14 +642,16 @@ def semantic_search(
             _legacy_ids = _legacy_meta.get("chunk_ids") if isinstance(_legacy_meta, dict) else None
             if not isinstance(_legacy_ids, list):
                 raise ValueError("index_meta.json has no chunk_ids list")
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "index_meta.json is corrupt (%s): legacy positional search disabled",
+                "index_meta.json unusable (%s): %s: %s -- legacy positional search disabled",
                 legacy_meta_path,
+                type(e).__name__,
+                e,
             )
             return None
-        # ntotal check requires reading the index; defer it to just after the
-        # cached read below (ntotal_mismatch gate before any search).
+        # ntotal check happens below, BEFORE load_embedder: the consistency
+        # gate is cheap and catches degradation without a model load.
         legacy_meta_len: int | None = len(_legacy_ids)
     else:
         legacy_meta_len = None  # meta absent: legacy layout, allowed
@@ -667,17 +669,6 @@ def semantic_search(
     except Exception:
         return None
 
-    # The embedder must be available before the index is read from disk:
-    # otherwise a persistently failing load (no embeddings extra, broken
-    # torch, missing model) re-reads the index file on every request.
-    model = load_embedder(cfg)
-    if model is None:
-        return None
-
-    # model_key uses the raw cfg device while the loader resolves
-    # "auto" -> cuda/cpu internally; a switch in auto-detected device
-    # (e.g. cuda becomes available) does not invalidate the cached
-    # index itself, so keeping the raw value here is intentional.
     device = emb.get("device", "auto")
     model_key = f"{model_name}|{device}"
     try:
@@ -685,6 +676,39 @@ def semantic_search(
         index_mtime = st.st_mtime
     except Exception:
         index_mtime = None
+
+    # Cheap consistency gate BEFORE load_embedder: when meta exists, read
+    # the index now and fail closed on desync without paying for a model
+    # load. (The read result is stored in _SEMANTIC_CACHE as usual; when
+    # the gate passes, the cached index below is reused.)
+    if legacy_meta_len is not None:
+        if (
+            _SEMANTIC_CACHE.get("index_path") == index_path
+            and _SEMANTIC_CACHE.get("index_mtime") == index_mtime
+            and _SEMANTIC_CACHE.get("index") is not None
+        ):
+            index = _SEMANTIC_CACHE["index"]
+        else:
+            index = faiss.read_index(index_path)
+            _SEMANTIC_CACHE["index_path"] = index_path
+            _SEMANTIC_CACHE["index_mtime"] = index_mtime
+            _SEMANTIC_CACHE["index"] = index
+        if int(index.ntotal) != legacy_meta_len:
+            # Meta/index desync: the position -> chunks[i] mapping is unsafe.
+            logger.warning(
+                "index ntotal=%d != len(index_meta.json chunk_ids)=%d: "
+                "legacy positional search disabled",
+                int(index.ntotal),
+                legacy_meta_len,
+            )
+            return None
+
+    # The embedder must be loaded before any search: a persistently
+    # failing load (no embeddings extra, broken torch, missing model)
+    # would otherwise re-read the index file on every request.
+    model = load_embedder(cfg)
+    if model is None:
+        return None
 
     if (
         _SEMANTIC_CACHE.get("index_path") == index_path
@@ -699,16 +723,6 @@ def semantic_search(
         _SEMANTIC_CACHE["index_mtime"] = index_mtime
         _SEMANTIC_CACHE["model_key"] = model_key
         _SEMANTIC_CACHE["index"] = index
-
-    if legacy_meta_len is not None and int(index.ntotal) != legacy_meta_len:
-        # Meta/index desync: the position -> chunks[i] mapping is unsafe.
-        logger.warning(
-            "index ntotal=%d != len(index_meta.json chunk_ids)=%d: "
-            "legacy positional search disabled",
-            int(index.ntotal),
-            legacy_meta_len,
-        )
-        return None
 
     vec = model.encode([query], normalize_embeddings=True)
     vec = np.asarray(vec, dtype=np.float32)
