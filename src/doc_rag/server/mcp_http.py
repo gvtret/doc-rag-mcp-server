@@ -1206,7 +1206,25 @@ async def _lifespan(app: FastAPI):
             type(exc).__name__,
             exc,
         )
+
+    # Background HF Hub weight check (read-only, no download): starts only
+    # when the interval is positive, the model is resolvable locally and
+    # huggingface_hub is installed. Disabled for explicit model_path.
+    from doc_rag.server import model_watcher
+
+    try:
+        task = model_watcher.start(cfg)
+        if task is not None:
+            log.info(
+                "Фоновая сверка весов с HF Hub запущена (интервал %s ч).",
+                (cfg.get("embeddings") or {}).get("update_check_interval_hours"),
+            )
+    except Exception as exc:  # watcher failures must not prevent serving
+        log.warning("Не удалось запустить сверку весов с HF Hub (%s: %s).", type(exc).__name__, exc)
+
     yield
+
+    model_watcher.stop()
 
 
 app = FastAPI(title="doc-rag MCP HTTP", version=_VERSION, lifespan=_lifespan)

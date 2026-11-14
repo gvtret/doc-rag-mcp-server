@@ -336,9 +336,24 @@ def indexed_catalog() -> dict[str, Any]:
         "weights_sha256": index_fp,
         "index_stale": index_stale,
         "stale_reason": stale_reason,
-        # Wired by the HF model watcher (Task 6).
-        "model_update_available": False,
+        # HF Hub weight watcher (Task 6): read-only background check;
+        # False before the first check or when the watcher is disabled.
+        "model_update_available": _watcher_state_flag(),
     }
+
+
+def _watcher_state_flag() -> bool:
+    """model_update_available from the background HF Hub weight check.
+
+    Lazy import so retrieval stays importable without the server package
+    layout assumptions; the watcher itself never imports
+    huggingface_hub at module level, so --minimal installs are safe.
+    """
+    try:
+        from doc_rag.server import model_watcher
+    except Exception:
+        return False
+    return bool(model_watcher.state().get("update_available"))
 
 
 def annotation_from_markdown(md: str, *, max_chars: int = 720) -> tuple[str, str]:

@@ -59,6 +59,14 @@ embeddings:
   batch_size: 32
   max_seq_length: 512
   normalize: true
+  # Periodic read-only comparison of local weights against the HF Hub
+  # (no download, no swap; result surfaces as model_update_available).
+  # 0 disables the check.
+  update_check_interval_hours: 72
+  # Explicit local model directory. When set, the model is managed
+  # manually and the background Hub check is disabled (no Hub repo is
+  # implied). Leave commented to keep the watcher enabled.
+  # model_path: "/path/to/models/bge-m3"
 
 index:
   backend: "faiss"
