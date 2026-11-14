@@ -30,12 +30,30 @@ logger = logging.getLogger(__name__)
 _EXACT_SCAN_LIMIT = 5000
 
 
+def _supported_filter_keys() -> set[str]:
+    return {"doc_id", "doc_ids", "section_path", "is_table"}
+
+
+def _validate_filter_keys(filters: dict[str, Any]) -> None:
+    """Fail loud on unknown filter keys: a typo like table_only would
+    otherwise be silently ignored and the client would receive unfiltered
+    results believing the filter applied."""
+    unknown = set(filters) - _supported_filter_keys()
+    if unknown:
+        raise ValueError(
+            f"unsupported filter keys: {sorted(unknown)}; "
+            f"supported: {sorted(_supported_filter_keys())}"
+        )
+
+
 def _chunk_matches_filters(chunk_id: str, meta: dict[str, Any], filters: dict[str, Any]) -> bool:
     """True if a chunk passes the metadata filters.
 
     Keys: doc_id (str equality), doc_ids (list membership), section_path
-    (prefix match), is_table (bool). doc_id falls back to the chunk_id
-    prefix when the metadata lacks an explicit doc_id.
+    (prefix match), is_table (bool: True -> table chunks only, False ->
+    non-table chunks only). doc_id falls back to the chunk_id prefix when
+    the metadata lacks an explicit doc_id. Unknown keys are rejected by
+    _validate_filter_keys before this runs.
     """
     doc_id = str(meta.get("doc_id", "") or chunk_id.split(":")[0])
     if "doc_id" in filters and doc_id != str(filters["doc_id"]):
@@ -49,8 +67,8 @@ def _chunk_matches_filters(chunk_id: str, meta: dict[str, Any], filters: dict[st
         sec = str(meta.get("section_path", "") or "")
         if not sec.startswith(str(filters["section_path"])):
             return False
-    if "is_table" in filters and filters["is_table"]:
-        if not bool(meta.get("is_table")):
+    if "is_table" in filters:
+        if bool(meta.get("is_table")) != bool(filters["is_table"]):
             return False
     return True
 
@@ -446,7 +464,9 @@ class VectorIndex:
         oversampled search + post-filter above that.
 
         Fail-loud policy: filters given without chunk_meta raise ValueError
-        instead of silently returning unfiltered results. With no filters
+        instead of silently returning unfiltered results; unknown filter
+        keys raise ValueError listing the supported keys. is_table=False
+        is honored symmetrically (non-table chunks only). With no filters
         the old behavior is kept (plain search, synthetic payloads).
         """
         store = self._ensure_store()
@@ -457,10 +477,14 @@ class VectorIndex:
             dists, ids = store.search(vec, top_k)
             return dists, ids, [{"chunk_id": cid} for cid in ids]
 
+        _validate_filter_keys(filters)
+
         if hasattr(store, "search_with_filter"):
             return store.search_with_filter(self._encode([query]), top_k, filters)
 
-        if chunk_meta is None:
+        if not chunk_meta:
+            # None AND {}: both mean "no metadata available" and must not
+            # silently degrade into unfiltered or empty results.
             raise ValueError(
                 "filters require chunk metadata (chunk_meta) on this backend; "
                 "refusing to silently ignore the filters"
@@ -493,22 +517,40 @@ class VectorIndex:
     def _faiss_filtered_search(
         self, store: FaissVectorStore, query: str, top_k: int, allowed_ids: list[str]
     ) -> tuple[np.ndarray, list[str], list[dict[str, Any]]]:
-        """Score the query exactly against the allowed vectors (FAISS).
+        """Score the query against the allowed vectors (FAISS).
 
-        Exact reconstruct + dot scan when the allowed set is small enough;
-        otherwise an oversampled ANN search with post-filtering. Returns
-        exactly min(top_k, len(allowed)) best allowed chunks, best first.
+        Exact metric-aware scan when the allowed set is small enough
+        (<= _EXACT_SCAN_LIMIT): IP -> inner product, higher is better;
+        L2 -> squared euclidean distance, LOWER is better (scores match
+        plain store.search distances, so both orders and magnitudes agree
+        with the unfiltered path). Above the limit an oversampled ANN
+        search with post-filtering runs. Returns at most top_k results:
+        exact min(top_k, len(allowed)) on the exact branch, at most top_k
+        on the oversample branch (an ANN slice may miss allowed chunks).
         """
         vec = self._encode([query])
         positions = store.positions_for(allowed_ids)
         if not positions:
             return np.array([], dtype=np.float32), [], []
+        dim = int(store.dim)
+        if dim <= 0:
+            raise RuntimeError("faiss store has no dimension; cannot scan")
         if len(positions) <= _EXACT_SCAN_LIMIT:
-            sub = np.empty((len(positions), int(store.get_meta().dim)), dtype=np.float32)
+            sub = np.empty((len(positions), dim), dtype=np.float32)
             for i, p in enumerate(positions):
                 sub[i] = store._index.reconstruct(p)
-            scores = sub @ vec[0]
-            order = np.argsort(-scores)[:top_k]
+            metric = str(getattr(store.get_meta(), "metric", "ip") or "ip").lower()
+            if metric == "l2":
+                # Squared L2 distance via |q-v|^2 = |q|^2 + |v|^2 - 2*q.v,
+                # computed in full so the scores EQUAL the distances plain
+                # IndexFlatL2.search returns (same order and magnitudes as
+                # the unfiltered path); lower distance = better.
+                q_sq = float(np.square(vec[0]).sum())
+                scores = np.square(sub).sum(axis=1) - 2.0 * (sub @ vec[0]) + q_sq
+                order = np.argsort(scores)[:top_k]  # lower distance = better
+            else:
+                scores = sub @ vec[0]
+                order = np.argsort(-scores)[:top_k]  # higher IP = better
             ids = [store._meta.chunk_ids[positions[i]] for i in order]
             out_d = np.asarray(scores[order], dtype=np.float32)
             return out_d, ids, [{"chunk_id": cid} for cid in ids]

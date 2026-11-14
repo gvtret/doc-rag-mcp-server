@@ -520,8 +520,9 @@ def chunk_meta_from_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, 
 
 
 def _chunk_passes_filters(chunk: dict[str, Any], filters: dict[str, Any]) -> bool:
-    """True if a chunk dict satisfies the metadata filters (same keys as the
-    vector path: doc_id, doc_ids, section_path prefix, is_table)."""
+    """True if a chunk dict satisfies the metadata filters (same keys and
+    semantics as the vector path: doc_id, doc_ids, section_path prefix,
+    is_table bool — True keeps table chunks, False keeps non-table)."""
     cid = str(chunk.get("chunk_id", ""))
     doc_id = str(chunk.get("doc_id", "") or cid.split(":")[0])
     if "doc_id" in filters and doc_id != str(filters["doc_id"]):
@@ -535,8 +536,8 @@ def _chunk_passes_filters(chunk: dict[str, Any], filters: dict[str, Any]) -> boo
         sec = str(chunk.get("section_path", "") or "")
         if not sec.startswith(str(filters["section_path"])):
             return False
-    if "is_table" in filters and filters["is_table"]:
-        if not bool(chunk.get("is_table")):
+    if "is_table" in filters:
+        if bool(chunk.get("is_table")) != bool(filters["is_table"]):
             return False
     return True
 
@@ -547,10 +548,18 @@ def lexical_search(
     top_k: int,
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Improved lexical search with tokenization, IDF weighting, and phrase matching."""
+    """Improved lexical search with tokenization, IDF weighting, and phrase
+    matching. Filters apply before scoring; unknown filter keys raise
+    ValueError (fail loud, same policy as the vector path)."""
     q = (query or "").strip()
     if not q:
         return []
+
+    # Fail loud on unknown keys: a typo would silently filter nothing.
+    if filters:
+        from doc_rag.raglib.vector_index import _validate_filter_keys
+
+        _validate_filter_keys(filters)
 
     # Metadata pre-filter BEFORE scoring: a filter matching nothing must stay
     # empty, not degrade to unfiltered results.
@@ -789,7 +798,9 @@ def semantic_search(
 
     # Legacy path has no payload store: oversample + post-filter so the
     # filters are enforced here too (before the fix they were silently
-    # dropped and clients got unfiltered results).
+    # dropped and clients got unfiltered results). Returns at most top_k:
+    # an ANN slice of top_k*20 can miss allowed chunks under a narrow
+    # filter (same caveat as the VectorIndex oversample branch).
     oversample = max(1, int(top_k)) * 20 if filters else max(1, int(top_k))
     distances, indices = index.search(vec, oversample)
 
