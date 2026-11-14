@@ -303,6 +303,20 @@ class FaissVectorStore:
                 os.remove(p)
         logger.info("faiss: reset (deleted %s)", self._index_path)
 
+    def positions_for(self, chunk_ids: list[str]) -> list[int]:
+        """Index positions for the given chunk ids (missing ids are skipped).
+
+        Used by VectorIndex.search_with_filter to scan only the vectors that
+        pass a metadata pre-filter.
+        """
+        self._ensure_loaded()
+        out: list[int] = []
+        for cid in chunk_ids:
+            pos = self._id_to_pos.get(cid)
+            if pos is not None:
+                out.append(pos)
+        return out
+
     def reconstruct(self, chunk_id: str) -> np.ndarray | None:
         """Get the raw vector for a chunk ID."""
         self._ensure_loaded()
