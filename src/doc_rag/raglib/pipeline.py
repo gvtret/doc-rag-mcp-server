@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from doc_rag.raglib.atomic import atomic_write_text
 from doc_rag.raglib.audit_log import record_event as _audit
 from doc_rag.raglib.blocks import BLOCKS_SCHEMA_VERSION, Block, dump_blocks
 from doc_rag.raglib.edition_year import resolve_edition_year
@@ -616,12 +617,11 @@ def ingest(config_path: str) -> None:
 
         manifest = _manifest_shell(cfg, manifest_documents)
 
-        with open(chunks_path, "w", encoding="utf-8") as f:
-            for it in all_chunks:
-                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+        atomic_write_text(
+            chunks_path, "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in all_chunks)
+        )
 
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
         _log("INFO", f"written: {os.path.relpath(chunks_path, root)} (chunks={len(all_chunks)})")
         _log(
@@ -778,8 +778,7 @@ def ingest(config_path: str) -> None:
             documents.extend(new_docs)
 
         manifest = _manifest_shell(cfg, documents)
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
         _log(
             "INFO",
@@ -826,17 +825,23 @@ def _load_existing_chunks(chunks_path: str) -> list[dict[str, Any]]:
 
 
 def _write_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
-    with open(chunks_path, "w", encoding="utf-8") as f:
-        for it in chunks:
-            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    lines = "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in chunks)
+    atomic_write_text(chunks_path, lines)
 
 
 def _append_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
-    """Append chunks to chunks.jsonl (create if missing)."""
+    """Append chunks to chunks.jsonl (create if missing).
+
+    Not atomic by design (append is the crash-recovery mechanism; an
+    os.replace per call would be O(n^2)); flushed and fsync'ed instead
+    so records already written survive a crash mid-append.
+    """
     ensure_dir(os.path.dirname(chunks_path))
     with open(chunks_path, "a", encoding="utf-8") as f:
         for it in chunks:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) -> None:
@@ -1034,8 +1039,9 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             # and crash recovery is possible
             _kept = [d for d in existing_by_hash.values() if d.get("sha256") in to_skip_hashes]
             _inc_manifest = _manifest_shell(cfg, _kept + new_docs)
-            with open(manifest_path, "w", encoding="utf-8") as _mf:
-                json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
+            atomic_write_text(
+                manifest_path, json.dumps(_inc_manifest, ensure_ascii=False, indent=2)
+            )
 
             elapsed = time.time() - t_file
             _log(
@@ -1103,8 +1109,7 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
 
     # Phase 4: Write manifest
     manifest = _manifest_shell(cfg, all_docs)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
     _log("INFO", f"written: {os.path.relpath(chunks_path, root)} (chunks={len(all_chunks)})")
     _log(
@@ -1380,8 +1385,9 @@ def rebuild_docs(
                 if isinstance(d, dict) and d.get("doc_id") not in target_ids
             ]
             _inc_manifest = _manifest_shell(cfg, _kept + new_docs)
-            with open(manifest_path, "w", encoding="utf-8") as _mf:
-                json.dump(_inc_manifest, _mf, ensure_ascii=False, indent=2)
+            atomic_write_text(
+                manifest_path, json.dumps(_inc_manifest, ensure_ascii=False, indent=2)
+            )
 
             new_chunks.extend(file_chunks)
             elapsed = time.time() - t_file
@@ -1458,8 +1464,7 @@ def rebuild_docs(
         _write_chunks(chunks_path, all_chunks)
 
     manifest = _manifest_shell(cfg, all_docs)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
     _log("INFO", f"written: chunks={len(all_chunks)}, docs={len(all_docs)}")
 
@@ -1612,8 +1617,7 @@ def delete_documents(config_path: str, doc_ids: list[str]) -> dict[str, Any]:
     manifest["generated_at_utc"] = _utc_now_iso()
     manifest["corpus_content_sha256"] = compute_corpus_fingerprint(to_keep)
     manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
     deleted_names = [
         os.path.basename(d.get("source_file") or d.get("doc_id") or "") for d in to_delete

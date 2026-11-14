@@ -15,6 +15,8 @@ from typing import Any
 
 import numpy as np
 
+from doc_rag.raglib.atomic import atomic_write_text, fsync_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -204,10 +206,18 @@ class FaissVectorStore:
             return
         import faiss
 
-        os.makedirs(os.path.dirname(self._index_path) or ".", exist_ok=True)
-        faiss.write_index(self._index, self._index_path)
-        with open(self._meta_path, "w", encoding="utf-8") as f:
-            json.dump(self._meta.to_dict(), f, indent=2)
+        index_dir = os.path.dirname(self._index_path) or "."
+        os.makedirs(index_dir, exist_ok=True)
+        # Atomic sequence: write the index to a temp file in the same
+        # directory, rename over the target, then persist meta. A crash
+        # at any point leaves the previous faiss.index + index_meta.json
+        # pair intact and mutually consistent.
+        tmp_index_path = self._index_path + ".tmp"
+        faiss.write_index(self._index, tmp_index_path)
+        os.replace(tmp_index_path, self._index_path)
+        meta_json = json.dumps(self._meta.to_dict(), indent=2)
+        atomic_write_text(self._meta_path, meta_json)
+        fsync_dir(index_dir)
         logger.info("faiss: saved %d vectors to %s", self._index.ntotal, self._index_path)
 
     @property
