@@ -32,14 +32,14 @@ git archive --format=tar HEAD | tar -x -C "${staging}"
 
 # Offline embedding model (models/ is gitignored, so git archive skips it):
 # copy it into the staging tree when present; otherwise the archive still
-# builds — the operator fetches the model on the target via fetch_model.py.
-if [[ -f "${ROOT}/models/bge-m3/config.json" ]]; then
+# builds -- the operator fetches the model on the target via fetch_model.py.
+if [[ -f "${ROOT}/models/bge-m3/config.json" && -f "${ROOT}/models/bge-m3/modules.json" ]]; then
   mkdir -p "${staging}/models"
   cp -a "${ROOT}/models/." "${staging}/models/"
   echo "[doc-rag] offline model included: models/bge-m3"
 else
-  echo "[doc-rag] WARNING: models/bge-m3 not found — archive ships WITHOUT the embedding model." >&2
-  echo "[doc-rag] WARNING: after deploy, fetch it with: python3 scripts/fetch_model.py" >&2
+  echo "[doc-rag] WARNING: models/bge-m3 not found -- archive ships WITHOUT the embedding model." >&2
+  echo "[doc-rag] WARNING: fetch it BEFORE the docker build with: uv run python scripts/fetch_model.py" >&2
 fi
 
 mkdir -p "${staging}/build" "${staging}/sources/incoming" "${staging}/sources/archived"
@@ -54,6 +54,13 @@ fi
 cat > "${staging}/DEPLOY.txt" <<'EOF'
 Развёртывание на сервере (Docker):
 
+  0) Проверьте наличие оффлайн-модели (embeddings): models/bge-m3/config.json
+     и models/bge-m3/modules.json должны существовать.
+     Если их нет -- docker compose build упадёт (REQUIRE_MODEL=1). Скачайте
+     модель заранее или на целевой машине (нужен uv, см. шаг 2 на всякий
+     случай; venv создаётся им):
+       uv run python scripts/fetch_model.py
+     (или явно: uv venv && uv sync --extra server && .venv/bin/python scripts/fetch_model.py)
   1) tar xzf doc-rag-deploy-*.tar.gz && cd doc-rag
   2) cp .env.example .env
   3) Отредактируйте .env (порты, DOC_RAG_ALLOWED_ORIGINS).
@@ -64,12 +71,6 @@ cat > "${staging}/DEPLOY.txt" <<'EOF'
 
 Проверка: curl -sS http://127.0.0.1:3333/health
 Индексация в контейнере: docker compose exec doc-rag-mcp doc-rag ingest
-
-Оффлайн-модель (embeddings):
-
-  Проверьте наличие модели: models/bge-m3/config.json должен существовать.
-  Если файла нет — скачайте модель заранее или на целевой машине:
-    python3 scripts/fetch_model.py
 
 ---
 

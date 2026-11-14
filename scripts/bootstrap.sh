@@ -122,16 +122,26 @@ fi
 
 # --- Offline embedding model ---------------------------------------------------
 # The model is gitignored and may be absent (fresh clone, air-gapped install).
-# Try to fetch it once; failure is non-fatal so air-gapped installs still
-# bootstrap (semantics will fail later until the model is provided manually).
-if [[ ! -f "${ROOT}/models/bge-m3/config.json" ]]; then
-  echo "[doc-rag] offline model models/bge-m3 not found — fetching via scripts/fetch_model.py…"
+# Only fetched when the embeddings stack was selected above (a --minimal or
+# embeddings=N install never downloads ~2 GB); DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N
+# overrides the choice explicitly. Failure is non-fatal so air-gapped installs
+# still bootstrap (semantics will fail later until the model is provided).
+MODEL_OK=0
+if [[ -f "${ROOT}/models/bge-m3/config.json" && -f "${ROOT}/models/bge-m3/modules.json" ]]; then
+  MODEL_OK=1
+fi
+FETCH_MODEL="${DOC_RAG_BOOTSTRAP_FETCH_MODEL:-}"
+if [[ -z "${FETCH_MODEL}" ]]; then
+  if [[ "${ans_emb}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then FETCH_MODEL="Y"; else FETCH_MODEL="N"; fi
+fi
+if [[ "${MODEL_OK}" -eq 0 && "${FETCH_MODEL}" == "Y" ]]; then
+  echo "[doc-rag] offline model models/bge-m3 not found -- fetching via scripts/fetch_model.py..."
   if "$ROOT/.venv/bin/python" scripts/fetch_model.py; then
     echo "[doc-rag] offline model ready: models/bge-m3"
   else
     echo "[doc-rag] WARNING: fetch_model.py failed (no network?). Bootstrap continues," >&2
     echo "[doc-rag] WARNING: but embeddings are unavailable offline. Fetch the model manually" >&2
-    echo "[doc-rag] WARNING: later: python3 scripts/fetch_model.py" >&2
+    echo "[doc-rag] WARNING: later: ${ROOT}/.venv/bin/python scripts/fetch_model.py" >&2
   fi
 fi
 

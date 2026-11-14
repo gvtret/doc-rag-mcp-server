@@ -91,7 +91,7 @@ echo "[install] sync project -> ${INSTALL_ROOT} ..."
 # survive a re-run of this script. Same for `models/` (offline embedding
 # model, gitignored in the source checkout and usually absent there):
 #   - `--exclude` both at the source side so they are never sent;
-#   - `--filter 'protect …/'` so `--delete` cannot remove them on the
+#   - `--filter 'protect .../'` so `--delete` cannot remove them on the
 #     destination even if a future rsync version stops respecting
 #     `--exclude` for deletion (belt + suspenders).
 rsync -a --delete \
@@ -107,15 +107,27 @@ rsync -a --delete \
 
 # The offline embedding model is copied separately (not via the rsync above,
 # which excludes it so a re-run can never wipe a previously deployed model
-# when the source checkout has none).
-if [[ -f "${SRC_ROOT}/models/bge-m3/config.json" ]]; then
+# when the source checkout has none). Presence = config.json + modules.json,
+# matching MODEL_MARKER_FILES in src/doc_rag/raglib/model_paths.py.
+SRC_MODEL_OK=0
+if [[ -f "${SRC_ROOT}/models/bge-m3/config.json" && -f "${SRC_ROOT}/models/bge-m3/modules.json" ]]; then
+  SRC_MODEL_OK=1
+fi
+DST_MODEL_OK=0
+if [[ -f "${INSTALL_ROOT}/models/bge-m3/config.json" && -f "${INSTALL_ROOT}/models/bge-m3/modules.json" ]]; then
+  DST_MODEL_OK=1
+fi
+if [[ "${SRC_MODEL_OK}" -eq 1 ]]; then
   echo "[install] copying offline model models/bge-m3 -> ${INSTALL_ROOT}/models/"
   mkdir -p "${INSTALL_ROOT}/models"
   cp -a "${SRC_ROOT}/models/." "${INSTALL_ROOT}/models/"
+elif [[ "${DST_MODEL_OK}" -eq 1 ]]; then
+  echo "[install] keeping existing model at ${INSTALL_ROOT}/models/bge-m3 (source has none)."
 else
-  echo "[install] WARNING: ${SRC_ROOT}/models/bge-m3 not found — installing without the offline model."
-  echo "[install] If models/bge-m3/config.json is missing on the target too, the embeddings stack"
-  echo "[install] will not work offline. To fetch: sudo -u ${SERVICE_USER} -H python3 ${INSTALL_ROOT}/scripts/fetch_model.py"
+  echo "[install] WARNING: no offline model in the source checkout or at the install target." >&2
+  echo "[install] Bootstrap below will attempt the download if embeddings were selected (not with --minimal);" >&2
+  echo "[install] if it fails, run as the service user:" >&2
+  echo "[install]   sudo -u ${SERVICE_USER} -H ${INSTALL_ROOT}/.venv/bin/python scripts/fetch_model.py" >&2
 fi
 
 mkdir -p "${INSTALL_ROOT}/build" "${INSTALL_ROOT}/sources/incoming" "${INSTALL_ROOT}/sources/archived"
@@ -129,6 +141,11 @@ if [[ -n "${SKIP_EMBEDDINGS}" ]]; then
 fi
 
 echo "[install] bootstrap (venv через uv + базовые deps; Docling приходит как базовая зависимость)…"
+if [[ -z "${SKIP_EMBEDDINGS}" ]]; then
+  echo "[install] embeddings выбраны: bootstrap попытается скачать модель models/bge-m3,"
+  echo "[install] если её ещё нет (при провале -- вручную:"
+  echo "[install]   sudo -u ${SERVICE_USER} -H ${INSTALL_ROOT}/.venv/bin/python scripts/fetch_model.py)"
+fi
 sudo -u "${SERVICE_USER}" -H bash -c "
 set -euo pipefail
 cd '${INSTALL_ROOT}'
