@@ -220,6 +220,131 @@ def test_legacy_working_embedder_reads_index_once(
     assert reads == [str(index_dir / "faiss.index")]  # read exactly once
 
 
+def test_legacy_corrupt_meta_blocks_positional_mapping(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If index_meta.json exists but is corrupt (unparseable JSON), the
+    legacy positional-mapping path must NOT run: semantic_search returns
+    None and doc_search degrades to lexical (task 5 fail-closed gate)."""
+    faiss = pytest.importorskip("faiss")
+    import numpy as np
+
+    root = tmp_path
+    # Two chunks in an order DIFFERENT from index positions: if the legacy
+    # positional mapping ran, the query would return the wrong chunk.
+    chunks = [
+        {"chunk_id": "d:0", "doc_id": "d", "text": "alpha document", "source_file": "d.pdf"},
+        {"chunk_id": "d:1", "doc_id": "d", "text": "zeppelin marker", "source_file": "d.pdf"},
+    ]
+    chunks_dir = root / "build" / "chunks_jsonl"
+    chunks_dir.mkdir(parents=True)
+    with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+
+    # Index position 0 = "zeppelin marker" vector, position 1 = "alpha".
+    v_alpha = np.zeros((1, 8), dtype="float32")
+    v_alpha[0, 0] = 1.0
+    v_zepp = np.zeros((1, 8), dtype="float32")
+    v_zepp[0, 1] = 1.0
+    index = faiss.IndexFlatIP(8)
+    index.add(np.vstack([v_zepp, v_alpha]))
+    index_dir = root / "build" / "index"
+    index_dir.mkdir(parents=True)
+    faiss.write_index(index, str(index_dir / "faiss.index"))
+    # Corrupt meta: present on disk but unparseable.
+    (index_dir / "index_meta.json").write_text("{not json", encoding="utf-8")
+
+    cfg = {
+        "_root": str(root),
+        "paths": {"chunks_dir": "build/chunks_jsonl", "index_dir": "build/index"},
+        "embeddings": {"model_name": "stub", "device": "cpu"},
+    }
+
+    class FakeModel:
+        def encode(self, texts, normalize_embeddings=True):
+            return v_zepp.copy()
+
+    # VectorIndex path is unavailable (as in the legacy-path tests above).
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index.VectorIndex.__init__",
+        lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("no vector backend")),
+    )
+    monkeypatch.setattr("doc_rag.raglib.model_loader.load_embedder", lambda cfg: FakeModel())
+
+    retrieval._SEMANTIC_CACHE["index"] = None
+    retrieval._SEMANTIC_CACHE["index_path"] = None
+    retrieval._SEMANTIC_CACHE["index_mtime"] = None
+    retrieval._SEMANTIC_CACHE["model_key"] = None
+
+    out = semantic_search(cfg, chunks, "zeppelin", top_k=2)
+    assert out is None  # corrupt meta -> fail closed, no positional mapping
+
+    # And the tool-level fallback serves lexical results instead. This is
+    # also the positional-mapping proof: index position 0 holds the
+    # "zeppelin marker" vector, so a legacy positional hit would return
+    # chunks[0] = "d:0"; lexical returns the true match "d:1".
+    monkeypatch.setattr(retrieval, "load_config", lambda: cfg)
+    monkeypatch.setattr(retrieval, "_CHUNKS_CACHE", {"path": None, "mtime": None, "chunks": None})
+    results = retrieval.doc_search("zeppelin", top_k=2)
+    assert [r["chunk_id"] for r in results] == ["d:1"]
+
+
+def test_legacy_meta_len_mismatch_blocks_positional_mapping(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parseable meta whose chunk_ids length disagrees with the index
+    ntotal must also block the legacy path (positional mapping unsafe)."""
+    faiss = pytest.importorskip("faiss")
+    import numpy as np
+
+    root = tmp_path
+    chunks = [
+        {"chunk_id": "d:0", "doc_id": "d", "text": "alpha document", "source_file": "d.pdf"},
+        {"chunk_id": "d:1", "doc_id": "d", "text": "zeppelin marker", "source_file": "d.pdf"},
+    ]
+    chunks_dir = root / "build" / "chunks_jsonl"
+    chunks_dir.mkdir(parents=True)
+    with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+
+    v_zepp = np.zeros((1, 8), dtype="float32")
+    v_zepp[0, 1] = 1.0
+    index = faiss.IndexFlatIP(8)
+    index.add(v_zepp)  # ntotal=1, meta below lists 2 ids
+    index_dir = root / "build" / "index"
+    index_dir.mkdir(parents=True)
+    faiss.write_index(index, str(index_dir / "faiss.index"))
+    (index_dir / "index_meta.json").write_text(
+        json.dumps({"chunk_ids": ["d:0", "d:1"]}), encoding="utf-8"
+    )
+
+    cfg = {
+        "_root": str(root),
+        "paths": {"chunks_dir": "build/chunks_jsonl", "index_dir": "build/index"},
+        "embeddings": {"model_name": "stub", "device": "cpu"},
+    }
+
+    class FakeModel:
+        def encode(self, texts, normalize_embeddings=True):
+            return v_zepp.copy()
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index.VectorIndex.__init__",
+        lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("no vector backend")),
+    )
+    monkeypatch.setattr("doc_rag.raglib.model_loader.load_embedder", lambda cfg: FakeModel())
+
+    retrieval._SEMANTIC_CACHE["index"] = None
+    retrieval._SEMANTIC_CACHE["index_path"] = None
+    retrieval._SEMANTIC_CACHE["index_mtime"] = None
+    retrieval._SEMANTIC_CACHE["model_key"] = None
+
+    out = semantic_search(cfg, chunks, "zeppelin", top_k=2)
+    assert out is None
+
+
 def _make_vector_cfg(tmp_path) -> dict:
     """Minimal cfg for the VectorIndex (pluggable-backend) path of
     semantic_search: faiss backend, stubbed embedder, tmp index dir."""

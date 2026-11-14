@@ -81,16 +81,33 @@ class FaissVectorStore:
             ) from exc
 
         if os.path.exists(self._index_path) and os.path.exists(self._meta_path):
-            self._index = faiss.read_index(self._index_path)
+            index = faiss.read_index(self._index_path)
             with open(self._meta_path, encoding="utf-8") as f:
-                self._meta = IndexMeta.from_dict(json.load(f))
-            self._id_to_pos = {cid: i for i, cid in enumerate(self._meta.chunk_ids)}
-            logger.info(
-                "faiss: loaded %d vectors (dim=%d) from %s",
-                self._meta.dim,
-                len(self._meta.chunk_ids),
-                self._index_path,
-            )
+                meta = IndexMeta.from_dict(json.load(f))
+            if int(index.ntotal) != len(meta.chunk_ids):
+                # Fail closed (crash window between the index replace and the
+                # meta write in save()): a positional mapping built from this
+                # pair would serve wrong chunks. Degrade instead of serving.
+                logger.error(
+                    "faiss: index integrity check failed: ntotal=%d != len(chunk_ids)=%d "
+                    "for %s -- degrading to unavailable (rebuild the index)",
+                    int(index.ntotal),
+                    len(meta.chunk_ids),
+                    self._index_path,
+                )
+                self._index = None
+                self._meta = None
+                self._id_to_pos = {}
+            else:
+                self._index = index
+                self._meta = meta
+                self._id_to_pos = {cid: i for i, cid in enumerate(meta.chunk_ids)}
+                logger.info(
+                    "faiss: loaded %d vectors (dim=%d) from %s",
+                    meta.dim,
+                    len(meta.chunk_ids),
+                    self._index_path,
+                )
         else:
             self._meta = IndexMeta(
                 protocol_version="1.0.0",

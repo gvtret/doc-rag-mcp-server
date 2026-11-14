@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -93,6 +94,39 @@ class TestFaissVectorStore:
         assert store2.size == 4
         dists, ids = store2.search(np.array([[1, 0, 0, 0]], dtype=np.float32), top_k=2)
         assert ids[0] == "a"
+
+    def test_ntotal_meta_mismatch_degrades_to_unavailable(self, tmp_path: Path, caplog):
+        """Saved index whose ntotal disagrees with meta chunk_ids must fail
+        closed: ERROR log, the store degrades (no index, no meta), size 0."""
+        import faiss
+
+        store = self._make_store(tmp_path)
+        store.init(dim=4, model_name="m")
+        store.add(np.eye(4, dtype=np.float32)[:3], ["a", "b", "c"])
+        store.save()
+
+        # Corrupt the pair on disk: rewrite the index with fewer vectors,
+        # keep the meta listing all three chunk_ids.
+        bad = faiss.IndexFlatIP(4)
+        bad.add(np.eye(4, dtype=np.float32)[:2])
+        faiss.write_index(bad, str(tmp_path / "faiss.index"))
+
+        store2 = self._make_store(tmp_path)
+        with caplog.at_level(logging.ERROR):
+            assert store2.size == 0
+        assert store2._index is None
+        assert store2._meta is None
+        assert store2._id_to_pos == {}
+        mismatch_errors = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and "chunk_ids" in r.getMessage()
+        ]
+        assert mismatch_errors, "expected an ERROR log about the ntotal/chunk_ids mismatch"
+
+        # Searches on the degraded store must be safe and empty.
+        dists, ids = store2.search(np.array([[1, 0, 0, 0]], dtype=np.float32), top_k=2)
+        assert len(dists) == 0 and ids == []
 
     def test_reset(self, tmp_path: Path):
         store = self._make_store(tmp_path)
