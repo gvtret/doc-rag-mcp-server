@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from doc_rag.raglib import model_loader, model_paths
+from doc_rag.raglib.chunking_meta import config_fingerprint
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -156,6 +157,28 @@ class VectorIndex:
                 e,
             )
             return False
+        want_fp = model_paths.fingerprint_for_cfg(self._cfg) or ""
+        try:
+            want_cfg_fp = config_fingerprint(self._cfg)
+        except Exception as e:
+            logger.warning(
+                "could not compute config fingerprint (%s): refusing incremental update", e
+            )
+            return False
+        have_cfg_fp = str(meta.config_fingerprint or "")
+        if want_cfg_fp:
+            if not have_cfg_fp:
+                # Legacy index built before config fingerprints existed:
+                # its vectors/texts may come from any chunking scheme.
+                logger.warning("index predates config fingerprint: full rebuild required")
+                return False
+            if have_cfg_fp != want_cfg_fp:
+                logger.warning(
+                    "index config fingerprint mismatch (have=%s want=%s): full rebuild required",
+                    have_cfg_fp[:12],
+                    want_cfg_fp[:12],
+                )
+                return False
         have_fp = str(meta.weights_sha256 or "")
         if want_fp:
             if not have_fp:
@@ -338,6 +361,7 @@ class VectorIndex:
         # a new fingerprint.
         model_name = str(self._cfg.get("embeddings", {}).get("model_name", ""))
         weights_sha256 = model_paths.fingerprint_for_cfg(self._cfg) or ""
+        cfg_fingerprint = config_fingerprint(self._cfg) or ""
         self._emit("embed", 0, len(chunks))
         texts = [str(c.get("text", "")) for c in chunks]
         vecs = self._encode(texts)
@@ -348,6 +372,7 @@ class VectorIndex:
             model_name=model_name,
             normalize=self._normalize(),
             weights_sha256=weights_sha256,
+            config_fingerprint=cfg_fingerprint,
         )
         store.add(vecs, all_ids)
         self._chunk_ids = list(all_ids)

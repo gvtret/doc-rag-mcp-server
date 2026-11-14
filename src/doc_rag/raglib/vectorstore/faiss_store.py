@@ -29,6 +29,7 @@ class IndexMeta:
     dim: int
     chunk_ids: list[str] = field(default_factory=list)
     weights_sha256: str = ""
+    config_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +40,7 @@ class IndexMeta:
             "dim": self.dim,
             "chunk_ids": self.chunk_ids,
             "weights_sha256": self.weights_sha256,
+            "config_fingerprint": self.config_fingerprint,
         }
 
     @classmethod
@@ -51,6 +53,7 @@ class IndexMeta:
             dim=int(data.get("dim", 0)),
             chunk_ids=list(data.get("chunk_ids", [])),
             weights_sha256=str(data.get("weights_sha256", "")),
+            config_fingerprint=str(data.get("config_fingerprint", "")),
         )
 
 
@@ -128,7 +131,12 @@ class FaissVectorStore:
             self._id_to_pos = {}
 
     def init(
-        self, dim: int, model_name: str, normalize: bool = True, weights_sha256: str = ""
+        self,
+        dim: int,
+        model_name: str,
+        normalize: bool = True,
+        weights_sha256: str = "",
+        config_fingerprint: str = "",
     ) -> None:
         """Initialize a new empty index with the given dimensionality."""
         import faiss
@@ -146,6 +154,7 @@ class FaissVectorStore:
             normalize=normalize,
             dim=dim,
             weights_sha256=weights_sha256,
+            config_fingerprint=config_fingerprint,
         )
         self._id_to_pos = {}
         self._degraded = False
