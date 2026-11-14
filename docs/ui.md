@@ -16,6 +16,11 @@ http://<host>:3333/ui
   the incoming queue are skipped; the UI shows a yellow banner listing them and why.
 - **Run ingest / rebuild** asynchronously; status polls live (started → running →
   finished/error).
+- **Model / index banners** on the Documents page — ERROR when the
+  embedding model is missing (`model_ready: false`), WARN when the index
+  is stale (`index_stale`, weights fingerprint mismatch → rebuild needed),
+  INFO when a new weights revision is available on the HF Hub
+  (`model_update_available`), all from `GET /ui/status`.
 - **Browse indexed documents** in a table — doc_id, source file, chunks, parser used,
   ingest timestamp, quality badge (green/yellow/red, from `GET /ui/quality`), OCR badge
   (shown when RapidOCR fired on the document; tooltip has pages recognized + mean
@@ -66,6 +71,11 @@ The Svelte Configuration page has three tabs:
   per-field validation, hints). Backed by `GET /ui/config/parsed` (parsed
   config) and `POST /ui/config/patch` (field-level, **comment-preserving**
   writes via a `ruamel.yaml` round-trip — only the edited keys change).
+  Only keys present in `config.yaml` and the server's field constraint
+  list can be patched from the form; everything else (e.g.
+  `embeddings.model_path`) goes through the Advanced tab. The
+  **Эмбеддинги** section exposes `update_check_interval_hours` (int,
+  min 0; 0 disables the read-only HF Hub weight check).
 - **Advanced (raw YAML)** — the original full-file editor, backed by
   `GET /ui/config/raw` + `POST /ui/config/save` (400 on YAML parse errors).
 - **Сервис (env)** — runtime/service settings that live in the environment,

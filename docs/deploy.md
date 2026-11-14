@@ -135,6 +135,46 @@ Once the server is up on `<host>:3333`, configure Cursor/Claude to talk to it. S
 The FAISS index does **not** need to be rebuilt for code-only upgrades.
 Rebuild only if the chunk schema or embedding model changes.
 
+## Model delivery channels
+
+The embedding model must reach the target host before semantic search
+works. Three channels, matching the deployment styles above:
+
+### Docker Compose (baked into the image)
+
+`docker/Dockerfile` takes a `REQUIRE_MODEL` build-arg (set to `"1"` in
+`docker-compose.yml`). With `REQUIRE_MODEL=1` the build copies
+`models/bge-m3/` into the image and fails fast if the directory is
+missing:
+
+```bash
+uv run python scripts/fetch_model.py   # on a connected machine, in the repo root
+docker compose up -d --build
+```
+
+### Native systemd (rsync, protected)
+
+`scripts/install_server_native.sh` rsyncs the repo into `INSTALL_ROOT`
+with `--filter 'protect models/'` — an upgrade never deletes a model
+already delivered to the server (same protection as `build/` and
+`sources/`). The model is copied separately after the rsync, so a
+partially downloaded snapshot can never clobber a working one:
+
+```bash
+sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/python scripts/fetch_model.py'
+```
+
+### Deploy archive (shipped in the tarball)
+
+`scripts/make_deploy_archive.sh` includes `models/` when present and
+warns loudly when it is not (the Docker build with `REQUIRE_MODEL=1`
+will fail without it). Fetch the model before packing:
+
+```bash
+uv run python scripts/fetch_model.py
+bash scripts/make_deploy_archive.sh
+```
+
 ## Backups
 
 The interesting state is:

@@ -26,6 +26,13 @@ export type IndexedCatalog = {
   semantic_index_present?: boolean;
   lexical_search_ready?: boolean;
   semantic_search_ready?: boolean;
+  // Offline-model diagnostics (added in v2.4). Optional so older
+  // backends without these fields still render fine.
+  model_ready?: boolean;
+  weights_sha256?: string | null;
+  index_stale?: boolean;
+  stale_reason?: string | null;
+  model_update_available?: boolean;
   manifest_generated_at_utc?: string | null;
   pipeline_version?: string | null;
   corpus_content_sha256?: string | null;

@@ -151,6 +151,13 @@ export const CONFIG_SCHEMA: Section[] = [
         label: "Нормализация векторов",
         type: "bool",
       },
+      {
+        path: "embeddings.update_check_interval_hours",
+        label: "Сверка весов с HF Hub (часы)",
+        type: "int",
+        min: 0,
+        hint: "Периодическая read-only сверка локальных весов с HF Hub (без скачивания); результат — флаг model_update_available. 0 = выключено. Не действует при заданном embeddings.model_path.",
+      },
     ],
   },
   {

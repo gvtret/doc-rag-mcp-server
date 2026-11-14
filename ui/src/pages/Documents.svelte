@@ -221,6 +221,18 @@
       {/if}
     </div>
 
+    {#if indexed?.model_ready === false}
+      <div class="banner err">{t("documents.banner_model_missing")}</div>
+    {/if}
+    {#if indexed?.index_stale}
+      <div class="banner warn" title={indexed?.stale_reason ?? ""}>
+        {t("documents.banner_index_stale")}
+      </div>
+    {/if}
+    {#if indexed?.model_update_available}
+      <div class="banner info">{t("documents.banner_model_update")}</div>
+    {/if}
+
     {#if rebuildProgress || running}
       <div class="progress-bar">
         <div class="progress-info mono">
@@ -403,6 +415,11 @@
     background: var(--bg-elevated);
     border-color: var(--border-strong);
     color: var(--text-secondary);
+  }
+  .banner.warn {
+    background: rgba(180, 83, 9, 0.08);
+    border-color: var(--accent-warn);
+    color: var(--text-primary);
   }
   .progress-bar {
     margin-bottom: 10px;

@@ -183,6 +183,36 @@ embeddings:
 For low-memory machines: `bge-small-en-v1.5` (~120 MB). See
 [GPU install](#gpu-install-nvidia--cuda) below for `device: cuda`.
 
+### Offline model delivery (fetch_model.py)
+
+By default sentence-transformers downloads the model from the HF Hub on
+first use. For offline / air-gapped hosts, fetch the snapshot once on a
+connected machine and ship it with the repo:
+
+```bash
+uv run python scripts/fetch_model.py
+# optional overrides:
+uv run python scripts/fetch_model.py --model BAAI/bge-m3 --dest models/bge-m3 --force
+```
+
+The script downloads the HF snapshot into `<dest>.staging`, validates the
+sentence-transformers marker files, writes the weights fingerprint
+(`WEIGHTS.sha256`), then atomically swaps the directory into place
+(`models/bge-m3`). An existing copy is moved to `<dest>.old` first, so a
+failed download never leaves a half-written model in place. Exit code is
+non-zero on any download or validation failure and the staging directory
+is always removed.
+
+The resolved local directory is `models/<basename(model_name)>` next to
+`config/config.yaml`; point `embeddings.model_path` at it explicitly to
+manage the model manually (this also disables the background HF Hub
+update check, since no Hub repo is implied).
+
+`update_check_interval_hours` (default `72`, `0` disables) controls the
+read-only background comparison of the local weights against the HF Hub
+— no download, no swap; the result surfaces as
+`model_update_available` in `/ui/status` and the Web UI banner.
+
 ### Chunking
 
 ```yaml

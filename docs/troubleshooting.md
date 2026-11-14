@@ -23,7 +23,60 @@ without complaint; only explicitly higher versions are refused.
    Lexical fallback should still return *something*; if it doesn't, the manifest
    itself is empty.
 
+## Model / index diagnostics (Web UI banners)
+
+The Documents page shows three status banners driven by `GET /ui/status`
+(`indexed.model_ready`, `indexed.index_stale`,
+`indexed.model_update_available`):
+
+### "Модель эмбеддингов не найдена..." (ERROR)
+
+`model_ready: false` — the embedding model is missing or failed to load,
+so semantic search is off and `doc_search` in semantic mode returns an
+explicit model error instead of hanging.
+
+1. Check the model directory: `models/bge-m3/config.json` and
+   `modules.json` must exist (or `embeddings.model_path` must point at a
+   valid snapshot).
+2. Offline host: fetch the model once on a connected machine —
+   `uv run python scripts/fetch_model.py` (see
+   [install.md](install.md#offline-model-delivery-fetch_modelpy)), then
+   ship it by one of the channels in
+   [deploy.md](deploy.md#model-delivery-channels).
+3. Tail `journalctl -u doc-rag-mcp` for the loader's error message; the
+   server needs a restart to retry the load.
+
+Lexical search keeps working while the model is down.
+
+### "Индекс устарел..." (WARN)
+
+`index_stale: true` — the weights fingerprint of the loaded model no
+longer matches `build/index/index_meta.json` (`weights_sha256`). The
+FAISS vectors were built with different weights, so semantic results
+would be silently degraded.
+
+Fix: run `doc-rag rebuild` (or "Запустить rebuild" in the UI) to
+re-embed the corpus with the current weights. `stale_reason` in
+`/ui/status` names the mismatch. After re-embedding, the banner clears
+by itself.
+
+### "На HF Hub доступна новая ревизия весов..." (INFO)
+
+`model_update_available: true` — the background, read-only Hub check
+found a newer weights revision. Nothing is downloaded or swapped
+automatically; the local index keeps working. If you decide to update:
+fetch with `scripts/fetch_model.py --force`, restart the service, then
+rebuild (the stale-index banner above will guide you). Disable the check
+with `embeddings.update_check_interval_hours: 0` (default interval: 72 h).
+
 ## `doc_search` hangs / 60+ second timeouts
+
+Historical 504s (client timeout on a hanging `doc_search`) were caused
+by the search request triggering a full FAISS encode when the model was
+missing. Fixed: the model is warmed up at startup, `semantic_search`
+returns an explicit model error instead of building anything inline, and
+the readiness probe reports `model_missing` / `index_stale` reasons
+instead of serving a doomed request. If you still see a hang:
 
 The search request must never trigger a full FAISS encoding. If you see hangs:
 
