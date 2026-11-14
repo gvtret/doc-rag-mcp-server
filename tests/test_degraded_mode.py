@@ -80,6 +80,90 @@ def test_doc_search_tool_prepends_degraded_notice_when_index_missing(
     assert content[0]["text"] == _MODEL_NOTICE
 
 
+def test_doc_search_tool_fallback_notice_when_model_ready_but_no_index(
+    tmp_corpus_root, monkeypatch
+):
+    """Model loads fine, but the FAISS index was never built."""
+    from doc_rag.server.search_tool import _FALLBACK_NOTICE, doc_search_tool
+
+    _config_with_no_index(tmp_corpus_root)
+    _patch_model_status(monkeypatch, ready=True, fingerprint="fp")
+
+    chunks_path = tmp_corpus_root / "build" / "chunks_jsonl" / "chunks.jsonl"
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    chunks_path.write_text(
+        json.dumps(
+            {
+                "chunk_id": "doc-1:0000",
+                "doc_id": "doc-1",
+                "text": "the unique marker word zeppelin appears here",
+                "source_file": "doc-1.txt",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    content = doc_search_tool({"query": "zeppelin", "top_k": 3})
+
+    assert content, "expected at least one content item"
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == _FALLBACK_NOTICE
+
+
+def test_doc_search_tool_stale_notice_when_fingerprint_mismatch(tmp_corpus_root, monkeypatch):
+    """Index exists and model loads, but weights changed since the build."""
+    from doc_rag.server.search_tool import _STALE_NOTICE, doc_search_tool
+
+    _config_with_no_index(tmp_corpus_root)
+    _patch_model_status(monkeypatch, ready=True, fingerprint="new")
+
+    # An index whose fingerprint does not match the (patched) model's.
+    index_dir = tmp_corpus_root / "build" / "index"
+    (index_dir / "faiss.index").write_bytes(b"stub")
+    (index_dir / "index_meta.json").write_text(
+        json.dumps({"weights_sha256": "old"}), encoding="utf-8"
+    )
+
+    chunks_path = tmp_corpus_root / "build" / "chunks_jsonl" / "chunks.jsonl"
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    chunks_path.write_text(
+        json.dumps(
+            {
+                "chunk_id": "doc-1:0000",
+                "doc_id": "doc-1",
+                "text": "the unique marker word zeppelin appears here",
+                "source_file": "doc-1.txt",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    content = doc_search_tool({"query": "zeppelin", "top_k": 3})
+
+    assert content, "expected at least one content item"
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == _STALE_NOTICE
+
+
+def _patch_model_status(monkeypatch, *, ready: bool, fingerprint: str | None = None):
+    """Pin model_loader.status() for notice-branch tests."""
+    from doc_rag.raglib import model_loader as model_loader
+
+    monkeypatch.setattr(
+        model_loader,
+        "status",
+        lambda: {
+            "ready": ready,
+            "path": "/models/bge-m3" if ready else None,
+            "fingerprint": fingerprint,
+            "error": None if ready else "embedder construction failed",
+            "source": "local" if ready else None,
+        },
+    )
+
+
 def test_doc_search_tool_empty_query_short_circuits(tmp_corpus_root):
     """Empty query must not even reach the search path."""
     from doc_rag.server.search_tool import doc_search_tool

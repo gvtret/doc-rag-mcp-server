@@ -13,11 +13,11 @@ _FALLBACK_NOTICE = (
     "Откройте /ui и нажмите «Rebuild индекса» (займёт ~30–60 мин), затем повторите запрос."
 )
 
-# Модель не найдена или не загрузилась (отличать от отсутствия индекса):
-# rebuild тут не поможет, нужны сами веса -- scripts/fetch_model.py.
+# Модель недоступна (веса не найдены или не загрузились; отличать от
+# отсутствия индекса): rebuild тут не поможет, нужны сами веса --
+# scripts/fetch_model.py.
 _MODEL_NOTICE = (
-    "Семантический поиск недоступен: модель эмбеддингов не найдена и не загружена "
-    "(offline-режим, весов нет ни в models/, ни в кэше). "
+    "Семантический поиск недоступен: модель недоступна, веса не найдены или не загрузились. "
     "Ниже - результаты лексического поиска: они часто менее релевантны и могут "
     "пропустить семантически близкие формулировки. "
     "Выполните scripts/fetch_model.py, чтобы скачать модель, затем перезапустите сервис "
@@ -98,13 +98,22 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
         if mode in ("semantic", "hybrid"):
             cat = indexed_catalog()
-            if not cat.get("semantic_search_ready"):
+            # Degraded = semantic results cannot be produced at all. The
+            # index files may exist, yet without a loadable model (or with
+            # a stale index) semantic_search() returns None and only
+            # lexical results are served - the client must be told.
+            degraded = (
+                (not cat.get("semantic_search_ready"))
+                or (not cat.get("model_ready"))
+                or bool(cat.get("index_stale"))
+            )
+            if degraded:
                 fallback_active = True
                 if cat.get("index_stale"):
                     # The index exists but was built with different weights.
                     notice = _STALE_NOTICE
                 elif not cat.get("model_ready"):
-                    # No loadable model: rebuilding the index would not help.
+                    # Model unavailable: rebuilding the index would not help.
                     notice = _MODEL_NOTICE
                 else:
                     # Model is fine; the index itself is missing/unbuilt.

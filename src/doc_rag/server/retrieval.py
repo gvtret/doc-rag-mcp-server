@@ -22,6 +22,41 @@ _VECTOR_INDEX_CACHE: dict[str, Any] = {"cfg_root": None, "index": None}
 _INDEX_META_CACHE: dict[str, Any] = {"path": None, "mtime": None, "fp": None}
 
 
+def read_index_weights_fingerprint(meta_path: str | os.PathLike[str]) -> str | None:
+    """Read ``weights_sha256`` from index_meta.json (cheap, mtime-cached).
+
+    Shared by indexed_catalog() and the readiness probe: the file embeds
+    the full chunk_ids list (hundreds of KB), but only the fingerprint is
+    needed, so the parse is cached behind the file's mtime via
+    _INDEX_META_CACHE. Returns None when the file is missing/unreadable
+    or has no fingerprint (legacy index).
+    """
+    meta_path = str(meta_path)
+    if not os.path.isfile(meta_path):
+        return None
+    try:
+        st = os.stat(meta_path)
+    except Exception:
+        return None
+    cached = _INDEX_META_CACHE
+    if cached.get("path") == meta_path and cached.get("mtime") == st.st_mtime:
+        return cached.get("fp")
+    index_fp: str | None = None
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta_data = json.load(f)
+        if isinstance(meta_data, dict):
+            raw_fp = meta_data.get("weights_sha256")
+            if isinstance(raw_fp, str) and raw_fp.strip():
+                index_fp = raw_fp.strip()
+    except Exception:
+        index_fp = None
+    cached["path"] = meta_path
+    cached["mtime"] = st.st_mtime
+    cached["fp"] = index_fp
+    return index_fp
+
+
 def project_root() -> str:
     """Repository root for config/build paths.
 
@@ -269,45 +304,18 @@ def indexed_catalog() -> dict[str, Any]:
 
     doc_n = len(documents)
     lexical_ready = chunks_present and doc_n > 0
-    semantic_ready = semantic_index_present and chunks_present and doc_n > 0
+    model_status = model_loader.status()
+    model_ready = bool(model_status.get("ready"))
+    # Honest flag: without a loadable model semantic search cannot work
+    # even when the index files are present.
+    semantic_ready = semantic_index_present and chunks_present and doc_n > 0 and model_ready
 
     # Weights fingerprint staleness (BUG-006 companion report): read
     # index_meta.json directly -- no expensive manifest parsing on this path.
-    model_status = model_loader.status()
-    model_ready = bool(model_status.get("ready"))
     model_fp = model_status.get("fingerprint")
     model_fp_s = str(model_fp) if isinstance(model_fp, str) and model_fp.strip() else None
 
-    index_fp: str | None = None
-    if meta_path and os.path.isfile(meta_path):
-        # index_meta.json embeds the full chunk_ids list (hundreds of KB),
-        # but only the fingerprint is needed here: cache the parse behind
-        # the file's mtime so /ui/status does not re-read it every call.
-        try:
-            st = os.stat(meta_path)
-        except Exception:
-            st = None
-        cached = _INDEX_META_CACHE
-        if (
-            st is not None
-            and cached.get("path") == meta_path
-            and cached.get("mtime") == st.st_mtime
-        ):
-            index_fp = cached.get("fp")
-        else:
-            try:
-                with open(meta_path, encoding="utf-8") as f:
-                    meta_data = json.load(f)
-                if isinstance(meta_data, dict):
-                    raw_fp = meta_data.get("weights_sha256")
-                    if isinstance(raw_fp, str) and raw_fp.strip():
-                        index_fp = raw_fp.strip()
-            except Exception:
-                index_fp = None
-            if st is not None:
-                cached["path"] = meta_path
-                cached["mtime"] = st.st_mtime
-                cached["fp"] = index_fp
+    index_fp = read_index_weights_fingerprint(meta_path) if meta_path else None
 
     index_stale = bool(model_ready and model_fp_s and index_fp and model_fp_s != index_fp)
     stale_reason = "weights fingerprint mismatch" if index_stale else None

@@ -1178,18 +1178,15 @@ async def _lifespan(app: FastAPI):
     logged; /health/ready will report 503 in semantic mode, but the
     service itself keeps running (lexical fallback).
     """
-    import logging
-
     from doc_rag.raglib import model_loader as model_loader
     from doc_rag.server.retrieval import load_config
 
-    logger = logging.getLogger("doc_rag.server.mcp_http")
     try:
         cfg = load_config()
         model = await asyncio.to_thread(model_loader.load_embedder, cfg)
+        st = model_loader.status()
         if model is None:
-            st = model_loader.status()
-            logger.error(
+            log.error(
                 "Модель эмбеддингов не загружена при старте (%s). "
                 "Семантический поиск будет недоступен; /health/ready вернёт 503. "
                 "Выполните scripts/fetch_model.py и перезапустите сервис, "
@@ -1197,14 +1194,13 @@ async def _lifespan(app: FastAPI):
                 st.get("error") or "причина неизвестна",
             )
         else:
-            st = model_loader.status()
-            logger.info(
+            log.info(
                 "Модель эмбеддингов загружена при старте (source=%s, path=%s)",
                 st.get("source"),
                 st.get("path"),
             )
     except Exception as exc:  # config errors must not prevent serving
-        logger.error(
+        log.error(
             "Прогрев модели при старте не выполнен (%s: %s); "
             "семантический поиск будет недоступен до перезапуска.",
             type(exc).__name__,
@@ -1308,10 +1304,11 @@ def _readiness_state() -> dict[str, Any]:
     """Compute current readiness - manifest present, no background job running.
 
     Additionally checks subsystem health: model, FAISS index, disk space.
-    In semantic/hybrid mode a non-loadable embedding model makes the
-    service genuinely unable to answer its primary queries, so readiness
-    fails with the `model_missing` reason; in lexical mode the model is
-    not required and the check is informational only.
+    In semantic/hybrid mode the service cannot answer its primary queries
+    when the embedding model cannot load or the index no longer matches
+    the model weights, so readiness fails with `model_missing` /
+    `index_stale` reasons; in lexical mode both are informational only and
+    not reported as failure reasons.
     """
     root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
     manifest_abs = os.path.join(root, "build", "manifest.json")
@@ -1346,41 +1343,15 @@ def _readiness_state() -> dict[str, Any]:
         checks["disk_space"] = True  # don't block on check failure
 
     # Index staleness: read index_meta.json directly (cheap; no
-    # indexed_catalog() so the probe stays lightweight). The chunk_ids
-    # list in the file can be large, so cache the parse behind mtime -
-    # same pattern as _INDEX_META_CACHE in server/retrieval.py.
-    _READY_META_CACHE: dict[str, Any] = getattr(_readiness_state, "_meta_cache", None)
-    if _READY_META_CACHE is None:
-        _READY_META_CACHE = {"path": None, "mtime": None, "fp": None}
-        _readiness_state._meta_cache = _READY_META_CACHE  # type: ignore[attr-defined]
-    index_fp: str | None = None
+    # indexed_catalog() so the probe stays lightweight). The parse is
+    # mtime-cached in retrieval._INDEX_META_CACHE via the shared helper.
     meta_path = os.path.join(index_dir, "index_meta.json")
-    if os.path.isfile(meta_path):
-        try:
-            st = os.stat(meta_path)
-        except Exception:
-            st = None
-        cached = _READY_META_CACHE
-        if (
-            st is not None
-            and cached.get("path") == meta_path
-            and cached.get("mtime") == st.st_mtime
-        ):
-            index_fp = cached.get("fp")
-        else:
-            try:
-                with open(meta_path, encoding="utf-8") as f:
-                    meta_data = json.load(f)
-                if isinstance(meta_data, dict):
-                    raw_fp = meta_data.get("weights_sha256")
-                    if isinstance(raw_fp, str) and raw_fp.strip():
-                        index_fp = raw_fp.strip()
-            except Exception:
-                index_fp = None
-            if st is not None:
-                cached["path"] = meta_path
-                cached["mtime"] = st.st_mtime
-                cached["fp"] = index_fp
+    try:
+        from doc_rag.server.retrieval import read_index_weights_fingerprint
+
+        index_fp = read_index_weights_fingerprint(meta_path)
+    except Exception:
+        index_fp = None
 
     model_fp = model_status.get("fingerprint")
     model_fp_s = str(model_fp) if isinstance(model_fp, str) and model_fp.strip() else None
@@ -1405,7 +1376,9 @@ def _readiness_state() -> dict[str, Any]:
     if model_required and not checks["model_ready"]:
         ready = False
         reasons.append("model_missing")
-    if index_stale:
+    if model_required and index_stale:
+        # Stale index means semantic search is unusable: gate readiness too.
+        ready = False
         reasons.append("index_stale")
 
     return {
@@ -1428,11 +1401,17 @@ async def health_live() -> JSONResponse:
 
 @app.get("/health/ready")
 async def health_ready() -> JSONResponse:
-    """Readiness probe — 200 if the service can answer real queries, 503 otherwise.
+    """Readiness probe - 200 if the service can answer real queries, 503 otherwise.
 
     Ready when:
       - build/manifest.json exists (something has been ingested), and
-      - no ingest or rebuild job is currently in flight.
+      - no ingest or rebuild job is currently in flight, and
+      - in semantic/hybrid mode: the embedding model is loaded
+        (`model_ready`, reason `model_missing`) and the FAISS index was
+        built with the current weights (`index_stale` otherwise).
+
+    In lexical mode the model/index checks stay informational: the model
+    gate does not apply and `index_stale` is not reported in reasons.
     """
     state = _readiness_state()
     code = 200 if state["ready"] else 503
