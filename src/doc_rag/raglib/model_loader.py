@@ -1,7 +1,8 @@
 """Single thread-safe creation point for the sentence-transformers embedder.
 
-All former load sites (vector_index._load_embedder, indexer._load_embedder
-and the legacy FAISS path in server/retrieval.py) delegate here. The loader
+All former load sites (vector_index._load_embedder, the legacy FAISS
+builder now in doc_rag.raglib.vectorstore.faiss_store, and the legacy
+FAISS path in server/retrieval.py) delegate here. The loader
 prefers a local model directory resolved by model_paths (embeddings.model_path,
 then <root>/build/models/bge-m3, then <root>/models/bge-m3) and always loads
 it with local_files_only=True. When no local directory exists but
