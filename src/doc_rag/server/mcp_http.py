@@ -1168,7 +1168,52 @@ def _handle_jsonrpc(payload: Json) -> tuple[int, Json | None]:
     return 200, resp
 
 
-app = FastAPI(title="doc-rag MCP HTTP", version=_VERSION)
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Warm up the embedding model before the service starts accepting work.
+
+    Offline only: the loader resolves a local directory (or the local HF
+    cache) and loads with local_files_only=True, so startup cannot hang on
+    the network. A failed load is recorded in model_loader.status() and
+    logged; /health/ready will report 503 in semantic mode, but the
+    service itself keeps running (lexical fallback).
+    """
+    import logging
+
+    from doc_rag.raglib import model_loader as model_loader
+    from doc_rag.server.retrieval import load_config
+
+    logger = logging.getLogger("doc_rag.server.mcp_http")
+    try:
+        cfg = load_config()
+        model = await asyncio.to_thread(model_loader.load_embedder, cfg)
+        if model is None:
+            st = model_loader.status()
+            logger.error(
+                "Модель эмбеддингов не загружена при старте (%s). "
+                "Семантический поиск будет недоступен; /health/ready вернёт 503. "
+                "Выполните scripts/fetch_model.py и перезапустите сервис, "
+                "либо переключите mcp.retrieval_mode на lexical.",
+                st.get("error") or "причина неизвестна",
+            )
+        else:
+            st = model_loader.status()
+            logger.info(
+                "Модель эмбеддингов загружена при старте (source=%s, path=%s)",
+                st.get("source"),
+                st.get("path"),
+            )
+    except Exception as exc:  # config errors must not prevent serving
+        logger.error(
+            "Прогрев модели при старте не выполнен (%s: %s); "
+            "семантический поиск будет недоступен до перезапуска.",
+            type(exc).__name__,
+            exc,
+        )
+    yield
+
+
+app = FastAPI(title="doc-rag MCP HTTP", version=_VERSION, lifespan=_lifespan)
 
 
 def _mount_ui_next(app: FastAPI) -> None:
@@ -1260,9 +1305,13 @@ async def _http_log_mw(request: Request, call_next):
 
 
 def _readiness_state() -> dict[str, Any]:
-    """Compute current readiness — manifest present, no background job running.
+    """Compute current readiness - manifest present, no background job running.
 
-    Additionally checks subsystem health: FAISS index, disk space.
+    Additionally checks subsystem health: model, FAISS index, disk space.
+    In semantic/hybrid mode a non-loadable embedding model makes the
+    service genuinely unable to answer its primary queries, so readiness
+    fails with the `model_missing` reason; in lexical mode the model is
+    not required and the check is informational only.
     """
     root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
     manifest_abs = os.path.join(root, "build", "manifest.json")
@@ -1273,8 +1322,18 @@ def _readiness_state() -> dict[str, Any]:
     # Subsystem checks
     checks: dict[str, bool] = {}
 
+    # Embedding model (from model_loader's last load attempt)
+    try:
+        from doc_rag.raglib import model_loader as model_loader
+
+        model_status = model_loader.status()
+    except Exception:
+        model_status = {}
+    checks["model_ready"] = bool(model_status.get("ready"))
+
     # FAISS index file
-    index_faiss = os.path.join(root, "build", "index", "faiss.index")
+    index_dir = os.path.join(root, "build", "index")
+    index_faiss = os.path.join(index_dir, "faiss.index")
     checks["faiss_index"] = os.path.isfile(index_faiss)
 
     # Disk space (at least 1 GB free)
@@ -1286,19 +1345,78 @@ def _readiness_state() -> dict[str, Any]:
     except Exception:
         checks["disk_space"] = True  # don't block on check failure
 
+    # Index staleness: read index_meta.json directly (cheap; no
+    # indexed_catalog() so the probe stays lightweight). The chunk_ids
+    # list in the file can be large, so cache the parse behind mtime -
+    # same pattern as _INDEX_META_CACHE in server/retrieval.py.
+    _READY_META_CACHE: dict[str, Any] = getattr(_readiness_state, "_meta_cache", None)
+    if _READY_META_CACHE is None:
+        _READY_META_CACHE = {"path": None, "mtime": None, "fp": None}
+        _readiness_state._meta_cache = _READY_META_CACHE  # type: ignore[attr-defined]
+    index_fp: str | None = None
+    meta_path = os.path.join(index_dir, "index_meta.json")
+    if os.path.isfile(meta_path):
+        try:
+            st = os.stat(meta_path)
+        except Exception:
+            st = None
+        cached = _READY_META_CACHE
+        if (
+            st is not None
+            and cached.get("path") == meta_path
+            and cached.get("mtime") == st.st_mtime
+        ):
+            index_fp = cached.get("fp")
+        else:
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta_data = json.load(f)
+                if isinstance(meta_data, dict):
+                    raw_fp = meta_data.get("weights_sha256")
+                    if isinstance(raw_fp, str) and raw_fp.strip():
+                        index_fp = raw_fp.strip()
+            except Exception:
+                index_fp = None
+            if st is not None:
+                cached["path"] = meta_path
+                cached["mtime"] = st.st_mtime
+                cached["fp"] = index_fp
+
+    model_fp = model_status.get("fingerprint")
+    model_fp_s = str(model_fp) if isinstance(model_fp, str) and model_fp.strip() else None
+    index_stale = bool(checks["model_ready"] and model_fp_s and index_fp and model_fp_s != index_fp)
+
     ready = has_manifest and not job_running
     reasons: list[str] = []
     if not has_manifest:
         reasons.append("manifest_missing")
     if job_running:
         reasons.append(f"job_in_flight:{job_name}")
+
+    # Model gate applies only when the retrieval mode needs embeddings.
+    try:
+        from doc_rag.server.retrieval import load_config
+
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
+    model_required = mode in ("semantic", "hybrid")
+    if model_required and not checks["model_ready"]:
+        ready = False
+        reasons.append("model_missing")
+    if index_stale:
+        reasons.append("index_stale")
+
     return {
         "ready": ready,
         "has_manifest": has_manifest,
         "job_running": job_running,
         "job": job_name,
+        "retrieval_mode": mode,
         "checks": checks,
         "reasons": reasons,
+        "index_stale": index_stale,
     }
 
 
@@ -1495,6 +1613,7 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, Any]] = {
     "chunking.dedup_similarity_threshold": {"type": "float", "min": 0.0, "max": 1.0},
     "embeddings.batch_size": {"type": "int", "min": 1},
     "embeddings.device": {"options": ["cpu", "cuda"]},
+    "embeddings.update_check_interval_hours": {"type": "int", "min": 0},
     "index.backend": {"options": ["faiss"]},
     "index.metric": {"options": ["ip", "l2"]},
     "index.top_k": {"type": "int", "min": 1},

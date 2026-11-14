@@ -50,7 +50,7 @@ def test_doc_search_tool_prepends_degraded_notice_when_index_missing(
     tmp_corpus_root,
 ):
     """`doc_search_tool` must alert the MCP client when semantic is down."""
-    from doc_rag.server.search_tool import _FALLBACK_NOTICE, doc_search_tool
+    from doc_rag.server.search_tool import _MODEL_NOTICE, doc_search_tool
 
     _config_with_no_index(tmp_corpus_root)
 
@@ -72,10 +72,12 @@ def test_doc_search_tool_prepends_degraded_notice_when_index_missing(
 
     content = doc_search_tool({"query": "zeppelin", "top_k": 3})
 
-    # First content item is the degraded-mode notice.
+    # First content item is the degraded-mode notice. With no FAISS index
+    # and no loadable model the branch is the model-specific notice, not
+    # the generic rebuild hint.
     assert content, "expected at least one content item"
     assert content[0]["type"] == "text"
-    assert content[0]["text"] == _FALLBACK_NOTICE
+    assert content[0]["text"] == _MODEL_NOTICE
 
 
 def test_doc_search_tool_empty_query_short_circuits(tmp_corpus_root):

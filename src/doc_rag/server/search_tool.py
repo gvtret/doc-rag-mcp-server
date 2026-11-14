@@ -13,6 +13,27 @@ _FALLBACK_NOTICE = (
     "Откройте /ui и нажмите «Rebuild индекса» (займёт ~30–60 мин), затем повторите запрос."
 )
 
+# Модель не найдена или не загрузилась (отличать от отсутствия индекса):
+# rebuild тут не поможет, нужны сами веса -- scripts/fetch_model.py.
+_MODEL_NOTICE = (
+    "Семантический поиск недоступен: модель эмбеддингов не найдена и не загружена "
+    "(offline-режим, весов нет ни в models/, ни в кэше). "
+    "Ниже - результаты лексического поиска: они часто менее релевантны и могут "
+    "пропустить семантически близкие формулировки. "
+    "Выполните scripts/fetch_model.py, чтобы скачать модель, затем перезапустите сервис "
+    "(или переключите mcp.retrieval_mode на lexical)."
+)
+
+# Индекс построен, но веса модели изменились (фингерпринты различаются):
+# старый индекс не соответствует текущим весам.
+_STALE_NOTICE = (
+    "Семантический поиск недоступен: веса модели изменились после построения индекса "
+    "(фингерпринты различаются), текущий FAISS-индекс устарел. "
+    "Ниже - результаты лексического поиска. "
+    "Выполните scripts/fetch_model.py (при необходимости вернуться к прежним весам), "
+    "перезапустите сервис и запустите doc-rag rebuild, чтобы переиндексировать корпус."
+)
+
 
 def _build_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build structured citations array from search results."""
@@ -71,21 +92,31 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         filters["is_table"] = True
 
     fallback_active = False
+    notice: str | None = None
     try:
         cfg = load_config()
         mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
-        if mode == "semantic":
+        if mode in ("semantic", "hybrid"):
             cat = indexed_catalog()
             if not cat.get("semantic_search_ready"):
                 fallback_active = True
+                if cat.get("index_stale"):
+                    # The index exists but was built with different weights.
+                    notice = _STALE_NOTICE
+                elif not cat.get("model_ready"):
+                    # No loadable model: rebuilding the index would not help.
+                    notice = _MODEL_NOTICE
+                else:
+                    # Model is fine; the index itself is missing/unbuilt.
+                    notice = _FALLBACK_NOTICE
     except Exception:
         pass
 
     results = doc_search(query=query, top_k=top_k, namespace=namespace, filters=filters)
 
     content: list[dict[str, Any]] = []
-    if fallback_active:
-        content.append({"type": "text", "text": _FALLBACK_NOTICE})
+    if fallback_active and notice:
+        content.append({"type": "text", "text": notice})
 
     if not results:
         content.append({"type": "text", "text": "No results."})

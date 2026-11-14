@@ -27,6 +27,21 @@ if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))
 
 
+@pytest.fixture(autouse=True)
+def _reset_model_loader_state():
+    """Reset the shared embedder loader between tests.
+
+    model_loader keeps module-level state (loaded model cache + last status);
+    without a reset a load from one test leaks into the next and makes
+    readiness/fallback assertions order-dependent.
+    """
+    from doc_rag.raglib import model_loader as model_loader
+
+    model_loader.reset_for_tests()
+    yield
+    model_loader.reset_for_tests()
+
+
 # --------------------------------------------------------------------------
 # Tiny config helper
 # --------------------------------------------------------------------------

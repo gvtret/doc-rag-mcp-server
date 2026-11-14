@@ -8,12 +8,28 @@ from pathlib import Path
 import pytest
 
 
-def _client(tmp_corpus_root: Path):
+def _client(tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch | None = None):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     from doc_rag.server.mcp_http import app
 
+    if monkeypatch is not None:
+        # /health/ready gates on the model in semantic mode; report a ready
+        # model so endpoint-level assertions stay focused on manifest/job.
+        from doc_rag.raglib import model_loader as model_loader
+
+        monkeypatch.setattr(
+            model_loader,
+            "status",
+            lambda: {
+                "ready": True,
+                "path": "/m",
+                "fingerprint": "fp",
+                "error": None,
+                "source": "local",
+            },
+        )
     return TestClient(app), tmp_corpus_root
 
 
@@ -36,8 +52,8 @@ def test_health_ready_503_without_manifest(tmp_corpus_root: Path):
     assert "manifest_missing" in body["reasons"]
 
 
-def test_health_ready_200_with_manifest(tmp_corpus_root: Path):
-    client, root = _client(tmp_corpus_root)
+def test_health_ready_200_with_manifest(tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch):
+    client, root = _client(tmp_corpus_root, monkeypatch)
     (root / "build" / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
     )
