@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.19
+# ^ pinned: COPY --exclude (used below) requires BuildKit dockerfile
+# syntax >= 1.19; `:1` would silently pick an older frontend that errors.
 
 # --- UI builder stage --------------------------------------------------------
 # The Svelte + Vite frontend under `ui/` is the only web UI doc-rag ships —

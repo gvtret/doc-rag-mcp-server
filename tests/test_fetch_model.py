@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -90,11 +92,35 @@ def test_ignore_patterns_exclude_onnx_and_imgs(tmp_path, monkeypatch):
 
 
 def test_download_sets_hf_read_timeout(tmp_path, monkeypatch):
-    mod = load_fetch_model()
-    monkeypatch.setattr(mod, "snapshot_download", _fake_snapshot_download)
+    """The env var must reach huggingface_hub.constants, not just os.environ.
+
+    HF_HUB_DOWNLOAD_TIMEOUT is read by huggingface_hub.constants at import
+    time, so setting it inside download_model (after the module-level
+    import) was ineffective. fetch_model.py now sets it at module top,
+    BEFORE importing huggingface_hub. Verified in a fresh subprocess: a
+    clean interpreter loads the script (which sets the env var first),
+    then checks huggingface_hub.constants picked up 60.
+    """
     monkeypatch.delenv("HF_HUB_DOWNLOAD_TIMEOUT", raising=False)
-    mod.download_model("BAAI/bge-m3", tmp_path / "m")
-    assert os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] == "60"
+    code = (
+        "import importlib.util, os\n"
+        "os.environ.pop('HF_HUB_DOWNLOAD_TIMEOUT', None)\n"
+        f"spec = importlib.util.spec_from_file_location('fetch_model', {str(ROOT / 'scripts' / 'fetch_model.py')!r})\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(mod)\n"
+        "from huggingface_hub import constants\n"
+        "assert str(constants.HF_HUB_DOWNLOAD_TIMEOUT) == '60', constants.HF_HUB_DOWNLOAD_TIMEOUT\n"
+        "print('ok')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "ok"
 
 
 def test_cli_forwards_force_flag(tmp_path, monkeypatch):

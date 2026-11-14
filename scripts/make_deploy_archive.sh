@@ -33,9 +33,12 @@ git archive --format=tar HEAD | tar -x -C "${staging}"
 # Offline embedding model (models/ is gitignored, so git archive skips it):
 # copy it into the staging tree when present; otherwise the archive still
 # builds -- the operator fetches the model on the target via fetch_model.py.
+# Copy only the model itself (models/bge-m3), never the whole models/
+# dir: fetch_model.py leaves <dest>.old staging junk next to the model
+# and dragging it into the archive bloats the tarball for nothing.
 if [[ -f "${ROOT}/models/bge-m3/config.json" && -f "${ROOT}/models/bge-m3/modules.json" ]]; then
   mkdir -p "${staging}/models"
-  cp -a "${ROOT}/models/." "${staging}/models/"
+  cp -a "${ROOT}/models/bge-m3" "${staging}/models/"
   echo "[doc-rag] offline model included: models/bge-m3"
 else
   echo "[doc-rag] WARNING: models/bge-m3 not found -- archive ships WITHOUT the embedding model." >&2

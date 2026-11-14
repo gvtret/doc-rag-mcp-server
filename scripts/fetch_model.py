@@ -24,7 +24,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from huggingface_hub import snapshot_download
+# The HF read timeout from the spec; total wall-clock budget is unbounded.
+# Must be set BEFORE importing huggingface_hub: its constants module reads
+# HF_HUB_DOWNLOAD_TIMEOUT at import time, so setting it later (e.g. inside
+# download_model) has no effect on the already-imported value.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+
+from huggingface_hub import snapshot_download  # noqa: E402
 
 # Make doc_rag.raglib.model_paths importable both when run from a repo
 # checkout (src/ layout, not installed) and from an installed package.
@@ -59,8 +65,6 @@ def download_model(model: str, dest: Path, *, force: bool = False) -> dict[str, 
     dest = Path(dest).expanduser()
     staging = Path(str(dest) + ".staging")
     old = Path(str(dest) + ".old")
-    # The HF read timeout from the spec; total wall-clock budget is unbounded.
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
 
     if force and staging.exists():
         shutil.rmtree(staging)

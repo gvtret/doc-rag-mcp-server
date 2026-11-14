@@ -1181,6 +1181,10 @@ async def _lifespan(app: FastAPI):
     from doc_rag.raglib import model_loader as model_loader
     from doc_rag.server.retrieval import load_config
 
+    # Initialized before the try: if load_config() raises, the watcher
+    # block below must still see a dict (an empty cfg just disables the
+    # watcher) instead of raising NameError.
+    cfg: dict[str, Any] = {}
     try:
         cfg = load_config()
         model = await asyncio.to_thread(model_loader.load_embedder, cfg)

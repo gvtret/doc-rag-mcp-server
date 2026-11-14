@@ -118,9 +118,25 @@ if [[ -f "${INSTALL_ROOT}/models/bge-m3/config.json" && -f "${INSTALL_ROOT}/mode
   DST_MODEL_OK=1
 fi
 if [[ "${SRC_MODEL_OK}" -eq 1 ]]; then
+  # Copy only the model itself (models/bge-m3), never the whole models/
+  # dir: fetch_model.py leaves <dest>.old staging junk next to the model
+  # and dragging it into the install wastes disk and confuses upgrades.
+  # If both source and destination models exist but differ, warn: this
+  # copy silently overwrites an on-server model that may have been
+  # updated independently (e.g. via fetch_model.py on the server).
+  DST_WEIGHTS="${INSTALL_ROOT}/models/bge-m3/WEIGHTS.sha256"
+  SRC_WEIGHTS="${SRC_ROOT}/models/bge-m3/WEIGHTS.sha256"
+  if [[ "${DST_MODEL_OK}" -eq 1 && -f "${DST_WEIGHTS}" && -f "${SRC_WEIGHTS}" ]] \
+    && ! cmp -s "${DST_WEIGHTS}" "${SRC_WEIGHTS}"; then
+    echo "[install] WARNING: WEIGHTS.sha256 of models/bge-m3 differs between" >&2
+    echo "[install]   source (${SRC_ROOT}) and install target (${INSTALL_ROOT})." >&2
+    echo "[install]   The copy below will OVERWRITE the on-server model; if the" >&2
+    echo "[install]   server model was newer, its weights will be downgraded." >&2
+    echo "[install]   Existing FAISS index will become stale (fingerprint mismatch)." >&2
+  fi
   echo "[install] copying offline model models/bge-m3 -> ${INSTALL_ROOT}/models/"
   mkdir -p "${INSTALL_ROOT}/models"
-  cp -a "${SRC_ROOT}/models/." "${INSTALL_ROOT}/models/"
+  cp -a "${SRC_ROOT}/models/bge-m3" "${INSTALL_ROOT}/models/"
 elif [[ "${DST_MODEL_OK}" -eq 1 ]]; then
   echo "[install] keeping existing model at ${INSTALL_ROOT}/models/bge-m3 (source has none)."
 else

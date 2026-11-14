@@ -229,7 +229,7 @@
     {#if semanticExpected && indexed?.model_ready === false}
       <div class="banner err">{t("documents.banner_model_missing")}</div>
     {/if}
-    {#if indexed?.index_stale}
+    {#if semanticExpected && indexed?.index_stale}
       <div class="banner warn" title={indexed?.stale_reason ?? ""}>
         {t("documents.banner_index_stale")}
       </div>

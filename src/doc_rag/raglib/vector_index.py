@@ -83,6 +83,10 @@ class VectorIndex:
         old incremental behaviour (True). Errors reading the store
         metadata or computing the fingerprint fail closed (False): an
         unverifiable index must be rebuilt, not incrementally mixed.
+        Documented compromise: when the model resolves via the shared
+        HF cache (hf_cache deployments) there is no local model directory
+        to fingerprint, so `fingerprint_for_cfg` returns None and this
+        weights check is skipped for such deployments.
         """
         try:
             from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
@@ -254,13 +258,18 @@ class VectorIndex:
 
         # Full build
         log("[doc-rag][index] Building index from scratch...")
+        # Fingerprint FIRST (fail-closed early): if fetch_model.py swaps the
+        # weights while a 30-min encode is running, meta must record the
+        # fingerprint of the weights the vectors were actually built with.
+        # Computing it after _encode would legitimize mixing old vectors with
+        # a new fingerprint.
+        model_name = str(self._cfg.get("embeddings", {}).get("model_name", ""))
+        weights_sha256 = model_paths.fingerprint_for_cfg(self._cfg) or ""
         self._emit("embed", 0, len(chunks))
         texts = [str(c.get("text", "")) for c in chunks]
         vecs = self._encode(texts)
         self._emit("index", len(chunks), len(chunks))
         dim = int(vecs.shape[1])
-        model_name = str(self._cfg.get("embeddings", {}).get("model_name", ""))
-        weights_sha256 = model_paths.fingerprint_for_cfg(self._cfg) or ""
         store.init(
             dim=dim,
             model_name=model_name,

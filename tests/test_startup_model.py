@@ -198,11 +198,19 @@ def test_lifespan_records_failed_model_load(tmp_corpus_root):
 # ---------------------------------------------------------------------------
 
 
-def test_stale_notice_mentions_rebuild_and_fetch_model():
+def test_stale_notice_is_truthful_about_semantic_results():
+    """Stale index still SERVES semantic results (query encoded with new
+    weights against old vectors): the notice must not claim they are
+    lexical-only, and must point at rebuild + fetch_model."""
     from doc_rag.server.search_tool import _STALE_NOTICE
 
     assert "rebuild" in _STALE_NOTICE
     assert "fetch_model.py" in _STALE_NOTICE
+    # Truthfulness: semantic results are still served, degraded -- the old
+    # text falsely claimed "Ниже - результаты лексического поиска".
+    assert "неточными" in _STALE_NOTICE
+    assert "деградировавшими" in _STALE_NOTICE
+    assert "недоступен:" not in _STALE_NOTICE
 
 
 def test_model_notice_mentions_fetch_model():
