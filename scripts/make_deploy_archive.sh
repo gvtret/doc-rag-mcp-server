@@ -75,12 +75,18 @@ cat > "${staging}/DEPLOY.txt" <<'EOF'
 Проверка: curl -sS http://127.0.0.1:3333/health
 Индексация в контейнере: docker compose exec doc-rag-mcp doc-rag ingest
 
+Проверка готовности: curl -sS http://127.0.0.1:3333/health/ready
+Если модель в архиве отличается от той, на которой построен индекс (или индекс
+собран старой версией без weights_sha256), readiness вернёт 503 (index_stale):
+выполните docker compose exec doc-rag-mcp doc-rag rebuild.
+
 ---
 
 Без Docker (venv + systemd, автозапуск при загрузке):
 
   sudo bash scripts/install_server_native.sh
-  # или явный каталог и GPU: sudo bash scripts/install_server_native.sh --gpu /opt/doc-rag
+  # или явный каталог: sudo bash scripts/install_server_native.sh /opt/doc-rag
+  # без torch/embeddings: sudo bash scripts/install_server_native.sh --minimal /opt/doc-rag
 
 Проверка: curl -sS http://127.0.0.1:3333/health
 Индексация под пользователем docrag: sudo -u docrag -H bash -lc 'cd /путь/к/doc-rag && .venv/bin/doc-rag ingest'

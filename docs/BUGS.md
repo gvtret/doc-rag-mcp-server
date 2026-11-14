@@ -49,7 +49,10 @@ correctly. Same class of staleness as Gotcha-004 (index out of sync with
 **Fix applied:** `VectorIndex.build()` now calls `_store_matches_config()` before
 taking the incremental branch. For the FAISS backend it compares the on-disk
 `IndexMeta.model_name`/`normalize` against the current config; on mismatch it
-falls through to a full rebuild. Tests:
+falls through to a full rebuild. It also compares `IndexMeta.weights_sha256`
+with the aggregate weight fingerprint of the loaded model and forces a full
+rebuild when they differ or when the on-disk index predates fingerprinting.
+Tests:
 `tests/test_vector_index.py::TestModelChangeForcesRebuild` (model swap rebuilds;
 same model still updates incrementally).
 

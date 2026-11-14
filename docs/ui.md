@@ -21,6 +21,9 @@ http://<host>:3333/ui
   is stale (`index_stale`, weights fingerprint mismatch -> rebuild
   needed), INFO when a new weights revision is available on the HF Hub
   (`model_update_available`), all from `GET /ui/status`.
+  The ERROR and WARN banners are suppressed when `mcp.retrieval_mode` is
+  `lexical` (the mode comes from `GET /health/ready`); the INFO banner is always
+  shown.
 - **Browse indexed documents** in a table — doc_id, source file, chunks, parser used,
   ingest timestamp, quality badge (green/yellow/red, from `GET /ui/quality`), OCR badge
   (shown when RapidOCR fired on the document; tooltip has pages recognized + mean
@@ -53,15 +56,26 @@ UI can't trigger overlapping mutations.
 
 ## Degraded-mode banner
 
-When the configured retrieval mode is `semantic` but the FAISS index isn't ready
-(missing, corrupted, or being rebuilt), the UI shows a persistent banner at the top
-with a one-click **"Запустить rebuild"** / **"Start rebuild"** button. The banner
-is tied to the same polling that updates document status, so it auto-clears the
-moment the index is back.
+The Documents page renders three banners from the polling of
+`GET /ui/status` (`indexed.model_ready`, `indexed.index_stale`,
+`indexed.model_update_available`):
 
-This complements the MCP-side signal: a matching warning content-item is prepended to
-`doc_search` responses so MCP clients also know quality is degraded. See
-[mcp.md](mcp.md#tools-exposed).
+- ERROR when `model_ready` is false - only while `mcp.retrieval_mode` is not
+  `lexical`;
+- WARN when `index_stale` is true (weights fingerprint mismatch; the tooltip is
+  `stale_reason`);
+- INFO when `model_update_available` is true.
+
+There is no separate banner for a missing index. While semantic search is
+unusable the semantic row in the Documents summary shows "сем.: выкл" /
+"sem.: off", the footer shows "деградация" / "degraded" once the readiness
+probe fails, and the rebuild actions live on the Manage page ("Пересобрать
+индекс" / "Rebuild index") and on the Documents page ("Пересобрать выбранные"
+/ "Rebuild selected").
+
+This complements the MCP-side signal: a matching warning content-item is
+prepended to `doc_search` responses so MCP clients also know quality is
+degraded. See [mcp.md](mcp.md#tools-exposed).
 
 ## Config editor
 
@@ -137,6 +151,8 @@ These editors have no authentication of their own — see
 
 In addition, the server exposes the standard probe and observability
 endpoints described in [docs/deploy.md](deploy.md#observability):
-`GET /health/live`, `GET /health/ready`, `GET /metrics`. The Web UI
-itself does not use them — they exist for k8s/uptime monitors and
+`GET /health/live`, `GET /health/ready`, `GET /metrics`. The Web UI polls
+`GET /health/ready` for the footer health state and for
+`retrieval_mode` (which decides whether the model/index banners apply);
+`GET /health/live` and `GET /metrics` exist for k8s/uptime monitors and
 Prometheus scrapers.

@@ -14,7 +14,7 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 | `GET  /ui/mcp/cursor.json` | drop-in MCP config for Cursor |
 | `GET  /ui/mcp/vscode.json` | drop-in MCP config for VS Code |
 | `GET  /health/live` | liveness probe — always 200 |
-| `GET  /health/ready` | readiness probe — 503 if no manifest or job in flight |
+| `GET  /health/ready` | readiness probe - 503 if no manifest, a job is in flight, or (semantic/hybrid) the model is missing (`model_missing`) / the index is stale (`index_stale`) |
 | `GET  /metrics` | Prometheus text exposition (requires `[metrics]` extra) |
 
 ## Tools exposed
@@ -31,11 +31,18 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
   documents (not chunks) with relevance scores and download URLs.
   Arguments: `query: str` (required), `top_k: int` (default 10).
 
-If the FAISS index isn't available (e.g. corpus was wiped or rebuild is in progress),
-`doc_search` falls back to lexical search and prepends a warning content-item to the
-response telling the client that quality is degraded and pointing them at the
-"Rebuild индекса" / "Rebuild index" button in the UI. See
-[ui.md](ui.md#degraded-mode-banner) for the matching UI signal.
+`doc_search` prepends a warning content-item when semantic results cannot be
+trusted. Three cases:
+
+- the embedding model did not load - the notice says the model is unavailable
+  and points at `scripts/fetch_model.py`; lexical results are returned;
+- the FAISS index is missing or not built - the notice points at the
+  "Пересобрать индекс" / "Rebuild index" action; lexical results are returned;
+- the index was built with different weights (`index_stale`) - the notice says
+  the semantic results may be degraded; they are still returned (in hybrid mode
+  merged with lexical ones).
+
+See [ui.md](ui.md#degraded-mode-banner) for the matching UI signal.
 
 ## API stability (SemVer)
 

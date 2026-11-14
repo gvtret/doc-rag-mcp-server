@@ -17,11 +17,14 @@ without complaint; only explicitly higher versions are refused.
 
 1. **Empty index?** `doc-rag ingest` was never run, or the corpus was wiped. Drop files
    into `sources/incoming/` and ingest.
-2. **Index missing → degraded mode?** Check `GET /ui/status` or look for the
-   "Семантический поиск недоступен" / "Semantic search unavailable" banner. The
-   fix is `doc-rag rebuild` (or the "Запустить rebuild" / "Start rebuild" button).
-   Lexical fallback should still return *something*; if it doesn't, the manifest
-   itself is empty.
+2. **Index or model missing?** Check `GET /ui/status`: `indexed.model_ready`
+   false means the embedding model did not load, `indexed.semantic_search_ready`
+   false means no usable semantic index. A missing index has no banner of its
+   own - the Documents summary shows "сем.: выкл" / "sem.: off" (and the footer
+   shows "деградация" / "degraded" while the probe is not ready). The fix is
+   `doc-rag rebuild` (or "Пересобрать индекс" / "Rebuild index" on the Manage
+   page). Lexical fallback should still return *something*; if it does not, the
+   manifest itself is empty.
 
 ## Model / index diagnostics (Web UI banners)
 
@@ -44,8 +47,10 @@ unavailable, rebuild will not help) and serves lexical fallback results.
    [install.md](install.md#offline-model-delivery-fetch_modelpy)), then
    ship it by one of the channels in
    [deploy.md](deploy.md#model-delivery-channels).
-3. Tail `journalctl -u doc-rag-mcp` for the loader's error message; the
-   server needs a restart to retry the load.
+3. Tail `journalctl -u doc-rag-mcp` for the loader's error message. Failed loads
+   are not cached, so a search request retries on its own; `/health/ready` and
+   the banner only change after a successful attempt - restart the service to
+   re-run the startup warm-up and refresh the readiness state.
 
 Lexical search keeps working while the model is down.
 
@@ -56,7 +61,7 @@ longer matches `build/index/index_meta.json` (`weights_sha256`). The
 FAISS vectors were built with different weights, so semantic results
 would be silently degraded.
 
-Fix: run `doc-rag rebuild` (or "Запустить rebuild" in the UI) to
+Fix: run `doc-rag rebuild` (or "Пересобрать индекс" / "Rebuild index" on the Manage page) to
 re-embed the corpus with the current weights. `stale_reason` in
 `/ui/status` names the mismatch. After re-embedding, the banner clears
 by itself.
@@ -93,11 +98,13 @@ of serving a doomed request. If you still see a hang:
 ## FAISS rebuild is taking hours
 
 Expected on CPU. With `bge-large-en-v1.5` and ~4500 chunks, a CPU-only rebuild on
-8 cores takes roughly 3 hours. Use `--gpu` at install time, or a smaller model
+8 cores takes roughly 3 hours (the shipped default is `bge-m3`; these numbers are
+for `bge-large-en-v1.5`). Use `--gpu` at install time, or a smaller model
 (`bge-small-en-v1.5`) if you can't.
 
-While rebuild runs the server stays up and `doc_search` falls back to lexical search
-with a clear degraded-mode warning.
+While rebuild runs the server stays up. Search keeps using the previous index
+until the new one is written; once the index is being rewritten the request may
+fall back to lexical search with a degraded-mode notice.
 
 ## MCP not visible to Cursor / Agent says "no doc_search tool"
 

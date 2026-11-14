@@ -22,7 +22,11 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 - ~2 GB RAM for embeddings; ~1 GB extra for Docling models on first parse
 - `antiword` is optional (only needed for legacy `.doc` files)
 - OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install required
-- Node ≥ 20 (optional, v2.2+ — only needed to build the new Svelte `/ui-next/` page; the legacy inline `/ui` works without Node)
+- Node >= 20 (required to build the Svelte UI in `ui/`; there is no inline
+  fallback - `bootstrap.sh`, `install_server_native.sh` and
+  `docker/Dockerfile` fail without it)
+- ~2.5 GB disk for `models/bge-m3` (fetched by `bootstrap.sh` when the
+  embeddings extra is selected)
 
 ## Quickstart
 
@@ -42,7 +46,7 @@ Then open `http://127.0.0.1:3333/ui` or point Cursor at `http://127.0.0.1:3333/m
 
 | Guide | What's inside |
 | --- | --- |
-| [docs/install.md](docs/install.md) | venv + torch (CPU/GPU), system packages, OCR, config reference |
+| [docs/install.md](docs/install.md) | venv + torch (CPU/GPU), system packages, OCR, offline embedding model, config reference |
 | [docs/cli.md](docs/cli.md) | `doc-rag ingest / rebuild / delete / wipe / clean-orphans / clear-incoming` |
 | [docs/mcp.md](docs/mcp.md) | Cursor / Claude integration, Streamable HTTP + SSE, auth, rate limit |
 | [docs/ui.md](docs/ui.md) | Web UI: upload, dedup, ingest, delete, danger zone, degraded-mode banner |
@@ -62,6 +66,7 @@ doc-rag/
 │   ├── incoming/      # drop new documents here
 │   └── archived/      # processed files (moved automatically after ingest)
 ├── build/             # generated: docs_md/, chunks_jsonl/, embeddings/, index/, manifest.json
+├── models/            # offline embedding model (bge-m3, gitignored; fetched on install)
 ├── config/config.yaml # main config
 ├── src/doc_rag/       # Python package
 ├── scripts/           # bootstrap, run_mcp_http, install_server_native, ...

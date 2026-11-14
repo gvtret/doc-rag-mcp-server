@@ -23,6 +23,8 @@ For a deeper deploy walkthrough see [deploy.md](deploy.md).
 - `antiword` (optional, only for legacy `.doc` files)
 - OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install
 - Node ≥ 20 — required to build the Svelte Web UI (`ui/`). There is no fallback; without it `/ui` and `/ui-next/` don't serve anything. `bootstrap.sh` / `install_server_native.sh` fail loudly if Node/npm isn't on PATH.
+- ~2.5 GB disk for `models/bge-m3` (fetched by `bootstrap.sh` when the
+  embeddings extra is selected)
 
 ### Installing uv
 
@@ -57,6 +59,12 @@ Extras the bootstrap exposes:
 `server` (FastAPI + Uvicorn + python-multipart) is always installed —
 nothing else makes sense without the HTTP layer.
 
+When the `embeddings` extra is selected and `models/bge-m3` is absent,
+`bootstrap.sh` runs `scripts/fetch_model.py` (~2.2 GB). Set
+`DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N` to override the choice; a failed download
+only warns, so air-gapped installs still complete (semantic search stays off
+until the model is provided).
+
 Non-interactive mode (CI / scripted deploy):
 
 ```bash
@@ -66,6 +74,7 @@ DOC_RAG_BOOTSTRAP_EMBEDDINGS=Y \
 DOC_RAG_BOOTSTRAP_DEV=N \
 DOC_RAG_BOOTSTRAP_METRICS=N \
 DOC_RAG_BOOTSTRAP_UNSTRUCTURED=N \
+DOC_RAG_BOOTSTRAP_FETCH_MODEL=N \
 DOC_RAG_BOOTSTRAP_INGEST=N \
 bash scripts/bootstrap.sh
 ```
@@ -106,9 +115,16 @@ a connected box; the path is the same on all Linux hosts.
 
 ```bash
 cp .env.example .env       # optional: tweak port, origins, API key
+uv run python scripts/fetch_model.py   # ~2.2 GB, once; the build fails without it
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
+
+The image embeds the offline model: `docker-compose.yml` passes
+`REQUIRE_MODEL=1`, so `models/bge-m3` must exist before the build
+(`uv run python scripts/fetch_model.py`). A build with `REQUIRE_MODEL=0`
+(CI) installs the `server` extra only - no `faiss`, no `embeddings` - and
+serves lexical results with `/health/ready` 503 (`model_missing`).
 
 The image now builds via uv inside the container (see
 `docker/Dockerfile`); the lockfile guarantees the deployed venv matches
@@ -135,9 +151,14 @@ sudo bash scripts/install_server_native.sh
 The installer:
 
 - creates system user `docrag`
-- installs apt packages: `python3`, `python3-venv`, `build-essential`, `rsync`, `antiword`
-- syncs the repo into `INSTALL_ROOT` (preserves existing `build/` — manifest and FAISS survive upgrades)
-- bootstraps the venv via `bash scripts/bootstrap.sh` non-interactively (which installs uv and runs `uv sync --frozen`)
+- installs apt packages: `python3`, `python3-venv`, `python3-dev`,
+  `build-essential`, `ca-certificates`, `git`, `rsync`, `antiword`
+- syncs the repo into `INSTALL_ROOT` (preserves existing `build/`, `sources/`
+  and `models/` - manifest, FAISS index and a delivered model survive upgrades)
+- copies `models/bge-m3` from the source checkout when present
+- bootstraps the venv via `bash scripts/bootstrap.sh` non-interactively (which
+  installs uv, runs `uv sync --frozen`, and fetches `models/bge-m3` when the
+  embeddings extra is selected and no local copy exists)
 - installs and starts `doc-rag-mcp.service`
 - writes `/etc/default/doc-rag` (edit port / origins / API key, then `systemctl restart doc-rag-mcp`)
 
@@ -174,10 +195,13 @@ Main config: `config/config.yaml`. Key sections:
 
 ```yaml
 embeddings:
-  model_name: "BAAI/bge-large-en-v1.5"   # 1024-dim, multilingual works fine
-  device: "cpu"                          # "cpu" | "cuda" | "auto"
+  model_name: "BAAI/bge-m3"   # shipped default: multilingual, 1024-dim
+  device: "cpu"               # "cpu" | "cuda" | "auto"
   batch_size: 32
+  max_seq_length: 512         # cap to the chunk size; bge-m3 defaults to 8192
   normalize: true
+  update_check_interval_hours: 72   # 0 disables the HF Hub weight check
+  # model_path: "/path/to/models/bge-m3"   # explicit snapshot; disables the check
 ```
 
 For low-memory machines: `bge-small-en-v1.5` (~120 MB). See
@@ -185,9 +209,13 @@ For low-memory machines: `bge-small-en-v1.5` (~120 MB). See
 
 ### Offline model delivery (fetch_model.py)
 
-By default sentence-transformers downloads the model from the HF Hub on
-first use. For offline / air-gapped hosts, fetch the snapshot once on a
-connected machine and ship it with the repo:
+The server never downloads the model at runtime: `model_loader` loads it
+with `local_files_only=True` from a local directory (resolution order
+below), falling back to an already populated Hugging Face cache by
+`embeddings.model_name` only when no local directory resolves. A
+`models/bge-m3` snapshot therefore has to exist on every host that runs
+semantic search - fetch it once on a connected machine and ship it with
+the repository:
 
 ```bash
 uv run python scripts/fetch_model.py
@@ -220,10 +248,21 @@ what `fetch_model.py` produces by default, regardless of
 `embeddings.model_path` at its snapshot explicitly (this also disables
 the background HF Hub update check, since no Hub repo is implied).
 
+The model is loaded at startup (FastAPI lifespan, `local_files_only=True`):
+the log shows `Модель эмбеддингов загружена при старте (source=..., path=...)`
+or an error. A failed load does not stop the service - `doc_search` returns
+lexical results with a notice and `GET /health/ready` returns 503 with reason
+`model_missing` in semantic/hybrid mode.
+
 `update_check_interval_hours` (default `72`, `0` disables) controls the
 read-only background comparison of the local weights against the HF Hub
 - no download, no swap; the result surfaces as
 `model_update_available` in `/ui/status` and the Web UI banner.
+The first check runs right after startup, then every interval. Only Hub files
+with published LFS hashes are compared, so a repo without LFS weight files
+never reports an update. The check is also disabled when
+`embeddings.model_path` is set, when no model directory resolves, or when
+`huggingface_hub` is not installed.
 
 ### Chunking
 
@@ -353,7 +392,8 @@ NVIDIA-only), same as the CUDA path above.
 ## Performance notes
 
 - CPU-only build is the supported path. Full corpus rebuild on Docling is the heavier cost; plan large ingests off-hours.
-- `bge-large-en-v1.5` ≈ 1.5 GB RAM during encoding.
+- `bge-large-en-v1.5` ≈ 1.5 GB RAM during encoding (the shipped default is
+  `bge-m3`; these numbers are for `bge-large-en-v1.5`).
 - For low-RAM use `bge-small-en-v1.5`.
 - FAISS index is `IndexFlatIP` (exact, no training step).
 

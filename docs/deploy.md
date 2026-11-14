@@ -11,6 +11,7 @@ Three deployment styles, in increasing order of operational seriousness:
 ```bash
 cp .env.example .env
 mkdir -p build sources/incoming sources/archived && chown -R 1000:1000 build sources
+uv run python scripts/fetch_model.py   # ~2.2 GB, once; the build fails without it
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
@@ -19,9 +20,15 @@ The container runs as an unprivileged user (uid 1000), so the bind-mounted
 `./build` and `./sources` must be writable by that uid on the host — hence the
 `chown` step above.
 
+`docker compose` builds with `REQUIRE_MODEL=1`, so the build stops with
+`models/bge-m3 missing` unless the model was fetched first - see
+[Model delivery channels](#model-delivery-channels).
+
 Volumes (defined in `docker-compose.yml`):
 
-- `./build` — manifest + FAISS index, **persists across `docker compose down`**
+- `./build` — manifest + FAISS index + the HF cache the container writes
+  under `build/hf-cache` (`HF_HOME=/app/build/hf-cache`), **persists across
+  `docker compose down`**
 - `./config` (ro)
 - `./sources`
 
@@ -54,8 +61,12 @@ What it does:
 1. `apt install`s base packages: `python3-venv`, `build-essential`, `tesseract-ocr*`, `antiword`.
 2. Creates system user `docrag` with `/var/lib/docrag` home.
 3. `rsync`s the repo into `INSTALL_ROOT`, protecting any existing `build/`
-   directory — manifest and FAISS index survive code upgrades.
-4. Runs `scripts/bootstrap.sh` non-interactively under `docrag`.
+   and `models/` directories - manifest and FAISS index survive code upgrades,
+   and a model already delivered to the server is never deleted.
+4. Copies `models/bge-m3` from the source checkout when present (warns when its
+   `WEIGHTS.sha256` differs from the installed copy), then runs
+   `scripts/bootstrap.sh` non-interactively under `docrag`; bootstrap fetches the
+   model itself when embeddings are selected and no local copy exists yet.
 5. Renders `systemd/doc-rag-mcp.service.in` → `/etc/systemd/system/doc-rag-mcp.service`.
 6. Writes `/etc/default/doc-rag` (first install only; subsequent installs don't overwrite).
 7. `systemctl enable --now doc-rag-mcp`.
@@ -133,7 +144,16 @@ Once the server is up on `<host>:3333`, configure Cursor/Claude to talk to it. S
 | Deploy archive | scp new archive, `tar xzf`, run `install_server_native.sh` |
 
 The FAISS index does **not** need to be rebuilt for code-only upgrades.
-Rebuild only if the chunk schema or embedding model changes.
+Rebuild when the chunk schema changes, when the embedding weights change, and
+once when upgrading from a build that predates `weights_sha256` in
+`build/index/index_meta.json` (such an index has no recorded fingerprint, so
+the next `ingest`/`rebuild` re-embeds the whole corpus).
+
+Only `install_server_native.sh` can carry new weights onto an existing server:
+it copies `models/bge-m3` from the source checkout over the installed model and
+warns when the two `WEIGHTS.sha256` files differ. That overwrite makes the
+on-server index stale - `/health/ready` returns 503 (`index_stale`) and the
+Documents page shows the WARN banner until `doc-rag rebuild` finishes.
 
 ## Model delivery channels
 
@@ -143,9 +163,13 @@ works. Three channels, matching the deployment styles above:
 ### Docker Compose (baked into the image)
 
 `docker/Dockerfile` takes a `REQUIRE_MODEL` build-arg (set to `"1"` in
-`docker-compose.yml`). With `REQUIRE_MODEL=1` the build copies
-`models/bge-m3/` into the image and fails fast if the directory is
-missing:
+`docker-compose.yml`). `REQUIRE_MODEL=1` copies the whole `models/`
+directory into the image (`COPY --chown=docrag:docrag`, in its own early
+layer), fails fast when `models/bge-m3/config.json` is missing, and installs
+the `faiss` + `embeddings` extras. `REQUIRE_MODEL=0` (the CI default)
+installs `server` only - a model-free image that cannot answer semantic
+queries. The image sets `HF_HOME=/app/build/hf-cache`; the Dockerfile syntax
+is pinned to `dockerfile:1.19` because it relies on `COPY --exclude`:
 
 ```bash
 uv run python scripts/fetch_model.py   # on a connected machine, in the repo root
@@ -157,8 +181,12 @@ docker compose up -d --build
 `scripts/install_server_native.sh` rsyncs the repo into `INSTALL_ROOT`
 with `--filter 'protect models/'` - an upgrade never deletes a model
 already delivered to the server (same protection as `build/` and
-`sources/`). The model is copied separately after the rsync, so a
-partially downloaded snapshot can never clobber a working one:
+`sources/`). The model is copied separately after the rsync. Note that
+the copy is a plain directory copy: a partially downloaded but
+marker-valid snapshot on the source side would overwrite the working
+one, and copying a model whose `WEIGHTS.sha256` differs from the
+installed copy reverts the server's weights and makes the index stale
+(run `doc-rag rebuild` afterwards - see [Upgrades](#upgrades)):
 
 ```bash
 sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/python scripts/fetch_model.py'
@@ -166,9 +194,11 @@ sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/python scripts/fetc
 
 ### Deploy archive (shipped in the tarball)
 
-`scripts/make_deploy_archive.sh` includes `models/` when present and
-warns loudly when it is not (the Docker build with `REQUIRE_MODEL=1`
-will fail without it). Fetch the model before packing:
+`scripts/make_deploy_archive.sh` adds `models/bge-m3` to the staging tree when
+both marker files exist (`models/` is gitignored, so `git archive` never
+contains it) and warns loudly when it does not - the archive then ships
+without the model and a Docker build with `REQUIRE_MODEL=1` fails. Fetch the
+model before packing:
 
 ```bash
 uv run python scripts/fetch_model.py
@@ -185,6 +215,10 @@ The interesting state is:
 - `build/embeddings/`
 - `build/audit.log` (append-only history of destructive operations)
 - `sources/archived/` (originals, if you care about retaining them)
+
+`models/` is not part of the backup - the snapshot is re-fetchable with
+`uv run python scripts/fetch_model.py` (or shipped again via the deploy
+archive), so don't look for the ~2.2 GB in the tarball.
 
 Everything under `build/` can be regenerated from `sources/archived/`
 via `doc-rag rebuild` (or full `ingest` if the markdown is gone too),
@@ -214,8 +248,12 @@ touching the live tree.
 ### Observability
 
 - Liveness probe: `GET /health/live` — always 200 while the process is up.
-- Readiness probe: `GET /health/ready` — 503 if no manifest exists or
-  an ingest/rebuild is in flight.
+- Readiness probe: `GET /health/ready` - 503 if no manifest exists, an
+  ingest/rebuild is in flight, or (semantic/hybrid mode) the embedding model
+  cannot be loaded (`reasons: ["model_missing"]`) or the index was built with
+  different weights (`reasons: ["index_stale"]`). Lexical mode skips both
+  gates. The body also carries `checks` with `model_ready`, `faiss_index` and
+  `disk_space`.
 - Prometheus scrape: `GET /metrics`. Requires the `[metrics]` extra
   (`pip install -e .[metrics]`); otherwise the endpoint returns 503
   with a hint.

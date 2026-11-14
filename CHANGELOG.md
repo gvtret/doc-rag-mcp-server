@@ -3,6 +3,36 @@
 All notable changes to `doc-rag` are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+Offline model supply: `BAAI/bge-m3` ships with the repo instead of being
+downloaded from the HF Hub at runtime.
+
+### Added
+- **`scripts/fetch_model.py`**: downloads the `bge-m3` snapshot into
+  `models/bge-m3/` (gitignored) via a staging directory with atomic swap,
+  records the aggregate weights fingerprint as `WEIGHTS.sha256`; a failed
+  download never touches the working model.
+- **Offline model delivery channels**: `docker/Dockerfile` `REQUIRE_MODEL`
+  build-arg (compose sets `1`, CI default `0`), `install_server_native.sh`
+  rsync protection of `models/` plus a separate model copy with a
+  `WEIGHTS.sha256` mismatch warning, and `make_deploy_archive.sh` packing
+  `models/bge-m3` when present.
+- **Weights fingerprint guard**: `index_meta.json` now records
+  `weights_sha256`; a mismatch with the loaded model (or an index built
+  before fingerprinting existed) forces a full re-embed instead of an
+  incremental update (extends the BUG-006 fix).
+- **Readiness gates**: `GET /health/ready` returns 503 with
+  `model_missing` (model cannot be loaded) or `index_stale` (index built
+  with different weights) reasons in semantic/hybrid mode.
+- **`doc_search` degraded notices**: three branched warnings (model
+  missing / index missing / index stale) prepended to responses.
+- **Web UI model/index banners** on the Documents page (ERROR / WARN /
+  INFO) driven by `GET /ui/status`.
+- **Background HF Hub check**: `embeddings.update_check_interval_hours`
+  (default 72, `0` disables) compares local weight hashes against the Hub
+  (LFS-only, no download) and surfaces `model_update_available`.
+
 ## v5.2.0 — 2026-07-25
 
 Security/correctness audit fixes, `DOC_RAG_API_KEY` and legacy inline `/ui` removed, Web UI reskinned.

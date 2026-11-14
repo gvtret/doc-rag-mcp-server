@@ -54,6 +54,12 @@ skipped (still archived/deduped). To force full overwrite, set
 Rebuild chunks → embeddings → FAISS from `build/docs_md/` (skips parsing).
 Use when you change chunk size, embedding model, or recover from a corrupt index.
 
+Also run it after the weights on disk change (a re-fetched or downgraded
+`models/bge-m3`): the index records the weights fingerprint as
+`weights_sha256` in `index_meta.json`, and a mismatch forces a full re-embed.
+An index built before fingerprints existed is fully re-embedded on the next
+`ingest`/`rebuild` as well.
+
 ```bash
 doc-rag rebuild
 ```
