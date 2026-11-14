@@ -189,11 +189,26 @@ class TestFaissSaveAtomic:
         assert (tmp_path / "faiss.index").read_bytes() == old_index_bytes
         assert (tmp_path / "index_meta.json").read_text(encoding="utf-8") == old_meta
 
-    def test_crash_during_meta_write_keeps_old_pair(self, tmp_path: Path) -> None:
+    def test_crash_during_meta_write_new_index_old_meta(self, tmp_path: Path) -> None:
+        """Crash between index replace and meta write: documented drift window.
+
+        Before the failing save() we add() new vectors so the in-memory
+        index genuinely differs from the on-disk meta. The documented
+        behavior is then asserted explicitly: the index file on disk is
+        the NEW complete index, while meta may still be the OLD one
+        (em dash removed): the pair is NOT guaranteed mutually
+        consistent in this window.
+        What IS guaranteed: both files are individually complete and
+        untruncated (never a torn write), and no .tmp litter remains.
+        """
         faiss, store = self._make_store(tmp_path)
         store.save()
-        old_index_bytes = (tmp_path / "faiss.index").read_bytes()
-        old_meta = (tmp_path / "index_meta.json").read_text(encoding="utf-8")
+
+        # Make index and meta actually differ from what's on disk.
+        extra = np.eye(4, dtype=np.float32) * 0.5
+        store.add(extra, ["e", "f", "g", "h"])
+        old_meta = json.loads((tmp_path / "index_meta.json").read_text(encoding="utf-8"))
+        assert old_meta["chunk_ids"] == ["a", "b", "c", "d"]
 
         with patch(
             "doc_rag.raglib.vectorstore.faiss_store.atomic_write_text",
@@ -202,8 +217,19 @@ class TestFaissSaveAtomic:
             with pytest.raises(OSError):
                 store.save()
 
-        assert (tmp_path / "faiss.index").read_bytes() == old_index_bytes
-        assert (tmp_path / "index_meta.json").read_text(encoding="utf-8") == old_meta
+        # Index on disk was already replaced: it is the NEW index, complete.
+        new_idx = faiss.read_index(str(tmp_path / "faiss.index"))
+        assert new_idx.ntotal == 8
+
+        # Meta on disk may be the OLD one (documented drift window).
+        meta_on_disk = json.loads((tmp_path / "index_meta.json").read_text(encoding="utf-8"))
+        assert meta_on_disk["chunk_ids"] == ["a", "b", "c", "d"]
+
+        # The guarantee that DOES hold: both files are intact, not truncated.
+        assert os.path.getsize(tmp_path / "faiss.index") > 0
+        assert os.path.getsize(tmp_path / "index_meta.json") > 0
+        leftovers = [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
+        assert leftovers == []
 
 
 # -- _append_chunks flush/fsync --
@@ -241,6 +267,52 @@ class TestAppendChunks:
         lines = Path(chunks_path).read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
         assert json.loads(lines[0])["text"] == "\u0442\u0435\u043a\u0441\u0442"
+
+    def test_append_after_partial_json_line_concatenates(self, tmp_path: Path) -> None:
+        """KNOWN RISK (documented in _append_chunks docstring).
+
+        Simulates a crash that left a partial last line (no newline, no
+        closing brace) in chunks.jsonl. The current implementation does
+        NOT detect or repair this: the next append concatenates onto the
+        partial line, producing concatenated/invalid JSON, and readers
+        like _load_existing_chunks raise JSONDecodeError. This test pins
+        the current behavior explicitly and names the hazard; a future
+        repair/trim mechanism will flip this test.
+        """
+        from doc_rag.raglib.pipeline import _append_chunks, _load_existing_chunks
+
+        chunks_path = str(tmp_path / "chunks.jsonl")
+        # A crash left a partial line: written without a newline and the
+        # process died before the closing part was flushed.
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            f.write('{"chunk_id": "a:0", "text": "old"')
+
+        _append_chunks(chunks_path, [{"chunk_id": "b:0", "text": "new"}])
+
+        raw = Path(chunks_path).read_text(encoding="utf-8")
+        # The file is now one concatenated blob, not two clean JSONL lines.
+        assert raw.count("\n") == 1  # only the appended record's newline
+        first_line = raw.split("\n")[0]
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(first_line)
+        # And the documented reader failure:
+        with pytest.raises(json.JSONDecodeError):
+            _load_existing_chunks(chunks_path)
+
+    def test_append_preserves_mode_of_existing_file(self, tmp_path: Path) -> None:
+        """atomic_write_bytes preserves an existing target's permissions."""
+        p = tmp_path / "cfg.json"
+        p.write_text("{}", encoding="utf-8")
+        os.chmod(p, 0o640)
+        atomic_write_text(str(p), '{"x": 1}')
+        assert json.loads(p.read_text(encoding="utf-8")) == {"x": 1}
+        assert (p.stat().st_mode & 0o777) == 0o640
+
+    def test_fresh_file_gets_0644(self, tmp_path: Path) -> None:
+        """A target that did not exist gets 0644 (not mkstemp's 0600)."""
+        p = tmp_path / "new.json"
+        atomic_write_text(str(p), "{}")
+        assert (p.stat().st_mode & 0o777) == 0o644
 
 
 # -- manifest/chunks writes during rebuild --

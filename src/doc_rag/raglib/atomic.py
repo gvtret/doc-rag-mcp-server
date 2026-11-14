@@ -21,6 +21,18 @@ def fsync_dir(path: str) -> None:
         os.close(fd)
 
 
+def _fsync_and_replace(fd: int, tmp_path: str, path: str) -> None:
+    """fsync the tmp file, preserve the target's mode, then rename it over."""
+    # mkstemp creates the file with 0600; an existing target's permissions
+    # must survive the replacement (and a fresh file should be 0644).
+    if os.path.exists(path):
+        os.fchmod(fd, os.stat(path).st_mode & 0o7777)
+    else:
+        os.fchmod(fd, 0o644)
+    os.fsync(fd)
+    os.replace(tmp_path, path)
+
+
 def atomic_write_bytes(path: str, data: bytes) -> None:
     """Write bytes to path atomically: tmp file in the same dir, fsync, replace."""
     directory = os.path.dirname(path) or "."
@@ -32,8 +44,7 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+            _fsync_and_replace(f.fileno(), tmp_path, path)
     except BaseException:
         try:
             os.unlink(tmp_path)
