@@ -499,11 +499,65 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.split(r"[\s\W]+", text.lower()) if len(t) > 1]
 
 
-def lexical_search(chunks: list[dict[str, Any]], query: str, top_k: int) -> list[dict[str, Any]]:
+def chunk_meta_from_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build the chunk_id -> metadata map VectorIndex.search_with_filter needs.
+
+    The FAISS store itself has no payloads; doc_id, section_path and is_table
+    live on the chunk dicts loaded from chunks.jsonl. doc_id falls back to
+    the chunk_id prefix, matching the index-side convention.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for c in chunks:
+        cid = str(c.get("chunk_id", ""))
+        if not cid:
+            continue
+        out[cid] = {
+            "doc_id": str(c.get("doc_id", "") or cid.split(":")[0]),
+            "section_path": str(c.get("section_path", "")),
+            "is_table": bool(c.get("is_table")),
+        }
+    return out
+
+
+def _chunk_passes_filters(chunk: dict[str, Any], filters: dict[str, Any]) -> bool:
+    """True if a chunk dict satisfies the metadata filters (same keys as the
+    vector path: doc_id, doc_ids, section_path prefix, is_table)."""
+    cid = str(chunk.get("chunk_id", ""))
+    doc_id = str(chunk.get("doc_id", "") or cid.split(":")[0])
+    if "doc_id" in filters and doc_id != str(filters["doc_id"]):
+        return False
+    if "doc_ids" in filters:
+        want = filters["doc_ids"]
+        want_list = [str(d) for d in want] if isinstance(want, (list, tuple, set)) else [str(want)]
+        if doc_id not in want_list:
+            return False
+    if "section_path" in filters:
+        sec = str(chunk.get("section_path", "") or "")
+        if not sec.startswith(str(filters["section_path"])):
+            return False
+    if "is_table" in filters and filters["is_table"]:
+        if not bool(chunk.get("is_table")):
+            return False
+    return True
+
+
+def lexical_search(
+    chunks: list[dict[str, Any]],
+    query: str,
+    top_k: int,
+    filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Improved lexical search with tokenization, IDF weighting, and phrase matching."""
     q = (query or "").strip()
     if not q:
         return []
+
+    # Metadata pre-filter BEFORE scoring: a filter matching nothing must stay
+    # empty, not degrade to unfiltered results.
+    if filters:
+        chunks = [c for c in chunks if _chunk_passes_filters(c, filters)]
+        if not chunks:
+            return []
 
     query_tokens = _tokenize(q)
     q_lower = q.lower()
@@ -602,7 +656,13 @@ def semantic_search(
             return None
 
         if filters:
-            dists, ids, _payloads = vi.search_with_filter(query, top_k, filters)
+            dists, ids, _payloads = vi.search_with_filter(
+                query, top_k, filters, chunk_meta=chunk_meta_from_chunks(chunks)
+            )
+            if not ids:
+                # Filter matched nothing: empty result, NOT an unfiltered
+                # search -- the caller must not receive wrong documents.
+                return []
         else:
             dists, ids = vi.search(query, top_k)
         if not ids:
@@ -727,16 +787,22 @@ def semantic_search(
     vec = model.encode([query], normalize_embeddings=True)
     vec = np.asarray(vec, dtype=np.float32)
 
-    distances, indices = index.search(vec, max(1, int(top_k)))
+    # Legacy path has no payload store: oversample + post-filter so the
+    # filters are enforced here too (before the fix they were silently
+    # dropped and clients got unfiltered results).
+    oversample = max(1, int(top_k)) * 20 if filters else max(1, int(top_k))
+    distances, indices = index.search(vec, oversample)
 
     out: list[dict[str, Any]] = []
     for rank, idx in enumerate(indices[0]):
         ii = int(idx)
         if 0 <= ii < len(chunks):
             item = dict(chunks[ii])
+            if filters and not _chunk_passes_filters(item, filters):
+                continue
             item["score"] = float(distances[0][rank])
             out.append(item)
-    return out
+    return out[: max(1, int(top_k))]
 
 
 def _rrf_fusion(
@@ -779,7 +845,7 @@ def hybrid_search(
     semantic_weight: float = 0.5,
 ) -> list[dict[str, Any]]:
     """Hybrid search: combine lexical + semantic via RRF."""
-    lex_results = lexical_search(chunks, query, top_k * 2)
+    lex_results = lexical_search(chunks, query, top_k * 2, filters=filters)
     sem_results = semantic_search(
         cfg, chunks, query, top_k * 2, namespace=namespace, filters=filters
     )
@@ -813,4 +879,6 @@ def doc_search(
         res = semantic_search(cfg, chunks, query, top_k, namespace=namespace, filters=filters)
         if res is not None:
             return _enrich_results_with_source_file(cfg, res)
-    return _enrich_results_with_source_file(cfg, lexical_search(chunks, query, top_k))
+    return _enrich_results_with_source_file(
+        cfg, lexical_search(chunks, query, top_k, filters=filters)
+    )

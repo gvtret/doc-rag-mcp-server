@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -19,7 +19,40 @@ from doc_rag.raglib.chunking_meta import config_fingerprint
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
+if TYPE_CHECKING:
+    from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
+
 logger = logging.getLogger(__name__)
+
+# Metadata pre-filter threshold: below this many allowed vectors the query is
+# scored exactly against their reconstructed vectors; above it an oversampled
+# ANN search with post-filtering is cheaper.
+_EXACT_SCAN_LIMIT = 5000
+
+
+def _chunk_matches_filters(chunk_id: str, meta: dict[str, Any], filters: dict[str, Any]) -> bool:
+    """True if a chunk passes the metadata filters.
+
+    Keys: doc_id (str equality), doc_ids (list membership), section_path
+    (prefix match), is_table (bool). doc_id falls back to the chunk_id
+    prefix when the metadata lacks an explicit doc_id.
+    """
+    doc_id = str(meta.get("doc_id", "") or chunk_id.split(":")[0])
+    if "doc_id" in filters and doc_id != str(filters["doc_id"]):
+        return False
+    if "doc_ids" in filters:
+        want = filters["doc_ids"]
+        want_list = [str(d) for d in want] if isinstance(want, (list, tuple, set)) else [str(want)]
+        if doc_id not in want_list:
+            return False
+    if "section_path" in filters:
+        sec = str(meta.get("section_path", "") or "")
+        if not sec.startswith(str(filters["section_path"])):
+            return False
+    if "is_table" in filters and filters["is_table"]:
+        if not bool(meta.get("is_table")):
+            return False
+    return True
 
 
 def _load_embedder(cfg: dict[str, Any]) -> Any:
@@ -394,20 +427,97 @@ class VectorIndex:
         return store.search(vec, top_k)
 
     def search_with_filter(
-        self, query: str, top_k: int = 6, filters: dict[str, Any] | None = None
+        self,
+        query: str,
+        top_k: int = 6,
+        filters: dict[str, Any] | None = None,
+        chunk_meta: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[np.ndarray, list[str], list[dict[str, Any]]]:
-        """Hybrid search: vector similarity + metadata filter.
+        """Search with metadata filters applied.
 
-        Only supported on Qdrant backend. Falls back to plain search on FAISS/pgvector.
+        Supported filter keys: doc_id (str), doc_ids (list), section_path
+        (prefix match), is_table (bool).
+
+        Backends with native filter support (Qdrant) handle filters
+        server-side. FAISS has no payloads, so the caller passes chunk_meta
+        (chunk_id -> {"doc_id", "section_path", "is_table"}): allowed chunk
+        ids are pre-filtered by metadata, then scored exactly against their
+        vectors (reconstruct + dot scan, up to 5000 allowed), or via
+        oversampled search + post-filter above that.
+
+        Fail-loud policy: filters given without chunk_meta raise ValueError
+        instead of silently returning unfiltered results. With no filters
+        the old behavior is kept (plain search, synthetic payloads).
         """
         store = self._ensure_store()
         if store.size == 0:
             return np.array([], dtype=np.float32), [], []
+        if not filters:
+            vec = self._encode([query])
+            dists, ids = store.search(vec, top_k)
+            return dists, ids, [{"chunk_id": cid} for cid in ids]
+
+        if hasattr(store, "search_with_filter"):
+            return store.search_with_filter(self._encode([query]), top_k, filters)
+
+        if chunk_meta is None:
+            raise ValueError(
+                "filters require chunk metadata (chunk_meta) on this backend; "
+                "refusing to silently ignore the filters"
+            )
+
+        allowed_ids = [
+            cid for cid, meta in chunk_meta.items() if _chunk_matches_filters(cid, meta, filters)
+        ]
+        if not allowed_ids:
+            return np.array([], dtype=np.float32), [], []
+
+        try:
+            from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
+        except Exception:
+            FaissVectorStore = None  # type: ignore[misc,assignment]
+        if FaissVectorStore is not None and isinstance(store, FaissVectorStore):
+            return self._faiss_filtered_search(store, query, top_k, allowed_ids)
+
+        # Non-FAISS backend without native filter support: oversample and
+        # post-filter so the filters are still enforced, not ignored.
         vec = self._encode([query])
-        if hasattr(store, "search_with_filter") and filters:
-            return store.search_with_filter(vec, top_k, filters)
-        dists, ids = store.search(vec, top_k)
-        return dists, ids, [{"chunk_id": cid} for cid in ids]
+        oversample = min(max(top_k * 20, top_k), store.size)
+        dists, ids = store.search(vec, oversample)
+        allowed = set(allowed_ids)
+        kept = [(d, cid) for d, cid in zip(dists, ids, strict=False) if cid in allowed]
+        kept = kept[:top_k]
+        out_d = np.array([d for d, _ in kept], dtype=np.float32)
+        return out_d, [cid for _, cid in kept], [{"chunk_id": cid} for _, cid in kept]
+
+    def _faiss_filtered_search(
+        self, store: FaissVectorStore, query: str, top_k: int, allowed_ids: list[str]
+    ) -> tuple[np.ndarray, list[str], list[dict[str, Any]]]:
+        """Score the query exactly against the allowed vectors (FAISS).
+
+        Exact reconstruct + dot scan when the allowed set is small enough;
+        otherwise an oversampled ANN search with post-filtering. Returns
+        exactly min(top_k, len(allowed)) best allowed chunks, best first.
+        """
+        vec = self._encode([query])
+        positions = store.positions_for(allowed_ids)
+        if not positions:
+            return np.array([], dtype=np.float32), [], []
+        if len(positions) <= _EXACT_SCAN_LIMIT:
+            sub = np.empty((len(positions), int(store.get_meta().dim)), dtype=np.float32)
+            for i, p in enumerate(positions):
+                sub[i] = store._index.reconstruct(p)
+            scores = sub @ vec[0]
+            order = np.argsort(-scores)[:top_k]
+            ids = [store._meta.chunk_ids[positions[i]] for i in order]
+            out_d = np.asarray(scores[order], dtype=np.float32)
+            return out_d, ids, [{"chunk_id": cid} for cid in ids]
+        oversample = min(max(top_k * 20, top_k), int(store._index.ntotal))
+        dists, ids = store.search(vec, oversample)
+        allowed = set(allowed_ids)
+        kept = [(d, cid) for d, cid in zip(dists, ids, strict=False) if cid in allowed][:top_k]
+        out_d = np.asarray([d for d, _ in kept], dtype=np.float32)
+        return out_d, [cid for _, cid in kept], [{"chunk_id": cid} for _, cid in kept]
 
     def delete(self, doc_ids: set[str]) -> int:
         """Delete all chunks belonging to the given doc_ids."""
