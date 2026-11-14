@@ -88,7 +88,8 @@ fi
 echo "[install] sync project -> ${INSTALL_ROOT} ..."
 # `build/` (manifest, chunks.jsonl, FAISS, blocks/) and `sources/`
 # (incoming + archived documents) are data the operator owns — must
-# survive a re-run of this script. We:
+# survive a re-run of this script. Same for `models/` (offline embedding
+# model, gitignored in the source checkout and usually absent there):
 #   - `--exclude` both at the source side so they are never sent;
 #   - `--filter 'protect …/'` so `--delete` cannot remove them on the
 #     destination even if a future rsync version stops respecting
@@ -96,11 +97,26 @@ echo "[install] sync project -> ${INSTALL_ROOT} ..."
 rsync -a --delete \
   --filter 'protect build/' \
   --filter 'protect sources/' \
+  --filter 'protect models/' \
   --exclude '.git' \
   --exclude '.venv' \
   --exclude 'build' \
   --exclude 'sources' \
+  --exclude 'models' \
   "${SRC_ROOT}/" "${INSTALL_ROOT}/"
+
+# The offline embedding model is copied separately (not via the rsync above,
+# which excludes it so a re-run can never wipe a previously deployed model
+# when the source checkout has none).
+if [[ -f "${SRC_ROOT}/models/bge-m3/config.json" ]]; then
+  echo "[install] copying offline model models/bge-m3 -> ${INSTALL_ROOT}/models/"
+  mkdir -p "${INSTALL_ROOT}/models"
+  cp -a "${SRC_ROOT}/models/." "${INSTALL_ROOT}/models/"
+else
+  echo "[install] WARNING: ${SRC_ROOT}/models/bge-m3 not found — installing without the offline model."
+  echo "[install] If models/bge-m3/config.json is missing on the target too, the embeddings stack"
+  echo "[install] will not work offline. To fetch: sudo -u ${SERVICE_USER} -H python3 ${INSTALL_ROOT}/scripts/fetch_model.py"
+fi
 
 mkdir -p "${INSTALL_ROOT}/build" "${INSTALL_ROOT}/sources/incoming" "${INSTALL_ROOT}/sources/archived"
 chmod a+x "${INSTALL_ROOT}/scripts/run_mcp_http.sh" "${INSTALL_ROOT}/scripts/bootstrap.sh" 2>/dev/null || true

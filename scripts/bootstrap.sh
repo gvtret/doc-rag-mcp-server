@@ -120,6 +120,21 @@ if ! "$ROOT/.venv/bin/python" -c "import onnxruntime" 2>/dev/null; then
   uv pip install --python "$ROOT/.venv/bin/python" onnxruntime
 fi
 
+# --- Offline embedding model ---------------------------------------------------
+# The model is gitignored and may be absent (fresh clone, air-gapped install).
+# Try to fetch it once; failure is non-fatal so air-gapped installs still
+# bootstrap (semantics will fail later until the model is provided manually).
+if [[ ! -f "${ROOT}/models/bge-m3/config.json" ]]; then
+  echo "[doc-rag] offline model models/bge-m3 not found — fetching via scripts/fetch_model.py…"
+  if "$ROOT/.venv/bin/python" scripts/fetch_model.py; then
+    echo "[doc-rag] offline model ready: models/bge-m3"
+  else
+    echo "[doc-rag] WARNING: fetch_model.py failed (no network?). Bootstrap continues," >&2
+    echo "[doc-rag] WARNING: but embeddings are unavailable offline. Fetch the model manually" >&2
+    echo "[doc-rag] WARNING: later: python3 scripts/fetch_model.py" >&2
+  fi
+fi
+
 # --- Optional initial ingest --------------------------------------------------
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
   ans_ing="${DOC_RAG_BOOTSTRAP_INGEST:-N}"

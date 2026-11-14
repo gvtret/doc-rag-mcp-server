@@ -30,6 +30,18 @@ mkdir -p "${staging}"
 
 git archive --format=tar HEAD | tar -x -C "${staging}"
 
+# Offline embedding model (models/ is gitignored, so git archive skips it):
+# copy it into the staging tree when present; otherwise the archive still
+# builds — the operator fetches the model on the target via fetch_model.py.
+if [[ -f "${ROOT}/models/bge-m3/config.json" ]]; then
+  mkdir -p "${staging}/models"
+  cp -a "${ROOT}/models/." "${staging}/models/"
+  echo "[doc-rag] offline model included: models/bge-m3"
+else
+  echo "[doc-rag] WARNING: models/bge-m3 not found — archive ships WITHOUT the embedding model." >&2
+  echo "[doc-rag] WARNING: after deploy, fetch it with: python3 scripts/fetch_model.py" >&2
+fi
+
 mkdir -p "${staging}/build" "${staging}/sources/incoming" "${staging}/sources/archived"
 touch "${staging}/build/.gitkeep" "${staging}/sources/incoming/.gitkeep" "${staging}/sources/archived/.gitkeep"
 
@@ -52,6 +64,12 @@ cat > "${staging}/DEPLOY.txt" <<'EOF'
 
 Проверка: curl -sS http://127.0.0.1:3333/health
 Индексация в контейнере: docker compose exec doc-rag-mcp doc-rag ingest
+
+Оффлайн-модель (embeddings):
+
+  Проверьте наличие модели: models/bge-m3/config.json должен существовать.
+  Если файла нет — скачайте модель заранее или на целевой машине:
+    python3 scripts/fetch_model.py
 
 ---
 
