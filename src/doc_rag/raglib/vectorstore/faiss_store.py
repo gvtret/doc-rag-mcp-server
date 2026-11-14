@@ -133,8 +133,12 @@ class FaissVectorStore:
         if n != len(ids):
             raise ValueError(f"vectors count ({n}) != ids count ({len(ids)})")
         self._index.add(vectors)
+        # Position base must be captured before appending: computing it as
+        # len(chunk_ids) inside the loop yields 0, 2, 4, ... after the first
+        # element lands in chunk_ids.
+        base = len(self._meta.chunk_ids)
         for i, cid in enumerate(ids):
-            self._id_to_pos[cid] = len(self._meta.chunk_ids) + i
+            self._id_to_pos[cid] = base + i
             self._meta.chunk_ids.append(cid)
         logger.info("faiss: added %d vectors (total=%d)", n, self._index.ntotal)
 

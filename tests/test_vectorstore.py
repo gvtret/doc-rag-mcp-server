@@ -110,14 +110,33 @@ class TestFaissVectorStore:
         dim = 4
         store.init(dim=dim, model_name="m")
         vecs = np.eye(4, dtype=np.float32)
-        store.add(vecs, ["a", "b", "c", "d"])
+        ids = ["a", "b", "c", "d"]
+        store.add(vecs, ids)
 
-        v = store.reconstruct("b")
-        assert v is not None
-        assert v.shape == (4,)
-        assert v.dtype == np.float32
+        # Every id must map onto its own vector, byte for byte.
+        for cid, expected in zip(ids, vecs, strict=True):
+            v = store.reconstruct(cid)
+            assert v is not None
+            assert v.shape == (4,)
+            assert v.dtype == np.float32
+            assert np.array_equal(v, expected), f"vector for {cid} drifted on add"
 
         assert store.reconstruct("x") is None
+
+    def test_reconstruct_after_incremental_add(self, tmp_path: Path):
+        store = self._make_store(tmp_path)
+        dim = 4
+        store.init(dim=dim, model_name="m")
+        batch1 = np.eye(4, dtype=np.float32)[:2]
+        batch2 = np.eye(4, dtype=np.float32)[2:]
+
+        store.add(batch1, ["a", "b"])
+        store.add(batch2, ["c", "d"])
+
+        for cid, expected in zip(["a", "b", "c", "d"], np.vstack([batch1, batch2]), strict=True):
+            v = store.reconstruct(cid)
+            assert v is not None
+            assert np.array_equal(v, expected), f"vector for {cid} drifted on add"
 
 
 class TestIndexMeta:
