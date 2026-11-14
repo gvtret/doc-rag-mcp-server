@@ -69,11 +69,19 @@ class PgvectorVectorStore:
                     self._dim = row[0]
 
     def init(
-        self, dim: int, model_name: str, normalize: bool = True, weights_sha256: str = ""
+        self,
+        dim: int,
+        model_name: str,
+        normalize: bool = True,
+        weights_sha256: str = "",
+        config_fingerprint: str = "",
     ) -> None:
         conn = self._ensure_conn()
         self._dim = dim
         self._weights_sha256 = weights_sha256
+        # Stored but not persisted: the fingerprint guard (full rebuild on
+        # change) is FAISS-only; the table schema does not carry it.
+        self._config_fingerprint = config_fingerprint
         with conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {self._table}")
             cur.execute(f"""

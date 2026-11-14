@@ -28,7 +28,7 @@ from doc_rag.raglib.vector_index import VectorIndex
 from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore, IndexMeta
 
 FP_PATCH_TARGET = "doc_rag.raglib.model_paths.fingerprint_for_cfg"
-CFG_FP_PATCH_TARGET = "doc_rag.raglib.chunking_meta.config_fingerprint"
+CFG_FP_PATCH_TARGET = "doc_rag.raglib.vector_index.config_fingerprint"
 
 
 def _make_cfg(tmp_path: Path) -> dict:
@@ -70,7 +70,7 @@ def _patch_fingerprint(monkeypatch, value: str | None) -> None:
 
 
 def _patch_cfg_fingerprint(monkeypatch, value: str | None) -> None:
-    monkeypatch.setattr("doc_rag.raglib.vector_index.config_fingerprint", lambda cfg: value)
+    monkeypatch.setattr(CFG_FP_PATCH_TARGET, lambda cfg: value)
 
 
 def _patch_embedder(monkeypatch) -> None:
@@ -281,6 +281,8 @@ def test_migrate_stamps_config_fingerprint_into_target_meta(tmp_path: Path, monk
     stored = json.loads((root / "build" / "index" / "index_meta.json").read_text())
     assert stored["config_fingerprint"] == "new-cfg-fp"
 
+
+def test_incremental_refused_on_fingerprint_mismatch(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     _patch_embedder(monkeypatch)
     _patch_fingerprint(monkeypatch, "old")
@@ -496,14 +498,43 @@ def test_config_fingerprint_without_tokenizer_still_computes(tmp_path, caplog):
     missing = tmp_path / "nope" / "tokenizer.json"
 
     with caplog.at_level(logging.WARNING, logger="doc_rag.raglib.chunking_meta"):
+        import doc_rag.raglib.chunking_meta as cm
+
+        # Reset the once-latch: an earlier test in this module may have
+        # already triggered the WARN for a missing tokenizer.
+        cm._warned_no_tokenizer = False
         fp1 = fp(cfg, missing)
         fp2 = fp(cfg, missing)
     assert fp1 == fp2
     assert len(fp1) == 64
     assert any("tokenizer" in rec.message for rec in caplog.records)
+    # The WARN is logged once, not on every call.
+    tok_warnings = [r for r in caplog.records if "tokenizer.json not found" in r.message]
+    assert len(tok_warnings) == 1
 
     tok = _write_tokenizer(tmp_path / "nope", '{"model": "bge"}')
     assert fp(cfg, tok) != fp1
+
+
+def test_config_fingerprint_bad_chunking_values_fall_back(caplog):
+    """Non-int target_tokens/overlap_tokens: fallback 512/64 with a WARN
+    (logged once), no TypeError."""
+    from doc_rag.raglib.chunking_meta import config_fingerprint as fp
+
+    good = {"chunking": {"strategy": "recursive", "target_tokens": 512, "overlap_tokens": 64}}
+    bad = {"chunking": {"strategy": "recursive", "target_tokens": "many", "overlap_tokens": None}}
+
+    with caplog.at_level(logging.WARNING, logger="doc_rag.raglib.chunking_meta"):
+        import doc_rag.raglib.chunking_meta as cm
+
+        cm._warned_bad_chunking_values = False
+        fp_bad = fp(bad)
+        fp_bad2 = fp(bad)
+    fp_good = fp(good)
+    assert fp_bad == fp_good
+    assert fp_bad == fp_bad2
+    fallback_warnings = [r for r in caplog.records if "falling back to defaults" in r.message]
+    assert len(fallback_warnings) == 1
 
 
 # ---------------------------------------------------------------------------

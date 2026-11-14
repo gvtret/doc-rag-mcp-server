@@ -100,12 +100,20 @@ class QdrantVectorStore:
             )
 
     def init(
-        self, dim: int, model_name: str, normalize: bool = True, weights_sha256: str = ""
+        self,
+        dim: int,
+        model_name: str,
+        normalize: bool = True,
+        weights_sha256: str = "",
+        config_fingerprint: str = "",
     ) -> None:
         client = self._ensure_client()
         QdrantClient, Distance, _, _, _, _, _, VectorParams = _import_qdrant()  # noqa: F841
         self._dim = dim
         self._weights_sha256 = weights_sha256
+        # Stored but not persisted: Qdrant payloads only carry chunk ids,
+        # the fingerprint guard (full rebuild on change) is FAISS-only.
+        self._config_fingerprint = config_fingerprint
         distance = Distance.COSINE if normalize else Distance.EUCLID
         try:
             client.get_collection(self._collection)
