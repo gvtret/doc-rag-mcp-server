@@ -27,6 +27,23 @@ EMBEDDING_TEXT_VERSION = "1"
 
 logger = logging.getLogger(__name__)
 
+# Latches so each one-time WARN below is logged once, not on every call.
+_warned_no_tokenizer = False
+_warned_bad_chunking_values = False
+
+
+def _warn_once(flag: str, message: str) -> None:
+    """Log `message` at WARN at most once per process for `flag`."""
+    global _warned_no_tokenizer, _warned_bad_chunking_values
+    if flag == "no_tokenizer":
+        already = _warned_no_tokenizer
+        _warned_no_tokenizer = True
+    else:
+        already = _warned_bad_chunking_values
+        _warned_bad_chunking_values = True
+    if not already:
+        logger.warning(message)
+
 
 def _tokenizer_sha256(tokenizer_path: Path | None) -> str:
     """sha256 of tokenizer.json, or "" when it is missing/unreadable.
@@ -69,23 +86,35 @@ def config_fingerprint(cfg: dict[str, Any], tokenizer_path: Path | None = None) 
     Inputs: chunking strategy / target_tokens / overlap_tokens, both
     schema version constants and sha256(tokenizer.json). When
     tokenizer_path is None it is resolved from cfg; a missing
-    tokenizer.json simply excludes the tokenizer hash (logged once per
-    call at WARN).
+    tokenizer.json simply excludes the tokenizer hash (WARN logged once).
     """
     if tokenizer_path is None:
         tokenizer_path = resolve_tokenizer_path(cfg)
 
     tok_sha = _tokenizer_sha256(tokenizer_path)
     if not tok_sha:
-        logger.warning("tokenizer.json not found: its hash is excluded from the config fingerprint")
+        _warn_once(
+            "no_tokenizer",
+            "tokenizer.json not found: its hash is excluded from the config fingerprint",
+        )
 
     chunking = cfg.get("chunking") or {}
+    try:
+        target_tokens = int(chunking.get("target_tokens", 512))
+        overlap_tokens = int(chunking.get("overlap_tokens", 64))
+    except (TypeError, ValueError):
+        _warn_once(
+            "bad_chunking",
+            "non-integer chunking target_tokens/overlap_tokens: "
+            "falling back to defaults (512/64) for the config fingerprint",
+        )
+        target_tokens, overlap_tokens = 512, 64
     payload = {
         "chunking_schema_version": CHUNKING_SCHEMA_VERSION,
         "embedding_text_version": EMBEDDING_TEXT_VERSION,
         "strategy": str(chunking.get("strategy", "")),
-        "target_tokens": int(chunking.get("target_tokens", 0)),
-        "overlap_tokens": int(chunking.get("overlap_tokens", 0)),
+        "target_tokens": target_tokens,
+        "overlap_tokens": overlap_tokens,
         "tokenizer_sha256": tok_sha,
     }
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True)

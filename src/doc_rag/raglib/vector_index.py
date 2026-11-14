@@ -117,6 +117,12 @@ class VectorIndex:
         HF cache (hf_cache deployments) there is no local model directory
         to fingerprint, so `fingerprint_for_cfg` returns None and this
         weights check is skipped for such deployments.
+
+        Both fingerprint gates (weights sha256 and the chunking/text
+        config fingerprint) are FAISS-only: non-FAISS backends return
+        True and keep the legacy incremental behaviour; the other
+        stores accept `config_fingerprint` in init() but do not
+        persist it.
         """
         try:
             from doc_rag.raglib.vectorstore.faiss_store import FaissVectorStore
@@ -157,7 +163,6 @@ class VectorIndex:
                 e,
             )
             return False
-        want_fp = model_paths.fingerprint_for_cfg(self._cfg) or ""
         try:
             want_cfg_fp = config_fingerprint(self._cfg)
         except Exception as e:
