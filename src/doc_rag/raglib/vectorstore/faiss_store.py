@@ -208,13 +208,36 @@ class FaissVectorStore:
 
         index_dir = os.path.dirname(self._index_path) or "."
         os.makedirs(index_dir, exist_ok=True)
-        # Atomic sequence: write the index to a temp file in the same
-        # directory, rename over the target, then persist meta. A crash
-        # at any point leaves the previous faiss.index + index_meta.json
-        # pair intact and mutually consistent.
+        # Atomic sequence: the index is written to a temp file in the same
+        # directory, fsync'ed, then renamed over the target; meta is then
+        # written via atomic_write_text. Each file on disk is always a
+        # complete, untruncated version (old or new), never a torn write.
+        #
+        # Known window: a crash AFTER os.replace(index) but BEFORE the meta
+        # write completes leaves a NEW index with the OLD meta (e.g. ntotal
+        # counts vectors that meta's chunk_ids do not list). The pair is not
+        # guaranteed mutually consistent in that case; detecting and
+        # repairing such drift at load time is out of scope here (tracked
+        # as a separate consistency-check task). A crash before the replace
+        # leaves the old index file completely intact.
         tmp_index_path = self._index_path + ".tmp"
-        faiss.write_index(self._index, tmp_index_path)
-        os.replace(tmp_index_path, self._index_path)
+        try:
+            faiss.write_index(self._index, tmp_index_path)
+            # faiss.write_index writes and closes internally, so flush+fsync
+            # on the handle is impossible; fsync via a fresh read fd of the
+            # tmp file so the rename is crash-safe on the data level.
+            fd = os.open(tmp_index_path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_index_path, self._index_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_index_path)
+            except OSError:
+                pass
+            raise
         meta_json = json.dumps(self._meta.to_dict(), indent=2)
         atomic_write_text(self._meta_path, meta_json)
         fsync_dir(index_dir)

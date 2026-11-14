@@ -617,9 +617,7 @@ def ingest(config_path: str) -> None:
 
         manifest = _manifest_shell(cfg, manifest_documents)
 
-        atomic_write_text(
-            chunks_path, "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in all_chunks)
-        )
+        _write_chunks(chunks_path, all_chunks)
 
         atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
@@ -825,8 +823,26 @@ def _load_existing_chunks(chunks_path: str) -> list[dict[str, Any]]:
 
 
 def _write_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
-    lines = "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in chunks)
-    atomic_write_text(chunks_path, lines)
+    ensure_dir(os.path.dirname(chunks_path))
+    tmp_path = chunks_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for it in chunks:
+                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, chunks_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    dir_fd = os.open(os.path.dirname(chunks_path) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _append_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
@@ -835,6 +851,15 @@ def _append_chunks(chunks_path: str, chunks: list[dict[str, Any]]) -> None:
     Not atomic by design (append is the crash-recovery mechanism; an
     os.replace per call would be O(n^2)); flushed and fsync'ed instead
     so records already written survive a crash mid-append.
+
+    Known hazard: a crash mid-write (or an unclean kill between write
+    and flush) can leave a partial last line (truncated JSON). This
+    module does NOT repair or trim such a line: a subsequent append
+    concatenates onto it, and readers like _load_existing_chunks will
+    raise JSONDecodeError on the malformed line. A future repair/trim
+    mechanism (drop-or-rewind the trailing partial line on load) is
+    tracked separately; until then, a torn chunks.jsonl requires manual
+    recovery.
     """
     ensure_dir(os.path.dirname(chunks_path))
     with open(chunks_path, "a", encoding="utf-8") as f:
