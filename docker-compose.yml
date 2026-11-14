@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        # Embed the offline embedding model into the image (requires
+        # models/bge-m3 fetched via scripts/fetch_model.py before build).
+        REQUIRE_MODEL: "1"
     container_name: doc-rag-mcp
     environment:
       - DOC_RAG_HTTP_HOST=0.0.0.0

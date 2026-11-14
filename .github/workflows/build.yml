@@ -28,6 +28,10 @@ jobs:
           file: docker/Dockerfile
           push: false
           tags: doc-rag:ci
+          # CI builds stay model-free: the 2.3 GB embedding model is not
+          # downloaded on the runner and the image carries `server` extras only.
+          build-args: |
+            REQUIRE_MODEL=0
           # Local on-disk buildx cache. On a self-hosted runner this
           # avoids round-tripping through GitHub's Azure-backed cache
           # service (10 GB per-repo quota, occasional 503s) and gives
