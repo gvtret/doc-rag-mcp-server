@@ -61,8 +61,13 @@ def _get_vector_index(cfg: dict[str, Any]) -> Any:
     if _VECTOR_INDEX is not None and getattr(_VECTOR_INDEX, "_cfg", {}).get("_root") != root:
         _VECTOR_INDEX = None
     if _VECTOR_INDEX is None:
+        from doc_rag.raglib.chunking_meta import configure_tokenizer
         from doc_rag.raglib.vector_index import VectorIndex
 
+        # Paths that build a VectorIndex directly (migrate, server tools)
+        # may never go through load_config; seed the tokenizer path here
+        # too so count_tokens respects this cfg's embeddings.model_path.
+        configure_tokenizer(cfg)
         _VECTOR_INDEX = VectorIndex(cfg)
     return _VECTOR_INDEX
 
@@ -79,6 +84,12 @@ def load_config(config_path: str) -> dict[str, Any]:
         cfg = yaml.safe_load(f) or {}
     root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
     cfg["_root"] = root
+
+    # Seed the count_tokens default tokenizer path from this cfg (so
+    # embeddings.model_path is honoured by the chunker sizing).
+    from doc_rag.raglib.chunking_meta import configure_tokenizer
+
+    configure_tokenizer(cfg)
 
     # Validate required paths
     paths = cfg.get("paths") or {}
@@ -103,15 +114,18 @@ def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> list[str]
         return []
     from doc_rag.raglib.chunking_meta import CHUNK_MAX_TOKENS
 
-    # Window/step are now measured in real bge-m3 tokens. The window is
-    # min(target, hard cap) so no emitted chunk can exceed the model's
-    # effective 512-token input (504 + special-token headroom).
+    # Window/step targets are measured in real bge-m3 tokens; the window
+    # is min(target, hard cap) so the char window cannot overshoot the
+    # model's effective 512-token input (504 + special-token headroom).
     window_tokens = max(1, min(target_tokens, CHUNK_MAX_TOKENS))
     overlap = max(0, min(overlap_tokens, window_tokens - 1))
-    # Convert the token budget to a char window with a conservative
-    # chars/token ratio (2 for Cyrillic-heavy corpora) and then verify
-    # each chunk with count_tokens, shrinking oversized ones.
-    chars_per_token = 2
+    # Chars-to-token conversion: measured corpus ratio is 2.9-4.1 chars
+    # per real token; 3 is a safe middle that keeps Cyrillic-heavy prose
+    # chunks near the target instead of systematically undersizing them
+    # (ratio 2 gave a median of ~355 tokens at target 512). The ratio
+    # only shapes the window; the real guarantee that no chunk exceeds
+    # 504 tokens is the _split_text_token_budget pass below.
+    chars_per_token = 3
     window = window_tokens * chars_per_token
     step = max(1, window - overlap * chars_per_token)
 
@@ -123,8 +137,9 @@ def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> list[str]
         chunk = text[start:end].strip()
         if chunk:
             # Token-accurate correction: cut the chunk down until it fits
-            # the cap (rare: the char window already under-counts chars
-            # per token for Cyrillic, but ASCII-heavy text can exceed).
+            # the cap. This is the actual guarantee (not the char window):
+            # ASCII-heavy text tokenizes denser than the 3 chars/token
+            # ratio assumes, so the window can still overshoot.
             from doc_rag.raglib.chunker_recursive import _split_text_token_budget
 
             for piece in _split_text_token_budget(chunk, window_tokens):

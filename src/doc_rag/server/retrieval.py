@@ -125,6 +125,12 @@ def load_config() -> dict[str, Any]:
         cfg: dict[str, Any] = yaml.safe_load(f) or {}
     cfg["_root"] = root
 
+    # Seed the count_tokens default tokenizer path from this cfg (so
+    # embeddings.model_path is honoured by the chunker sizing).
+    from doc_rag.raglib.chunking_meta import configure_tokenizer
+
+    configure_tokenizer(cfg)
+
     # Validate critical config values
     valid_backends = {"faiss", "qdrant", "pgvector"}
     backend = (cfg.get("index") or {}).get("backend", "faiss")
@@ -654,6 +660,12 @@ def semantic_search(
         if entry is not None:
             _VECTOR_INDEX_CACHE.move_to_end(cache_key)
         if entry is None:
+            from doc_rag.raglib.chunking_meta import configure_tokenizer
+
+            # Seed the count_tokens default tokenizer path so chunker
+            # sizing honours this cfg's embeddings.model_path (the server
+            # tools build VectorIndex directly, past pipeline.load_config).
+            configure_tokenizer(cfg)
             vi = VectorIndex(cfg, namespace=namespace)
             entry = {"index": vi, "index_mtime": idx_mt, "meta_mtime": meta_mt}
             _VECTOR_INDEX_CACHE[cache_key] = entry

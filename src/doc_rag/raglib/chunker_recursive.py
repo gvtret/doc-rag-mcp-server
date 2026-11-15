@@ -139,7 +139,7 @@ def _split_text_token_budget(text: str, cap: int) -> list[str]:
         parts = [p for p in [head, tail] if p.strip()]
         if len(parts) == 2:
             return _split_text_token_budget(parts[0], cap) + _split_text_token_budget(parts[1], cap)
-    # No \\n\\n boundary fits — hard split by binary search on char offset
+    # No \\n\\n boundary fits -- hard split by binary search on char offset
     n = len(text)
     lo, hi = 1, n
     while lo < hi:
@@ -173,7 +173,14 @@ def _chunk_node(
     target_tokens: int,
     ancestors: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Recursively produce chunk dicts from a ChunkNode tree."""
+    """Recursively produce chunk dicts from a ChunkNode tree.
+
+    The grouping budget is min(target_tokens, CHUNK_MAX_TOKENS): groups
+    are merged with real-token counts and must never be assembled above
+    the hard cap, otherwise the final safety pass would have to re-split
+    what grouping just built.
+    """
+    budget = min(target_tokens, CHUNK_MAX_TOKENS)
     path = _section_path(node, ancestors)
     chunks: list[dict[str, Any]] = []
 
@@ -227,7 +234,7 @@ def _chunk_node(
         group_tokens = sum(_estimate_tokens(b.text) for b in group)
 
         if len(group) == 1 and group[0].type == "table":
-            # Atomic table — oversized ones are split by the final cap
+            # Atomic table -- oversized ones are split by the final cap
             # pass in chunk_recursive (T12 will split them along rows).
             _flush_pending()
             table_block = group[0]
@@ -249,13 +256,13 @@ def _chunk_node(
                         "is_table_summary": True,
                     }
                 )
-        elif pending_tokens + group_tokens <= target_tokens:
+        elif pending_tokens + group_tokens <= budget:
             pending.extend(group)
             pending_tokens += group_tokens
         else:
             _flush_pending()
-            # If single group is larger than target, split it
-            if group_tokens > target_tokens and len(group) > 1:
+            # If single group is larger than the budget, split it
+            if group_tokens > budget and len(group) > 1:
                 # Split the group at roughly the midpoint
                 mid = len(group) // 2
                 pending.extend(group[:mid])
@@ -263,14 +270,14 @@ def _chunk_node(
                 _flush_pending()
                 pending.extend(group[mid:])
                 pending_tokens = sum(_estimate_tokens(b.text) for b in pending)
-            elif group_tokens > target_tokens and len(group) == 1:
-                # Single oversized block — split its text by paragraph breaks
+            elif group_tokens > budget and len(group) == 1:
+                # Single oversized block -- split its text by paragraph breaks
                 block = group[0]
                 paragraphs = block.text.split("\n\n")
                 if len(paragraphs) > 1:
                     for para in paragraphs:
                         para_tokens = _estimate_tokens(para)
-                        if pending_tokens + para_tokens <= target_tokens:
+                        if pending_tokens + para_tokens <= budget:
                             pending.append(
                                 Block(
                                     block_id=block.block_id,
@@ -298,9 +305,9 @@ def _chunk_node(
                             )
                             pending_tokens = _estimate_tokens(para)
                 else:
-                    # No paragraph breaks — hard split at the token budget
+                    # No paragraph breaks -- hard split at the token budget
                     block = group[0]
-                    for segment in _split_text_token_budget(block.text, target_tokens):
+                    for segment in _split_text_token_budget(block.text, budget):
                         segment = segment.strip()
                         if not segment:
                             continue
@@ -342,7 +349,7 @@ def chunk_recursive(
 
     Returns:
         List of chunk dicts with keys: text, section_path, optionally
-        is_table or is_table_summary.
+        is_table / is_table_summary / is_table_fragment.
     """
     if not blocks:
         return []
@@ -365,9 +372,15 @@ def chunk_recursive(
         if len(pieces) == 1 and pieces[0] == c["text"]:
             capped.append(c)
             continue
+        is_table = bool(c.get("is_table"))
         for piece in pieces:
             replacement = dict(c)
             replacement["text"] = piece
+            if is_table:
+                # Fragment of a cap-split table: keep is_table semantics
+                # (the piece still carries table text) and flag it so T12
+                # can distinguish whole tables from split fragments.
+                replacement["is_table_fragment"] = True
             capped.append(replacement)
     if len(capped) != len(chunks):
         logger.info(
@@ -382,7 +395,7 @@ def chunk_recursive(
         c["chunk_idx"] = i
 
     logger.info(
-        "chunk_recursive: %d blocks → %d chunks (target=%d tokens, cap=%d)",
+        "chunk_recursive: %d blocks -> %d chunks (target=%d tokens, cap=%d)",
         len(blocks),
         len(chunks),
         target_tokens,
