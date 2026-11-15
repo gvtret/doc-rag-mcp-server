@@ -1335,18 +1335,34 @@ async def _http_log_mw(request: Request, call_next):
 def _readiness_state() -> dict[str, Any]:
     """Compute current readiness - manifest present, no background job running.
 
-    Additionally checks subsystem health: model, FAISS index, disk space.
-    In semantic/hybrid mode the service cannot answer its primary queries
-    when the embedding model cannot load or the index no longer matches
-    the model weights, so readiness fails with `model_missing` /
-    `index_stale` reasons; in lexical mode both are informational only and
-    not reported as failure reasons.
+    Additionally checks subsystem health: model, semantic index files, disk
+    space. In semantic/hybrid mode the service cannot answer its primary
+    queries when the embedding model cannot load, the index no longer
+    matches the model weights, or the local index files are missing, so
+    readiness fails with `model_missing` / `index_stale` / `index_missing`
+    reasons; in lexical mode all of these are informational only and not
+    reported as failure reasons. The `index_missing` gate applies only to
+    the faiss backend: qdrant/pgvector store vectors remotely and must not
+    fail readiness for absent local faiss files.
     """
     root = (os.environ.get("DOC_RAG_ROOT") or "").strip() or str(_root_dir())
     manifest_abs = os.path.join(root, "build", "manifest.json")
     has_manifest = os.path.isfile(manifest_abs)
     job_running = bool(_INGEST_STATE.get("running"))
     job_name = _INGEST_STATE.get("job") if job_running else None
+
+    # Config: needed here for backend/index-dir resolution and the mode
+    # gates below.
+    try:
+        from doc_rag.server.retrieval import load_config
+
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
+    semantic_required = mode in ("semantic", "hybrid")
+    index_backend = str((cfg.get("index") or {}).get("backend", "faiss")).lower()
+    index_dir_rel = str((cfg.get("paths") or {}).get("index_dir", "build/index"))
 
     # Subsystem checks
     checks: dict[str, bool] = {}
@@ -1360,10 +1376,13 @@ def _readiness_state() -> dict[str, Any]:
         model_status = {}
     checks["model_ready"] = bool(model_status.get("ready"))
 
-    # FAISS index file
-    index_dir = os.path.join(root, "build", "index")
+    # Semantic index files (faiss backend). Both files must exist — same
+    # semantics as indexed_catalog's semantic_index_present.
+    index_dir = os.path.join(root, index_dir_rel)
     index_faiss = os.path.join(index_dir, "faiss.index")
+    meta_path = os.path.join(index_dir, "index_meta.json")
     checks["faiss_index"] = os.path.isfile(index_faiss)
+    checks["index_meta"] = os.path.isfile(meta_path)
 
     # Disk space (at least 1 GB free)
     try:
@@ -1377,7 +1396,6 @@ def _readiness_state() -> dict[str, Any]:
     # Index staleness: read index_meta.json directly (cheap; no
     # indexed_catalog() so the probe stays lightweight). The parse is
     # mtime-cached in retrieval._INDEX_META_CACHE via the shared helper.
-    meta_path = os.path.join(index_dir, "index_meta.json")
     try:
         from doc_rag.server.retrieval import read_index_weights_fingerprint
 
@@ -1397,24 +1415,21 @@ def _readiness_state() -> dict[str, Any]:
         reasons.append(f"job_in_flight:{job_name}")
 
     # Model gate applies only when the retrieval mode needs embeddings.
-    try:
-        from doc_rag.server.retrieval import load_config
-
-        cfg = load_config()
-    except Exception:
-        cfg = {}
-    mode = str((cfg.get("mcp", {}) or {}).get("retrieval_mode", "semantic")).lower()
-    model_required = mode in ("semantic", "hybrid")
-    if model_required and not checks["model_ready"]:
+    if semantic_required and not checks["model_ready"]:
         ready = False
         reasons.append("model_missing")
-    if model_required and index_stale:
+    if semantic_required and index_stale:
         # Stale index means semantic search is unusable: gate readiness too.
         ready = False
         reasons.append("index_stale")
-    if model_required and not checks["faiss_index"]:
-        # Missing index file is a separate failure from a stale one:
-        # without faiss.index semantic search degrades to 6-8s per query.
+    if (
+        semantic_required
+        and index_backend == "faiss"
+        and not (checks["faiss_index"] and checks["index_meta"])
+    ):
+        # Missing local index files is a separate failure from a stale one:
+        # without them semantic search degrades to 6-8s per query. Only the
+        # faiss backend is gated: qdrant/pgvector keep vectors remotely.
         ready = False
         reasons.append("index_missing")
 
@@ -1444,11 +1459,13 @@ async def health_ready() -> JSONResponse:
       - build/manifest.json exists (something has been ingested), and
       - no ingest or rebuild job is currently in flight, and
       - in semantic/hybrid mode: the embedding model is loaded
-        (`model_ready`, reason `model_missing`) and the FAISS index was
-        built with the current weights (`index_stale` otherwise).
+        (`model_ready`, reason `model_missing`), the FAISS index was built
+        with the current weights (`index_stale` otherwise), and — for the
+        faiss backend — the local index files exist (`index_missing`
+        otherwise; qdrant/pgvector are not gated on local files).
 
-    In lexical mode the model/index checks stay informational: the model
-    gate does not apply and `index_stale` is not reported in reasons.
+    In lexical mode the model/index checks stay informational: none of
+    `model_missing`, `index_stale` or `index_missing` is reported.
     """
     state = _readiness_state()
     code = 200 if state["ready"] else 503
