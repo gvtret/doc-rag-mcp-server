@@ -466,8 +466,8 @@ def _ingest_sources(
                         entry["section_path"] = c["section_path"]
                     if c.get("is_table"):
                         entry["is_table"] = True
-                    if c.get("is_table_summary"):
-                        entry["is_table_summary"] = True
+                    if c.get("is_table_fragment"):
+                        entry["is_table_fragment"] = True
                     all_chunks.append(entry)
                 chunks = [c["text"] for c in rc_chunks]
             else:
@@ -1050,8 +1050,8 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
                         entry["section_path"] = c["section_path"]
                     if c.get("is_table"):
                         entry["is_table"] = True
-                    if c.get("is_table_summary"):
-                        entry["is_table_summary"] = True
+                    if c.get("is_table_fragment"):
+                        entry["is_table_fragment"] = True
                     file_chunks.append(entry)
                 chunks_text = [c["text"] for c in rc_chunks]
             else:
@@ -1420,8 +1420,8 @@ def rebuild_docs(
                         entry["section_path"] = c["section_path"]
                     if c.get("is_table"):
                         entry["is_table"] = True
-                    if c.get("is_table_summary"):
-                        entry["is_table_summary"] = True
+                    if c.get("is_table_fragment"):
+                        entry["is_table_fragment"] = True
                     file_chunks.append(entry)
                 chunks_text = [c["text"] for c in rc_chunks]
             else:
