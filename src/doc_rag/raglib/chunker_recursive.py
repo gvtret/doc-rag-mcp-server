@@ -6,14 +6,17 @@ respecting headings as hard boundaries and tables as atomic units.
 The fixed-size splitter (`_chunk_text`) works on raw Markdown text and
 has no awareness of document structure. This module uses the typed
 `Block` layer (v1.5+) to produce chunks that preserve section context
-and keep tables intact.
+and keep tables intact: every table chunk's text starts with the
+section-path line and the table header line, and oversized tables are
+split at row boundaries (`\n`), never mid-row. Summary chunks were
+removed (T12).
 
 Chunk sizing uses the real bge-m3 tokenizer (`count_tokens`) rather than
 the len//4 estimate: Cyrillic text tokenizes at roughly 2.5-3 chars per
 token, so the old estimate undershot by ~25% and pushed chunk tails past
 the model's 512-token window. A hard cap (CHUNK_MAX_TOKENS = 504) is
-enforced by a final safety pass over every emitted chunk, tables
-included; T12 refines how oversized tables are split along row lines.
+enforced by a final safety pass over every emitted chunk; T12 splits
+oversized tables along row lines with a shared header prefix.
 """
 
 from __future__ import annotations
@@ -100,15 +103,52 @@ def _section_path(node: ChunkNode, ancestors: list[str] | None = None) -> str:
     return ".".join(parts) if parts else ""
 
 
-def _render_table_summary(table: Block) -> str:
-    """Create a short text summary of a table block for retrieval."""
-    lines = [line.strip() for line in table.text.split("\n") if line.strip()]
-    if not lines:
-        return f"Таблица ({table.block_id})"
-    # First line is usually headers
-    header = lines[0] if lines else ""
-    cell_count = sum(line.count("|") for line in lines)
-    return f"Таблица ({len(lines)} строк, {cell_count} ячеек): {header[:200]}"
+def _table_prefix(section_path: str, header_line: str) -> str:
+    """Prefix injected into every table chunk text.
+
+    First line is the section path (when non-empty), second line is the
+    table header row. The prefix counts against the 504-token cap, so
+    the data-row budget is computed from its real token count.
+    """
+    lines = [ln for ln in (section_path, header_line) if ln]
+    return "\n".join(lines)
+
+
+def _split_table_rows(text: str, section_path: str, cap: int) -> list[str]:
+    """Split a table's text into row-boundary pieces within `cap` tokens.
+
+    Every piece starts with the section-path + header prefix; the data
+    rows are packed greedily under a budget of cap minus the prefix's
+    real token cost. Breaks only at ``\\n`` (between rows), never
+    mid-line. A single row larger than the budget still becomes its own
+    piece (the final cap pass handles that degenerate case).
+    """
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    header_line = lines[0] if lines else ""
+    data_rows = lines[1:] if len(lines) > 1 else []
+
+    prefix = _table_prefix(section_path, header_line)
+    prefix_tokens = _estimate_tokens(prefix) + (1 if data_rows else 0)
+    budget = max(cap - prefix_tokens, 1)
+
+    pieces: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for row in data_rows:
+        row_tokens = _estimate_tokens(row)
+        if current and current_tokens + row_tokens > budget:
+            pieces.append(prefix + "\n" + "\n".join(current))
+            current, current_tokens = [], 0
+        current.append(row)
+        current_tokens += row_tokens
+    if current:
+        pieces.append(prefix + "\n" + "\n".join(current))
+    elif header_line and not pieces:
+        # Header-only table (no data rows): still emit one chunk that
+        # carries the section path + header, per the <=504 contract.
+        # A completely empty table (no lines at all) emits nothing.
+        pieces.append(prefix)
+    return pieces
 
 
 def _split_text_token_budget(text: str, cap: int) -> list[str]:
@@ -234,26 +274,23 @@ def _chunk_node(
         group_tokens = sum(_estimate_tokens(b.text) for b in group)
 
         if len(group) == 1 and group[0].type == "table":
-            # Atomic table -- oversized ones are split by the final cap
-            # pass in chunk_recursive (T12 will split them along rows).
+            # Table chunks carry a section_path + header prefix in their
+            # text; oversized tables split at row boundaries. No summary
+            # chunks are generated (T12 removed them: they made up ~12%
+            # of the index and displaced real results).
             _flush_pending()
             table_block = group[0]
-            # Main table chunk
-            chunks.append(
-                {
-                    "text": table_block.text.strip(),
-                    "section_path": path,
-                    "is_table": True,
-                }
-            )
-            # Table summary sibling for retrieval
-            summary_text = _render_table_summary(table_block)
-            if summary_text != table_block.text.strip():
+            pieces = _split_table_rows(table_block.text, path, CHUNK_MAX_TOKENS)
+            for piece in pieces:
                 chunks.append(
                     {
-                        "text": summary_text,
+                        "text": piece,
                         "section_path": path,
-                        "is_table_summary": True,
+                        "is_table": True,
+                        # T12: every table piece produced here goes through
+                        # row-boundary splitting; a whole (small) table is
+                        # one piece, an oversized one yields fragments.
+                        "is_table_fragment": len(pieces) > 1,
                     }
                 )
         elif pending_tokens + group_tokens <= budget:
@@ -349,7 +386,7 @@ def chunk_recursive(
 
     Returns:
         List of chunk dicts with keys: text, section_path, optionally
-        is_table / is_table_summary / is_table_fragment.
+        is_table / is_table_fragment.
     """
     if not blocks:
         return []

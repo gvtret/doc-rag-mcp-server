@@ -7,7 +7,6 @@ from doc_rag.raglib.chunker_recursive import (
     ChunkNode,
     _build_tree,
     _estimate_tokens,
-    _render_table_summary,
     _section_path,
     chunk_recursive,
 )
@@ -85,19 +84,6 @@ class TestSectionPath:
         assert _section_path(child, ["Chapter 1"]) == "Chapter 1.Section 1.1"
 
 
-class TestRenderTableSummary:
-    def test_basic(self):
-        table = _block(type="table", text="A | B\n1 | 2\n3 | 4")
-        summary = _render_table_summary(table)
-        assert "3 строк" in summary
-        assert "A | B" in summary
-
-    def test_empty_table(self):
-        table = _block(type="table", text="")
-        summary = _render_table_summary(table)
-        assert "Таблица" in summary
-
-
 class TestChunkRecursive:
     def test_empty_blocks(self):
         assert chunk_recursive([], target_tokens=100) == []
@@ -124,8 +110,8 @@ class TestChunkRecursive:
         chunks = chunk_recursive(blocks, target_tokens=100)
         table_chunks = [c for c in chunks if c.get("is_table")]
         assert len(table_chunks) == 1
-        summary_chunks = [c for c in chunks if c.get("is_table_summary")]
-        assert len(summary_chunks) == 1
+        # T12: summary chunks are gone entirely.
+        assert not [c for c in chunks if c.get("is_table_summary")]
 
     def test_splitting_when_over_target(self):
         blocks = [_block(text="x " * 600)]

@@ -25,7 +25,9 @@ from typing import Any
 # 3 = postprocessing full-set rebuild).
 # 4 = chunk sizing moved to the real bge-m3 tokenizer with a hard 504-token
 # cap: chunk boundaries change for the same config values.
-CHUNKING_SCHEMA_VERSION = "4"
+# 5 = T12 table rework: no summary chunks, table text prefixed with
+# section_path + header, oversized tables split at row boundaries.
+CHUNKING_SCHEMA_VERSION = "5"
 # Bump when the embedding-text scheme changes (prefixes, metadata injection,
 # trimming rules), even if chunk boundaries stay the same.
 EMBEDDING_TEXT_VERSION = "1"
