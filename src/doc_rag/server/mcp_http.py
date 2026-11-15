@@ -903,11 +903,18 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Download a source document by filename."""
     import base64
 
+    # Size limit on the FILE (checked via stat before any read): the
+    # payload returned to the client is base64 (~4/3 of the file), so a
+    # 25 MB file already produces a ~33 MB response.
+    _MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+
     filename = arguments.get("filename", "")
     if not filename:
         return [{"type": "text", "text": "Error: filename is required"}]
 
-    root = _root_dir()
+    # Honor DOC_RAG_ROOT like the rest of the server (_root_dir() always
+    # points at the package checkout).
+    root = _config_path().parent.parent
     cfg_path = _config_path()
     try:
         with cfg_path.open(encoding="utf-8") as f:
@@ -918,6 +925,48 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         cfg = {}
 
     paths = cfg.get("paths", {}) or {}
+
+    def _serve(p: Path) -> list[dict[str, Any]]:
+        try:
+            if p.stat().st_size > _MAX_DOWNLOAD_BYTES:
+                return [{"type": "text", "text": "Error: file exceeds 25 MB limit"}]
+            data = p.read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            return [
+                {
+                    "type": "file",
+                    "file": {
+                        "name": filename,
+                        "mimeType": "application/octet-stream",
+                        "data": b64,
+                    },
+                }
+            ]
+        except Exception as e:
+            return [{"type": "text", "text": f"Error reading file: {e}"}]
+
+    # Resolution order: (1) manifest source_file (exact path under
+    # sources/, keeps nested layouts reachable); (2) rglob scan of the
+    # sources directories so files absent from the manifest stay
+    # downloadable.
+    try:
+        from doc_rag.server.retrieval import _load_manifest_cached
+
+        manifest = _load_manifest_cached()
+        docs = manifest.get("documents", []) if isinstance(manifest, dict) else []
+        for d in docs:
+            if not isinstance(d, dict):
+                continue
+            sf = d.get("source_file")
+            if not (isinstance(sf, str) and sf and os.path.basename(sf) == filename):
+                continue
+            p = root / sf
+            # The manifest entry may carry traversal (..\/); stay inside root.
+            if p.is_file() and p.resolve().is_relative_to(root.resolve()):
+                return _serve(p)
+    except Exception:
+        pass
+
     archived_rel = paths.get("sources_archived", "sources/archived")
     incoming_rel = paths.get("sources_incoming", "sources/incoming")
 
@@ -928,21 +977,7 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         for p in dir_path.rglob("*"):
             if p.is_file() and p.name == filename:
-                try:
-                    data = p.read_bytes()
-                    b64 = base64.b64encode(data).decode("ascii")
-                    return [
-                        {
-                            "type": "file",
-                            "file": {
-                                "name": filename,
-                                "mimeType": "application/octet-stream",
-                                "data": b64,
-                            },
-                        }
-                    ]
-                except Exception as e:
-                    return [{"type": "text", "text": f"Error reading file: {e}"}]
+                return _serve(p)
 
     return [{"type": "text", "text": f"File not found: {filename}"}]
 

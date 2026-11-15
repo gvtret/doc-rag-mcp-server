@@ -14,9 +14,19 @@ from doc_rag.server.lexical_index import LexicalIndex, get_lexical_index, reset_
 
 logger = logging.getLogger(__name__)
 
-_MANIFEST_CACHE: dict[str, Any] = {"root": None, "mtime": None, "map": None}
+_MANIFEST_CACHE: dict[str, Any] = {
+    "root": None,
+    "mtime": None,
+    "map": None,
+    "manifest": None,
+}
 _CFG_CACHE: dict[str, Any] = {"root": None, "mtime": None, "cfg": None}
-_CHUNKS_CACHE: dict[str, Any] = {"path": None, "mtime": None, "chunks": None}
+_CHUNKS_CACHE: dict[str, Any] = {
+    "path": None,
+    "mtime": None,
+    "chunks": None,
+    "id_to_chunk": None,
+}
 _SEMANTIC_CACHE: dict[str, Any] = {
     "index_path": None,
     "index_mtime": None,
@@ -181,6 +191,10 @@ def load_chunks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     _CHUNKS_CACHE["path"] = chunks_path
     _CHUNKS_CACHE["mtime"] = st.st_mtime
     _CHUNKS_CACHE["chunks"] = out
+    # Derived id->chunk map is built lazily by id_to_chunk_map() and stored
+    # here; kept None here so a fresh corpus load does not pay for the
+    # derivation when no filtered/semantic query follows.
+    _CHUNKS_CACHE["id_to_chunk"] = None
     return out
 
 
@@ -270,6 +284,46 @@ def load_manifest_json() -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _load_manifest_cached() -> dict[str, Any] | None:
+    """Full parsed manifest dict, mtime-cached in _MANIFEST_CACHE.
+
+    Same (root, mtime) key as the source-file map: ingest rewrites the
+    manifest (new mtime), so a fresh parse is served after any rewrite.
+    A corrupt or missing manifest is NOT cached -- the next call retries
+    the read. Callers must treat the returned dict as read-only.
+    """
+    cfg = load_config()
+    root = str(cfg.get("_root", project_root()))
+    paths = cfg.get("paths", {}) or {}
+    manifest_rel = str(paths.get("manifest_path", "build/manifest.json"))
+    manifest_path = os.path.join(root, manifest_rel)
+
+    try:
+        st = os.stat(manifest_path)
+    except Exception:
+        return None
+
+    if (
+        _MANIFEST_CACHE.get("root") == root
+        and _MANIFEST_CACHE.get("mtime") == st.st_mtime
+        and isinstance(_MANIFEST_CACHE.get("manifest"), dict)
+    ):
+        return _MANIFEST_CACHE["manifest"]
+
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+    except Exception:
+        return None
+
+    _MANIFEST_CACHE["root"] = root
+    _MANIFEST_CACHE["mtime"] = st.st_mtime
+    _MANIFEST_CACHE["manifest"] = data
+    return data
+
+
 def indexed_catalog() -> dict[str, Any]:
     """Summarize manifest + artifact presence for UI (indexed documents, search readiness)."""
     cfg = load_config()
@@ -279,7 +333,6 @@ def indexed_catalog() -> dict[str, Any]:
     index_dir_rel = str(paths.get("index_dir", "build/index"))
     chunks_dir_rel = str(paths.get("chunks_dir", "build/chunks_jsonl"))
 
-    manifest_path = os.path.join(root, manifest_rel)
     faiss_path = os.path.join(root, index_dir_rel, "faiss.index")
     meta_path = os.path.join(root, index_dir_rel, "index_meta.json")
     chunks_path = os.path.join(root, chunks_dir_rel, "chunks.jsonl")
@@ -292,53 +345,53 @@ def indexed_catalog() -> dict[str, Any]:
     manifest_present = False
     corpus_content_sha256: str | None = None
     pipeline_version: str | None = None
-    try:
-        with open(manifest_path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            manifest_present = True
-            gen = data.get("generated_at_utc")
-            if gen is not None:
-                generated_at = str(gen)
-            cs = data.get("corpus_content_sha256")
-            if isinstance(cs, str) and cs.strip():
-                corpus_content_sha256 = cs.strip()
-            pv = data.get("pipeline_version")
-            if isinstance(pv, str) and pv.strip():
-                pipeline_version = pv.strip()
-            raw_docs = data.get("documents")
-            if isinstance(raw_docs, list):
-                for d in raw_docs:
-                    if not isinstance(d, dict):
-                        continue
-                    sf = d.get("source_file")
-                    sf_s = str(sf) if sf is not None else ""
-                    cov = d.get("coverage")
-                    cov_d: dict[str, Any] = cov if isinstance(cov, dict) else {}
-                    th = d.get("title_hint")
-                    ey = d.get("edition_year")
-                    ey_out: int | None = None
-                    if isinstance(ey, int):
-                        ey_out = ey
-                    elif isinstance(ey, str) and ey.strip().isdigit():
-                        try:
-                            ey_out = int(ey.strip())
-                        except ValueError:
-                            ey_out = None
-                    documents.append(
-                        {
-                            "doc_id": d.get("doc_id"),
-                            "source_file": sf_s,
-                            "basename": os.path.basename(sf_s) if sf_s else "",
-                            "chunk_count": d.get("chunk_count"),
-                            "sha256": d.get("sha256"),
-                            "title_hint": th if isinstance(th, str) else None,
-                            "edition_year": ey_out,
-                            "coverage": cov_d,
-                        }
-                    )
-    except Exception:
-        pass
+    # Manifest is served from the mtime-keyed _MANIFEST_CACHE (full parsed
+    # dict): the UI polls this endpoint, so re-parsing hundreds of KB of
+    # JSON per request was the hot-path cost. Corrupt/missing -> None and
+    # the block below keeps the previous all-defaults behavior.
+    data = _load_manifest_cached()
+    if data is not None:
+        manifest_present = True
+        gen = data.get("generated_at_utc")
+        if gen is not None:
+            generated_at = str(gen)
+        cs = data.get("corpus_content_sha256")
+        if isinstance(cs, str) and cs.strip():
+            corpus_content_sha256 = cs.strip()
+        pv = data.get("pipeline_version")
+        if isinstance(pv, str) and pv.strip():
+            pipeline_version = pv.strip()
+        raw_docs = data.get("documents")
+        if isinstance(raw_docs, list):
+            for d in raw_docs:
+                if not isinstance(d, dict):
+                    continue
+                sf = d.get("source_file")
+                sf_s = str(sf) if sf is not None else ""
+                cov = d.get("coverage")
+                cov_d: dict[str, Any] = cov if isinstance(cov, dict) else {}
+                th = d.get("title_hint")
+                ey = d.get("edition_year")
+                ey_out: int | None = None
+                if isinstance(ey, int):
+                    ey_out = ey
+                elif isinstance(ey, str) and ey.strip().isdigit():
+                    try:
+                        ey_out = int(ey.strip())
+                    except ValueError:
+                        ey_out = None
+                documents.append(
+                    {
+                        "doc_id": d.get("doc_id"),
+                        "source_file": sf_s,
+                        "basename": os.path.basename(sf_s) if sf_s else "",
+                        "chunk_count": d.get("chunk_count"),
+                        "sha256": d.get("sha256"),
+                        "title_hint": th if isinstance(th, str) else None,
+                        "edition_year": ey_out,
+                        "coverage": cov_d,
+                    }
+                )
 
     documents.sort(
         key=lambda x: ((str(x.get("basename") or "").lower()), str(x.get("doc_id") or ""))
@@ -513,6 +566,20 @@ def _chunks_jsonl_path() -> str | None:
     return path if os.path.exists(path) else None
 
 
+def id_to_chunk_store(chunks: list[dict[str, Any]]) -> dict[str | None, dict[str, Any]]:
+    """Store and return the id->chunk map for the cached chunks list.
+
+    Called from semantic_search: when the passed list is the cached one,
+    builds the map once and memoizes it; other lists get a per-call dict.
+    """
+    if chunks is _CHUNKS_CACHE.get("chunks") and isinstance(_CHUNKS_CACHE.get("id_to_chunk"), dict):
+        return _CHUNKS_CACHE["id_to_chunk"]
+    m = {c.get("chunk_id"): c for c in chunks}
+    if chunks is _CHUNKS_CACHE.get("chunks"):
+        _CHUNKS_CACHE["id_to_chunk"] = m
+    return m
+
+
 def chunk_meta_from_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build the chunk_id -> metadata map VectorIndex.search_with_filter needs.
 
@@ -679,7 +746,7 @@ def semantic_search(
         if not ids:
             return None
 
-        id_to_chunk = {c.get("chunk_id"): c for c in chunks}
+        id_to_chunk = id_to_chunk_store(chunks)
         out: list[dict[str, Any]] = []
         for dist, cid in zip(dists, ids, strict=False):
             chunk = id_to_chunk.get(cid)
