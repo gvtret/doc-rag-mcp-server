@@ -104,17 +104,23 @@ def test_rebuild_postprocess_runs_on_full_merged_set(tmp_path: Path) -> None:
     BEFORE dedup: duplicate header detection is corpus-wide, and merged
     chunks loaded from chunks.jsonl must be cleaned too, not only freshly
     parsed ones.
+
+    The fixture forces every cleanup rule to fire while keeping every chunk
+    above min_text_len: double spaces, a run of 4 newlines, and a header
+    line repeated in 3 chunks -- so postprocess CHANGES text without
+    REMOVING chunks, exactly the case the count-based persistence guard
+    used to miss.
     """
-    from doc_rag.raglib.pipeline import rebuild
+    from doc_rag.raglib.pipeline import _postprocess_chunks, rebuild
 
     config_path = _make_root(tmp_path)
     chunks_path = tmp_path / "build" / "chunks" / "chunks.jsonl"
     docs_md = tmp_path / "build" / "docs_md"
 
-    # Existing doc in the manifest. The short header text appears as the
-    # ENTIRE text of 3 chunks (header detection counts whole chunk texts,
-    # 3-100 chars), and also as a leading line inside body chunks -- after
-    # corpus-wide postprocessing the header must be gone from everywhere.
+    # The header text appears as the ENTIRE text of 3 chunks (header
+    # detection counts whole chunk texts, 3-100 chars) -- corpus-wide
+    # postprocessing strips it from body chunks and drops the header-only
+    # ones via dedup.
     header = "ISO 13239 Header Line"
     manifest = {
         "schema_version": 1,
@@ -124,7 +130,7 @@ def test_rebuild_postprocess_runs_on_full_merged_set(tmp_path: Path) -> None:
                 "source_file": "a.txt",
                 "sha256": "aaa",
                 "md_path": "build/docs_md/doc_a.md",
-                "chunk_count": 5,
+                "chunk_count": 4,
             },
         ],
     }
@@ -137,12 +143,10 @@ def test_rebuild_postprocess_runs_on_full_merged_set(tmp_path: Path) -> None:
         {
             "doc_id": "doc_a",
             "chunk_id": "doc_a:3",
-            "text": f"{header}\nFirst body with enough meaningful content here.",
-        },
-        {
-            "doc_id": "doc_a",
-            "chunk_id": "doc_a:4",
-            "text": f"{header}\nSecond body with enough meaningful content here.",
+            "text": (
+                f"{header}\n\n\n\nFirst  body  with  double  spaces  and  enough"
+                "\n\n\n\nmeaningful  content  here  to  survive  every  filter."
+            ),
         },
     ]
     with open(chunks_path, "w") as f:
@@ -156,15 +160,85 @@ def test_rebuild_postprocess_runs_on_full_merged_set(tmp_path: Path) -> None:
     loaded = _read_chunks(chunks_path)
     texts = [c["text"] for c in loaded]
     # The header repeats in 3+ chunks corpus-wide, so it must be stripped
-    # everywhere by the rebuild-path postprocessing.
+    # everywhere by the rebuild-path postprocessing; the whitespace rules
+    # must also have fired (no double spaces, no 3+ newline runs).
     assert texts, "no chunks survived rebuild"
     assert all(header not in t for t in texts), (
         f"rebuild did not strip corpus-wide duplicate headers: {texts}"
     )
+    assert all("  " not in t for t in texts), f"double spaces survived rebuild: {texts}"
+    assert all("\n\n\n" not in t for t in texts), f"newline runs survived rebuild: {texts}"
+    # The on-disk result must be EXACTLY what _postprocess_chunks produces
+    # for the raw fixture (persistence must carry cleaned text, not only
+    # removals).
+    expected = _postprocess_chunks(raw_chunks)
+    assert loaded == expected, (
+        "chunks.jsonl after rebuild differs from _postprocess_chunks output:\n"
+        f"on disk:  {loaded}\nexpected: {expected}"
+    )
     # The header-only chunks collapse to nothing and are dropped; the body
-    # chunks keep their (header-stripped) text. Gaps in chunk_idx numbering
-    # are acceptable by design (chunk_ids stay stable).
-    assert len(texts) == 2, f"expected 2 body chunks to survive, got {len(texts)}"
+    # chunk keeps its cleaned text. Gaps in chunk_idx numbering are
+    # acceptable by design (chunk_ids stay stable).
+    assert len(texts) == 1, f"expected 1 body chunk to survive, got {len(texts)}"
+    assert texts[0] == (
+        "First body with double spaces and enough\n\nmeaningful content here to survive every filter."
+    )
+
+
+def test_rebuild_persists_chunks_when_text_changes_but_count_does_not(tmp_path: Path) -> None:
+    """Regression for the old count-based persistence guard: postprocess can
+    change chunk TEXT without removing any chunk. The old guard compared only
+    counts, so the cleaned text never landed in chunks.jsonl. rebuild() must
+    rewrite chunks.jsonl whenever postprocessing altered content.
+    """
+    from doc_rag.raglib.pipeline import rebuild
+
+    config_path = _make_root(tmp_path)
+    chunks_path = tmp_path / "build" / "chunks" / "chunks.jsonl"
+    docs_md = tmp_path / "build" / "docs_md"
+
+    manifest = {
+        "schema_version": 1,
+        "documents": [
+            {
+                "doc_id": "doc_a",
+                "source_file": "a.txt",
+                "sha256": "aaa",
+                "md_path": "build/docs_md/doc_a.md",
+                "chunk_count": 2,
+            },
+        ],
+    }
+    (tmp_path / "build" / "manifest.json").write_text(json.dumps(manifest))
+
+    # No chunk is short enough to be dropped and no header repeats 3+ times:
+    # postprocess only rewrites text (double spaces + 4-newline runs), so
+    # chunk count is unchanged -- the old guard skipped the rewrite here.
+    raw_chunks = [
+        {
+            "doc_id": "doc_a",
+            "chunk_id": "doc_a:0",
+            "text": "First  paragraph  with  double  spaces.\n\n\n\nAnd  four  newlines.",
+        },
+        {
+            "doc_id": "doc_a",
+            "chunk_id": "doc_a:1",
+            "text": "Second  paragraph  with  double  spaces.\n\n\n\nAnd  four  newlines.",
+        },
+    ]
+    with open(chunks_path, "w") as f:
+        for c in raw_chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+
+    (docs_md / "doc_a.md").write_text("content a")
+
+    rebuild(str(config_path), force=False, skip_index=True)
+
+    loaded = _read_chunks(chunks_path)
+    assert len(loaded) == 2, "postprocess must not remove chunks in this fixture"
+    assert loaded != raw_chunks, "chunks.jsonl was not rewritten with cleaned text"
+    assert all("  " not in c["text"] for c in loaded), f"dirty text persisted: {loaded}"
+    assert all("\n\n\n" not in c["text"] for c in loaded), f"dirty text persisted: {loaded}"
 
 
 # -- A8: markdown structure survives whitespace cleanup -----------------

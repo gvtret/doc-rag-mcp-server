@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-# Bump when the chunker's behaviour changes in a way that changes chunk
-# boundaries for the same config values (1 = current len//4 behaviour).
+# Bump when anything that determines chunk boundaries OR chunk text changes
+# for the same config values (1 = current len//4 behaviour).
 # 3 = postprocessing regex no longer collapses newlines, and rebuild runs
 # postprocessing on the full merged chunk set (chunk text changed).
 CHUNKING_SCHEMA_VERSION = "3"
