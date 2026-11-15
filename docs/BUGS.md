@@ -316,6 +316,11 @@ etc. Always pass the extras the deployment needs (see `scripts/bootstrap.sh`).
 
 **Status:** NOT FIXED (observed on the shipped `build/`)
 
+Note (2026-11): `ensure_faiss_index` was removed in 65e7e35; its logic
+now lives in `VectorIndex.build` (with the integrity checks the gotcha
+asks for -- a meta/index mismatch degrades to unavailable instead of
+serving wrong chunks).
+
 `build/index/faiss.index` held **3243** vectors while `build/chunks_jsonl/chunks.jsonl`
 held **13190** chunks (`index_meta.json` also listed 3243 `chunk_ids`). Semantic
 search therefore only covered ~25% of the corpus, with no warning. `ensure_faiss_index`

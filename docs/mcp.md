@@ -14,7 +14,7 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 | `GET  /ui/mcp/cursor.json` | drop-in MCP config for Cursor |
 | `GET  /ui/mcp/vscode.json` | drop-in MCP config for VS Code |
 | `GET  /health/live` | liveness probe — always 200 |
-| `GET  /health/ready` | readiness probe - 503 if no manifest, a job is in flight, or (semantic/hybrid) the model is missing (`model_missing`) / the index is stale (`index_stale`) |
+| `GET  /health/ready` | readiness probe - 503 if no manifest, a job is in flight, or (semantic/hybrid) the model is missing (`model_missing`), the index is stale (`index_stale`) or missing (`index_missing`, faiss backend only) |
 | `GET  /metrics` | Prometheus text exposition (requires `[metrics]` extra) |
 
 ## Tools exposed
