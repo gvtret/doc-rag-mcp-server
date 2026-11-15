@@ -1043,6 +1043,8 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
                     "md_path": os.path.relpath(md_path, root),
                     "blocks_path": blocks_rel,
                     "sha256": file_hash,
+                    # Pre-postprocess count; the authoritative count lives in
+                    # chunks.jsonl (postprocess/dedup may drop chunks after this).
                     "chunk_count": len(file_chunks),
                     "title_hint": os.path.splitext(base)[0],
                     "edition_year": ed_y,
@@ -1092,14 +1094,19 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
         all_chunks = new_chunks
     else:
         all_chunks = _load_existing_chunks(chunks_path)
-    original_chunk_count = len(all_chunks)
 
     # Postprocess the FULL merged set (same as the ingest path) BEFORE dedup:
     # duplicate header/footer detection is corpus-wide, and running it here
     # keeps chunk text identical to what ingest() would produce for the same
-    # document. Gaps in chunk_idx numbering after filtering are acceptable —
+    # document. Gaps in chunk_idx numbering after filtering are acceptable --
     # chunk_ids are already assigned and must stay stable.
+    pre_postprocess_count = len(all_chunks)
     all_chunks = _postprocess_chunks(all_chunks)
+    _log(
+        "INFO",
+        f"postprocess: removed {pre_postprocess_count - len(all_chunks)} chunks, "
+        f"rewrote {len(all_chunks)} texts",
+    )
 
     # Phase 3: Dedup by doc_id AND sha256
     seen_ids: set[str] = set()
@@ -1136,9 +1143,11 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
         all_chunks, n_dropped = _dedup_chunks(all_chunks, doc_src_map, dedup_thresh)
         _log("INFO", f"dedup: removed {n_dropped} near-duplicate chunks (threshold={dedup_thresh})")
 
-    # If dedup changed the set, rewrite chunks.jsonl
-    if len(all_chunks) != original_chunk_count:
-        _write_chunks(chunks_path, all_chunks)
+    # Always rewrite chunks.jsonl: postprocess changes chunk TEXT without
+    # necessarily removing any chunks (and dedup may remove some), so the
+    # count alone is not a persistence signal. One full rewrite per rebuild
+    # is dominated by parsing time.
+    _write_chunks(chunks_path, all_chunks)
 
     # Phase 4: Write manifest
     manifest = _manifest_shell(cfg, all_docs)
