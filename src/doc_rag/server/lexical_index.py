@@ -26,13 +26,13 @@ phrase bonus when the query string appears verbatim).
 RU suffix removal nuance vs the brief: the brief says "words >= 5
 letters"; implemented as "the token is >= 5 letters AND the remaining
 stem after suffix removal is >= 4 letters" (cut >= _MIN_STEM_LEN - 1
-with _MIN_STEM_LEN = 5). This keeps «шифра»/«шифры» -> «шифр» (stem 4)
-while preventing «вода» -> «вод» garbage cuts on 4-letter stems. Without
-the stem guard, single-letter stems («и» from «имя»-class words) would
+with _MIN_STEM_LEN = 5). This keeps "шифра"/"шифры" -> "шифр" (stem 4)
+while preventing "вода" -> "вод" garbage cuts on 4-letter stems. Without
+the stem guard, single-letter stems ("и" from "имя"-class words) would
 join unrelated postings.
 
 Memory: the singleton for the real corpus (20498 chunks, vocab ~84k)
-adds ~83 MB RSS on top of the already-loaded chunk dicts (measured via
+adds ~150-160 MB RSS on top of the already-loaded chunk dicts (measured via
 ru_maxrss delta; the chunk dicts themselves are another ~780 MB process
 peak shared with the rest of the server). postings tuples, per-chunk
 metadata and the lowercase phrase_haystacks copy dominate the index
@@ -47,6 +47,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 from typing import Any
 
 K1 = 1.2
@@ -418,6 +419,9 @@ class LexicalIndex:
 # ---------------------------------------------------------------------------
 
 _LEXICAL_CACHE: dict[str, Any] = {"path": None, "mtime": None, "index": None}
+# Guards the build-and-store critical section of get_lexical_index so
+# concurrent first requests build the index once, not twice.
+_LEXICAL_LOCK = threading.Lock()
 
 
 def get_lexical_index(
@@ -449,6 +453,10 @@ def get_lexical_index(
     except Exception:
         mt = None
 
+    # Double-checked locking (chunking_meta.py style): a first hit is a
+    # cheap unlocked read; only the build-and-store critical section is
+    # serialized so two concurrent first requests do not each build a
+    # ~150 MB index.
     if (
         _LEXICAL_CACHE.get("path") == chunks_path
         and _LEXICAL_CACHE.get("mtime") == mt
@@ -456,11 +464,20 @@ def get_lexical_index(
     ):
         return _LEXICAL_CACHE["index"]
 
-    idx = LexicalIndex.build(chunks)
-    if mt is not None:
-        _LEXICAL_CACHE["path"] = chunks_path
-        _LEXICAL_CACHE["mtime"] = mt
-        _LEXICAL_CACHE["index"] = idx
+    with _LEXICAL_LOCK:
+        # Re-check inside the lock: another thread may have finished the
+        # build while this one waited.
+        if (
+            _LEXICAL_CACHE.get("path") == chunks_path
+            and _LEXICAL_CACHE.get("mtime") == mt
+            and isinstance(_LEXICAL_CACHE.get("index"), LexicalIndex)
+        ):
+            return _LEXICAL_CACHE["index"]
+        idx = LexicalIndex.build(chunks)
+        if mt is not None:
+            _LEXICAL_CACHE["path"] = chunks_path
+            _LEXICAL_CACHE["mtime"] = mt
+            _LEXICAL_CACHE["index"] = idx
     return idx
 
 

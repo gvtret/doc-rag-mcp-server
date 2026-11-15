@@ -312,3 +312,80 @@ class TestE2EFaissMigration:
         assert len(ids) == 2
         assert "a" in ids
         assert "c" in ids
+
+
+class TestCorruptMetaLatch:
+    """Corrupt index_meta.json must latch the degraded state (final review
+    finding 2): the failed load must not re-read faiss.index on every
+    request, and an atomic re-write (mtime change) must heal the latch."""
+
+    def test_corrupt_meta_latches_and_releases_on_rewrite(self, tmp_path: Path, caplog):
+        import faiss
+
+        store = FaissVectorStore(
+            index_path=str(tmp_path / "faiss.index"),
+            meta_path=str(tmp_path / "index_meta.json"),
+            metric="ip",
+        )
+        store.init(dim=4, model_name="m")
+        store.add(np.eye(4, dtype=np.float32)[:3], ["a", "b", "c"])
+        store.save()
+
+        # Corrupt ONLY the meta file: json.load now fails inside the load
+        # block (previously no latch was set -> re-read per request).
+        (tmp_path / "index_meta.json").write_text("{not json", encoding="utf-8")
+
+        store2 = FaissVectorStore(
+            index_path=str(tmp_path / "faiss.index"),
+            meta_path=str(tmp_path / "index_meta.json"),
+            metric="ip",
+        )
+        reads = []
+        real_read_index = faiss.read_index
+
+        def counting_read_index(path):
+            reads.append(path)
+            return real_read_index(path)
+
+        with caplog.at_level(logging.ERROR):
+            faiss.read_index = counting_read_index
+            try:
+                for _ in range(3):
+                    store2._ensure_loaded()
+            finally:
+                faiss.read_index = real_read_index
+
+        assert len(reads) == 1, "corrupt meta must latch after one read"
+        assert store2._degraded is True
+        assert store2._degraded_mtime is not None
+        assert store2._index is None and store2._meta is None
+        load_errors = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and "failed to load index pair" in r.getMessage()
+        ]
+        assert len(load_errors) == 1, "latch must prevent re-logging the ERROR"
+
+        # Later calls on the latched store stay degraded without reads.
+        faiss.read_index = counting_read_index
+        try:
+            store2._ensure_loaded()
+            store2._ensure_loaded()
+        finally:
+            faiss.read_index = real_read_index
+        assert len(reads) == 1
+
+        # Atomic re-write with valid content (mtime change) heals: the
+        # latch releases and the pair loads successfully.
+        import time
+
+        time.sleep(0.02)
+        store.save()
+
+        faiss.read_index = counting_read_index
+        try:
+            store2._ensure_loaded()
+        finally:
+            faiss.read_index = real_read_index
+        assert store2._degraded is False
+        assert store2.size == 3

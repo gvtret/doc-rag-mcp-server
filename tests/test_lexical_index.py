@@ -431,3 +431,47 @@ def test_lexical_search_finds_match_and_scores() -> None:
     out = lexical_search(chunks, query="world", top_k=2)
     assert len(out) == 2
     assert isinstance(out[0].get("score"), float)
+
+
+def test_get_lexical_index_thread_smoke(tmp_path) -> None:
+    """Smoke test: 4 threads calling get_lexical_index on a cold cache
+    must all receive the same index object (lock around build-and-store,
+    final review finding 3)."""
+    import threading
+
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks = [{"chunk_id": "a:0", "doc_id": "a", "text": "текст для потоков"}]
+    chunks_path.write_text(json.dumps(chunks[0], ensure_ascii=False) + "\n", encoding="utf-8")
+
+    # Count builds to assert the index was built once, not four times.
+    builds = []
+    real_build = LexicalIndex.build
+
+    @classmethod  # type: ignore[misc]
+    def counting_build(cls, *args, **kwargs):
+        builds.append(1)
+        return real_build(*args, **kwargs)
+
+    LexicalIndex.build = counting_build  # type: ignore[method-assign]
+    try:
+        barrier = threading.Barrier(4)
+        results: list = []
+        lock = threading.Lock()
+
+        def worker():
+            barrier.wait()  # maximize contention on the cold cache
+            idx = get_lexical_index(chunks, str(chunks_path))
+            with lock:
+                results.append(idx)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        LexicalIndex.build = real_build  # type: ignore[method-assign]
+
+    assert len(results) == 4
+    assert all(idx is results[0] for idx in results)
+    assert len(builds) == 1, f"expected 1 build, got {len(builds)}"
