@@ -500,13 +500,6 @@ def document_preview(doc_id: str) -> dict[str, Any]:
     }
 
 
-def _tokenize(text: str) -> list[str]:
-    """Simple whitespace + punctuation tokenizer, lowercased."""
-    import re
-
-    return [t for t in re.split(r"[\s\W]+", text.lower()) if len(t) > 1]
-
-
 def _chunks_jsonl_path() -> str | None:
     """Absolute path of the corpus chunks.jsonl (or None when absent).
 
@@ -543,7 +536,14 @@ def chunk_meta_from_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, 
 def _chunk_passes_filters(chunk: dict[str, Any], filters: dict[str, Any]) -> bool:
     """True if a chunk dict satisfies the metadata filters (same keys and
     semantics as the vector path: doc_id, doc_ids, section_path prefix,
-    is_table bool — True keeps table chunks, False keeps non-table)."""
+    is_table bool — True keeps table chunks, False keeps non-table).
+
+    NOTE: filter semantics exist in three intentionally parallel copies:
+    raglib.vector_index._chunk_matches_filters (vector path), this
+    function (legacy/semantic dict path) and LexicalIndex._meta_passes
+    (lexical index path). A matrix test in tests/test_lexical_index.py
+    pins the lexical copy's behavior to this one. Keep the three in sync.
+    """
     cid = str(chunk.get("chunk_id", ""))
     doc_id = str(chunk.get("doc_id", "") or cid.split(":")[0])
     if "doc_id" in filters and doc_id != str(filters["doc_id"]):
@@ -563,6 +563,22 @@ def _chunk_passes_filters(chunk: dict[str, Any], filters: dict[str, Any]) -> boo
     return True
 
 
+def chunks_revision() -> tuple[str | None, float | None]:
+    """Revision marker of the corpus chunks.jsonl: (path, mtime).
+
+    The LexicalIndex singleton is keyed on this tuple; a rewritten
+    chunks.jsonl produces a new revision and rebuilds the index. A missing
+    file yields (None, None).
+    """
+    path = _chunks_jsonl_path()
+    if path is None:
+        return (None, None)
+    try:
+        return (path, os.stat(path).st_mtime)
+    except Exception:
+        return (path, None)
+
+
 def lexical_search(
     chunks: list[dict[str, Any]],
     query: str,
@@ -576,16 +592,20 @@ def lexical_search(
     scorer recomputed DF over all chunks per request: seconds at 20k
     chunks). Filters apply before scoring; unknown filter keys raise
     ValueError (fail loud, same policy as the vector path). When the
-    corpus did not come from the cached chunks.jsonl (synthetic lists in
-    tests, sub-selected chunk sets), the index is built fresh.
+    corpus did not come from the current chunks.jsonl revision (synthetic
+    lists in tests, sub-selected chunk sets), the index is built fresh.
     """
     q = (query or "").strip()
     if not q:
         return []
 
-    chunks_path = _chunks_jsonl_path()
-    if chunks_path is not None and chunks is load_chunks(load_config()):
-        idx = get_lexical_index(chunks, chunks_path)
+    # Revision gate (not identity): the cached singleton is served only
+    # when the passed list matches the CURRENT chunks.jsonl revision
+    # (path + mtime). load_chunks itself validates the same mtime, so a
+    # caller with a stale list rebuilds instead of hitting the cache.
+    rev_path, _rev_mtime = chunks_revision()
+    if rev_path is not None and chunks is load_chunks(load_config()):
+        idx = get_lexical_index(chunks, rev_path)
     else:
         idx = LexicalIndex.build(chunks)
 
