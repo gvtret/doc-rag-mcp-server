@@ -63,6 +63,22 @@ def _set_retrieval_mode(tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(r, "_CFG_CACHE", {}, raising=False)
 
 
+def _set_cfg(tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch, **updates: Any) -> None:
+    """Merge top-level config sections (e.g. index={"backend": "qdrant"})."""
+    import yaml
+
+    from doc_rag.server import retrieval as r
+
+    cfg_path = tmp_corpus_root / "config" / "config.yaml"
+    cfg: dict[str, Any] = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    for key, value in updates.items():
+        merged = dict(cfg.get(key) or {})
+        merged.update(value)
+        cfg[key] = merged
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setattr(r, "_CFG_CACHE", {}, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # _readiness_state
 # ---------------------------------------------------------------------------
@@ -122,7 +138,7 @@ def test_readiness_ok_without_model_in_hybrid_mode_is_gated(tmp_corpus_root, mon
 
 
 def test_readiness_fails_without_index_in_semantic_mode(tmp_corpus_root, monkeypatch):
-    """Missing faiss.index makes semantic search unusable: readiness fails."""
+    """Missing index files makes semantic search unusable: readiness fails."""
     from doc_rag.server.mcp_http import _readiness_state
 
     _write_manifest(tmp_corpus_root)
@@ -140,6 +156,35 @@ def test_readiness_fails_without_index_in_semantic_mode(tmp_corpus_root, monkeyp
     assert "index_stale" not in state["reasons"]
 
 
+def test_readiness_ok_in_semantic_mode_with_only_meta_missing(tmp_corpus_root, monkeypatch):
+    """Gate requires BOTH files: only one present still fails readiness."""
+    from doc_rag.server.mcp_http import _readiness_state
+
+    _write_manifest(tmp_corpus_root)
+    # faiss.index present but index_meta.json absent.
+    (tmp_corpus_root / "build" / "index" / "faiss.index").write_bytes(b"stub")
+    _patch_status(monkeypatch, ready=True, fingerprint="fp")
+
+    state = _readiness_state()
+    assert state["ready"] is False
+    assert "index_missing" in state["reasons"]
+    assert state["checks"]["index_meta"] is False
+
+
+def test_readiness_not_gated_on_index_with_qdrant_backend(tmp_corpus_root, monkeypatch):
+    """qdrant keeps vectors remotely: absent local faiss files must not gate."""
+    from doc_rag.server.mcp_http import _readiness_state
+
+    _set_cfg(tmp_corpus_root, monkeypatch, index={"backend": "qdrant"})
+    _write_manifest(tmp_corpus_root)
+    _patch_status(monkeypatch, ready=True, fingerprint="fp")
+
+    state = _readiness_state()
+    assert state["ready"] is True
+    assert "index_missing" not in state["reasons"]
+    assert state["checks"]["faiss_index"] is False  # still reported
+
+
 def test_readiness_lexical_mode_not_gated_on_missing_index(tmp_corpus_root, monkeypatch):
     """In lexical mode a missing index is informational, not a failure."""
     from doc_rag.server.mcp_http import _readiness_state
@@ -152,6 +197,19 @@ def test_readiness_lexical_mode_not_gated_on_missing_index(tmp_corpus_root, monk
     assert state["ready"] is True
     assert "index_missing" not in state["reasons"]
     assert state["checks"]["faiss_index"] is False  # still reported
+
+
+def test_readiness_hybrid_mode_gated_on_missing_index(tmp_corpus_root, monkeypatch):
+    """Hybrid mode needs the local index too: readiness must fail without it."""
+    from doc_rag.server.mcp_http import _readiness_state
+
+    _set_retrieval_mode(tmp_corpus_root, monkeypatch, "hybrid")
+    _write_manifest(tmp_corpus_root)
+    _patch_status(monkeypatch, ready=True, fingerprint="fp")
+
+    state = _readiness_state()
+    assert state["ready"] is False
+    assert "index_missing" in state["reasons"]
 
 
 def test_readiness_reports_stale_index(tmp_corpus_root, monkeypatch):

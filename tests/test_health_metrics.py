@@ -57,10 +57,13 @@ def test_health_ready_200_with_manifest(tmp_corpus_root: Path, monkeypatch: pyte
     (root / "build" / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
     )
-    # Semantic mode also gates on the index file; stub bytes are enough
-    # since the probe only stats the files.
+    # Semantic mode also gates on the local index files; stub bytes are
+    # enough since the probe only stats them.
     (root / "build" / "index").mkdir(parents=True, exist_ok=True)
     (root / "build" / "index" / "faiss.index").write_bytes(b"stub")
+    (root / "build" / "index" / "index_meta.json").write_text(
+        json.dumps({"weights_sha256": "fp"}), encoding="utf-8"
+    )
 
     r = client.get("/health/ready")
     assert r.status_code == 200
@@ -70,6 +73,25 @@ def test_health_ready_200_with_manifest(tmp_corpus_root: Path, monkeypatch: pyte
     # Subsystem checks are informational — present in every response
     assert "checks" in body
     assert "disk_space" in body["checks"]
+
+
+def test_health_ready_503_when_index_missing(
+    tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pytest.importorskip("fastapi")
+
+    client, root = _client(tmp_corpus_root, monkeypatch)
+    (root / "build" / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
+    )
+    # Manifest present, model ready, but no local index files -> 503.
+
+    r = client.get("/health/ready")
+
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ready"] is False
+    assert "index_missing" in body["reasons"]
 
 
 def test_legacy_health_keeps_returning_200(tmp_corpus_root: Path):
