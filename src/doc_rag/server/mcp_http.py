@@ -1412,6 +1412,11 @@ def _readiness_state() -> dict[str, Any]:
         # Stale index means semantic search is unusable: gate readiness too.
         ready = False
         reasons.append("index_stale")
+    if model_required and not checks["faiss_index"]:
+        # Missing index file is a separate failure from a stale one:
+        # without faiss.index semantic search degrades to 6-8s per query.
+        ready = False
+        reasons.append("index_missing")
 
     return {
         "ready": ready,

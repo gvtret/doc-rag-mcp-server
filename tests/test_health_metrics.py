@@ -57,6 +57,10 @@ def test_health_ready_200_with_manifest(tmp_corpus_root: Path, monkeypatch: pyte
     (root / "build" / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
     )
+    # Semantic mode also gates on the index file; stub bytes are enough
+    # since the probe only stats the files.
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "build" / "index" / "faiss.index").write_bytes(b"stub")
 
     r = client.get("/health/ready")
     assert r.status_code == 200
