@@ -55,6 +55,9 @@ def migrate_vectors(
     target_store = create_vector_store(target_cfg, collection)
 
     # Load source metadata
+    from doc_rag.raglib.chunking_meta import configure_tokenizer
+
+    configure_tokenizer(source_cfg)
     source_vi = VectorIndex(source_cfg, collection)
     source_vi._load_existing_ids()
 
