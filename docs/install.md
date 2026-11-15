@@ -198,7 +198,7 @@ embeddings:
   model_name: "BAAI/bge-m3"   # shipped default: multilingual, 1024-dim
   device: "cpu"               # "cpu" | "cuda" | "auto"
   batch_size: 32
-  max_seq_length: 512         # cap to the chunk size; bge-m3 defaults to 8192
+  max_seq_length: 576         # chunk cap 504 + section-prefix budget; bge-m3 defaults to 8192
   normalize: true
   update_check_interval_hours: 72   # 0 disables the HF Hub weight check
   # model_path: "/path/to/models/bge-m3"   # explicit snapshot; disables the check
@@ -398,3 +398,26 @@ NVIDIA-only), same as the CUDA path above.
 - FAISS index is `IndexFlatIP` (exact, no training step).
 
 See [troubleshooting.md](troubleshooting.md) for common install issues.
+
+### Retrieval-quality eval harness
+
+`scripts/eval_retrieval.py` measures recall@10, MRR@10 and nDCG@10 of
+the retrieval against a golden query set (`eval/queries_golden.yaml`,
+with per-query relevant doc/chunk ids). Use it to turn any
+retrieval-quality change into before/after numbers instead of guesswork:
+
+```bash
+# Baseline (run BEFORE the change, keep the report):
+python scripts/eval_retrieval.py --root . --label baseline
+
+# After the change:
+python scripts/eval_retrieval.py --root . --label after
+```
+
+Each run prints a human-readable table and writes a JSON report (per
+query and aggregate) under `build/eval/`:
+`<label>-<date>-<modes>.json` with `--label`, timestamped otherwise.
+Modes, depth and query file are configurable (`--modes semantic,hybrid,lexical`,
+`--top-k`, `--queries`). Compare two reports by diffing the aggregate
+metrics; baseline reports are committed to `build/eval/` so a regression
+is provable, not anecdotal.

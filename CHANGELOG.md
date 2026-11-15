@@ -33,6 +33,39 @@ downloaded from the HF Hub at runtime.
   (default 72, `0` disables) compares local weight hashes against the Hub
   (LFS-only, no download) and surfaces `model_update_available`.
 
+### Audit fixes (2026-11)
+- **Atomic writes**: chunks.jsonl, index files and metadata are written
+  via temp-file + rename, so a crash mid-write never leaves a torn pair.
+- **Cache invalidation after rebuild**: the server-side caches (chunks,
+  manifest, VectorIndex, lexical singleton) are dropped after ingest, so
+  a rebuilt index is served without a restart.
+- **Metadata filters in all retrieval modes**: semantic, hybrid and
+  legacy paths all honor `doc_id` / `doc_ids` / `section_path` /
+  `is_table`; unknown filter keys raise `ValueError` everywhere
+  (previously the semantic path silently degraded to unfiltered lexical
+  results).
+- **`config_fingerprint`**: `index_meta.json` records the config
+  fingerprint; a changed chunking/embedding config forces a full reindex.
+- **Real-tokenizer chunking**: token counting uses the actual model
+  tokenizer with a 504-token cap per chunk (`max_seq_length` 576 leaves
+  budget for the section prefix).
+- **Table row-splitting without summaries**: table chunks are split per
+  rows and are excluded from document-summary embedding.
+- **Section prefixes in embeddings**: chunk text is embedded with the
+  section-path prefix for better retrieval on structured documents.
+- **`max_seq_length` 576** (was 512) to fit the section prefix budget.
+- **Precomputed BM25 lexical index**: per-query DF recomputation
+  (6-8 s at 20k chunks) replaced by an mtime-keyed singleton serving
+  lexical search in milliseconds.
+- **Eval harness**: `scripts/eval_retrieval.py` runs golden queries
+  against the index; baseline JSON lives in `build/eval/`.
+- **Readiness reason `index_missing`**: `GET /health/ready` reports it
+  in semantic/hybrid mode with the faiss backend.
+- **`doc_download` 25 MB limit**: larger files are rejected with an
+  error instead of exhausting memory.
+- **Dead `raglib/indexer.py` removed**: its logic moved into
+  `VectorIndex.build` and the vector-store backends.
+
 ## v5.2.0 — 2026-07-25
 
 Security/correctness audit fixes, `DOC_RAG_API_KEY` and legacy inline `/ui` removed, Web UI reskinned.

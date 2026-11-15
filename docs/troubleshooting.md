@@ -210,3 +210,36 @@ across ingest archiving. If a file persists after delete, check:
 2. Is the manifest entry consistent with the path on disk?
 
 A safe nuclear option is `doc-rag clean-orphans` followed by `doc-rag clear-incoming`.
+
+## Filters silently ignored / "unsupported filter keys" error
+
+Metadata filters (`doc_id`, `doc_ids`, `section_path`, `is_table`) now
+work in **all** retrieval modes (semantic, hybrid, legacy fallback) --
+previously the semantic path silently degraded to unfiltered lexical
+results when the vector path could not serve the filter. The flip side
+of the fail-loud policy: an unknown filter key (a typo like
+`table_only`) raises `ValueError: unsupported filter keys: ...` listing
+the supported set, instead of being silently ignored. Fix the key name
+in the client call.
+
+## First query after deploy is slow
+
+Two one-time costs land on the first `doc_search` after a fresh deploy
+or rebuild:
+
+1. **BM25 lexical index build**: the lexical singleton is built on the
+   first query over the current `chunks.jsonl` revision (6-8 s at 20k
+   chunks), then served in milliseconds from memory.
+2. **torch / model import**: the first semantic query pays the torch
+   import and embedder load.
+
+Neither repeats until `chunks.jsonl` changes. Warm the server with a
+single `doc_search` right after deploy if the first caller is latency
+sensitive.
+
+## `doc_download` rejects large files (25 MB limit)
+
+`doc_download` refuses files larger than 25 MB (base64-in-JSON responses
+would otherwise exhaust memory on the server and the client). The error
+names the limit. For bigger documents, copy the file from
+`sources/` on the host instead of pulling it through MCP.
