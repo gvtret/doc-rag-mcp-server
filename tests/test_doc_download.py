@@ -88,3 +88,17 @@ def test_doc_download_resolves_via_manifest(sources_root) -> None:
     out = _tool("mani.bin")
     assert out[0]["type"] == "file"
     assert base64.b64decode(out[0]["file"]["data"]) == b"from-manifest"
+
+
+def test_doc_download_manifest_present_but_file_not_listed(sources_root) -> None:
+    """Variant (c): the manifest EXISTS, but the requested file is not in
+    it -- the rglob fallback must still find and serve it."""
+    (sources_root / "build" / "manifest.json").write_text(
+        json.dumps({"documents": [{"doc_id": "d1", "source_file": "sources/archived/other.pdf"}]}),
+        encoding="utf-8",
+    )
+    p = sources_root / "sources" / "incoming" / "unlisted.pdf"
+    p.write_bytes(b"%PDF-not-in-manifest")
+    out = _tool("unlisted.pdf")
+    assert out[0]["type"] == "file"
+    assert base64.b64decode(out[0]["file"]["data"]) == b"%PDF-not-in-manifest"

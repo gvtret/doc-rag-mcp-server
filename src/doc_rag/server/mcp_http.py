@@ -71,7 +71,12 @@ from doc_rag.server.logging_setup import (
     new_request_id,
     set_request_id,
 )
-from doc_rag.server.retrieval import document_preview, indexed_catalog, load_manifest_json
+from doc_rag.server.retrieval import (
+    document_preview,
+    indexed_catalog,
+    load_manifest_json,
+    project_root,
+)
 
 # Configure structured logging on import. Idempotent; honours
 # DOC_RAG_LOG_LEVEL and DOC_RAG_LOG_FORMAT env vars.
@@ -912,9 +917,10 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     if not filename:
         return [{"type": "text", "text": "Error: filename is required"}]
 
-    # Honor DOC_RAG_ROOT like the rest of the server (_root_dir() always
-    # points at the package checkout).
-    root = _config_path().parent.parent
+    # Honor DOC_RAG_ROOT like the rest of the server: project_root() also
+    # expands ~ in the override (unlike _root_dir(), which always points
+    # at the package checkout).
+    root = Path(project_root())
     cfg_path = _config_path()
     try:
         with cfg_path.open(encoding="utf-8") as f:
@@ -964,8 +970,10 @@ def _doc_download_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
             # The manifest entry may carry traversal (..\/); stay inside root.
             if p.is_file() and p.resolve().is_relative_to(root.resolve()):
                 return _serve(p)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Manifest resolve is best-effort: fall through to the rglob scan,
+        # but leave a trace for diagnosis.
+        log.debug("doc_download manifest resolve failed: %s: %s", type(exc).__name__, exc)
 
     archived_rel = paths.get("sources_archived", "sources/archived")
     incoming_rel = paths.get("sources_incoming", "sources/incoming")
