@@ -165,12 +165,18 @@ def test_load_queries_rejects_entry_without_relevance(tmp_path):
         mod.load_queries(p)
 
 
-def test_load_queries_rejects_non_list(tmp_path):
+def test_load_queries_rejects_junk_shape(tmp_path):
+    """Neither a list nor a mapping with a 'queries' list -> loud error."""
     mod = load_eval_script()
     p = tmp_path / "q.yaml"
-    p.write_text("queries: []\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="list"):
+    p.write_text("just a string\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="list or a mapping"):
         mod.load_queries(p)
+    # Mapping whose 'queries' value is not a list is rejected too.
+    p2 = tmp_path / "q2.yaml"
+    p2.write_text("queries: not-a-list\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="'queries'"):
+        mod.load_queries(p2)
 
 
 # ---------------------------------------------------------------------------
@@ -204,20 +210,14 @@ def _write_corpus(root: Path) -> list[dict[str, Any]]:
     return chunks
 
 
-def _write_queries(root: Path, *, with_chunk_labels: bool = False) -> Path:
-    lines = [
-        "- query: transformer substation dispatch\n  relevant_doc_ids: [doc-alpha]\n",
-        "- query: optical fibre link budget\n  relevant_doc_ids: [doc-beta]\n",
-        "- query: grounding lightning protection\n  relevant_doc_ids: [doc-gamma]\n",
-    ]
-    if with_chunk_labels:
-        lines[0] = (
-            "- query: transformer substation dispatch\n"
-            "  relevant_doc_ids: [doc-alpha]\n"
-            "  relevant_chunk_ids: [doc-alpha:000, doc-alpha:001]\n"
-        )
+def _write_queries(root: Path) -> Path:
     q = root / "queries.yaml"
-    q.write_text("".join(lines), encoding="utf-8")
+    q.write_text(
+        "- query: transformer substation dispatch\n  relevant_doc_ids: [doc-alpha]\n"
+        "- query: optical fibre link budget\n  relevant_doc_ids: [doc-beta]\n"
+        "- query: grounding lightning protection\n  relevant_doc_ids: [doc-gamma]\n",
+        encoding="utf-8",
+    )
     return q
 
 
@@ -303,10 +303,8 @@ def test_eval_chunk_labels_present(tmp_path, monkeypatch):
         "- query: transformer substation dispatch\n"
         "  relevant_doc_ids: [doc-alpha]\n"
         "  relevant_chunk_ids: [doc-alpha:000, doc-alpha:001]\n"
-        "- query: optical fibre link budget\n"
-        "  relevant_doc_ids: [doc-beta]\n"
-        "- query: grounding lightning protection\n"
-        "  relevant_doc_ids: [doc-gamma]\n",
+        "- query: optical fibre link budget\n  relevant_doc_ids: [doc-beta]\n"
+        "- query: grounding lightning protection\n  relevant_doc_ids: [doc-gamma]\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DOC_RAG_ROOT", str(root))
@@ -459,3 +457,106 @@ def test_load_queries_derives_doc_ids_from_chunk_ids(tmp_path):
     qs = mod.load_queries(p)
     assert qs[0]["relevant_doc_ids"] == ["doc-x", "doc-y"]
     assert qs[0]["relevant_chunk_ids"] == ["doc-x:3", "doc-y:0", "doc-x:7"]
+
+
+def test_load_queries_accepts_mapping_with_queries_key(tmp_path):
+    """Root mapping with 'queries' key (the real golden-file shape) plus
+    an ignored extra section; bare-list files keep working."""
+    mod = load_eval_script()
+    p = tmp_path / "q.yaml"
+    p.write_text(
+        "queries:\n"
+        "  - query: hello world\n"
+        "    relevant_doc_ids: [doc-a]\n"
+        "pending_chunk_annotations:\n"
+        "  - query: hello world\n"
+        "    relevant_chunk_ids: [doc-a:0]\n",
+        encoding="utf-8",
+    )
+    qs = mod.load_queries(p)
+    assert len(qs) == 1
+    assert qs[0]["relevant_doc_ids"] == ["doc-a"]
+    # Bare list (backward compat) still accepted.
+    p2 = tmp_path / "q2.yaml"
+    p2.write_text("- query: bare\n  relevant_doc_ids: [doc-b]\n", encoding="utf-8")
+    assert len(mod.load_queries(p2)) == 1
+
+
+def test_load_queries_rejects_mapping_without_queries_list(tmp_path):
+    mod = load_eval_script()
+    p = tmp_path / "q.yaml"
+    p.write_text("pending_chunk_annotations: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="'queries'"):
+        mod.load_queries(p)
+
+
+def test_real_golden_file_loads():
+    """The shipped eval/queries_golden.yaml must parse and be complete:
+    10 evaluated entries, each with non-empty relevant_doc_ids, and a
+    pending_chunk_annotations section with 3 entries. Guards against a
+    repeat of the root-sequence + mapping ParserError."""
+    import yaml
+
+    mod = load_eval_script()
+    path = ROOT / "eval" / "queries_golden.yaml"
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)  # must not raise
+    assert isinstance(raw, dict)
+    assert isinstance(raw.get("queries"), list)
+    assert len(raw.get("pending_chunk_annotations") or []) == 3
+
+    qs = mod.load_queries(path)
+    assert len(qs) == 10
+    for q in qs:
+        assert q["query"].strip()
+        assert q["relevant_doc_ids"], f"no doc labels for {q['query']!r}"
+    queries_text = path.read_text(encoding="utf-8")
+    assert "- query:" in queries_text  # sanity: the file really lists queries
+
+
+def test_eval_hybrid_degraded_when_semantic_unavailable(tmp_path, monkeypatch):
+    """hybrid_search silently serves lexical-only when semantic is
+    unavailable (never returns None), so the hybrid mode must probe
+    semantic availability itself and mark degraded: true."""
+    mod = load_eval_script()
+    root = tmp_path
+    queries_path = _setup_corpus(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    import doc_rag.server.retrieval as retrieval
+
+    monkeypatch.setattr(retrieval, "semantic_search", lambda *a, **kw: None)
+
+    results = mod.evaluate_mode(
+        "hybrid",
+        retrieval.load_config(),
+        retrieval.load_chunks(retrieval.load_config()),
+        mod.load_queries(queries_path),
+        top_k=10,
+    )
+    # Hybrid still returns lexical results (not degraded to empty), but
+    # the probe must flag the semantic part as unavailable.
+    assert results["degraded"] is True
+    assert results["doc_level"]["n_evaluated"] == 3
+    assert results["doc_level"]["recall@10"] == pytest.approx(1.0)
+
+
+def test_eval_hybrid_not_degraded_when_semantic_available(tmp_path, monkeypatch):
+    """Healthy semantic stub -> hybrid must NOT be flagged degraded."""
+    mod = load_eval_script()
+    root = tmp_path
+    queries_path = _setup_corpus(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    _stub_semantic_to_lexical(monkeypatch)
+
+    import doc_rag.server.retrieval as retrieval
+
+    cfg = retrieval.load_config()
+    results = mod.evaluate_mode(
+        "hybrid",
+        cfg,
+        retrieval.load_chunks(cfg),
+        mod.load_queries(queries_path),
+        top_k=10,
+    )
+    assert results["degraded"] is False

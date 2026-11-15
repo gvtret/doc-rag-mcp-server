@@ -43,8 +43,12 @@ METRIC_K = 10
 
 
 def load_queries(path: Path) -> list[dict[str, Any]]:
-    """Read the golden queries YAML: list of {query, relevant_doc_ids,
-    relevant_chunk_ids (optional)}.
+    """Read the golden queries YAML and return the evaluated entries.
+
+    Accepts two shapes:
+    - root mapping with a "queries" key (the real golden file; other
+      keys like pending_chunk_annotations are ignored here);
+    - a bare list (backward compat with synthetic test files).
 
     An entry with only relevant_chunk_ids (no doc ids) derives its
     doc-level relevance from the chunk ids (doc_id = chunk_id prefix
@@ -55,10 +59,16 @@ def load_queries(path: Path) -> list[dict[str, Any]]:
 
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a YAML list of query objects")
+    if isinstance(data, dict):
+        entries = data.get("queries")
+        if not isinstance(entries, list):
+            raise ValueError(f"{path}: mapping must contain a 'queries' list")
+    elif isinstance(data, list):
+        entries = data
+    else:
+        raise ValueError(f"{path}: expected a YAML list or a mapping with 'queries'")
     out: list[dict[str, Any]] = []
-    for i, item in enumerate(data):
+    for i, item in enumerate(entries):
         if not isinstance(item, dict) or not item.get("query"):
             raise ValueError(f"{path}: entry #{i} must be a dict with a 'query' key")
         rel_docs = [str(d) for d in item.get("relevant_doc_ids") or []]
@@ -196,8 +206,12 @@ def evaluate_mode(
     A mode that returned None for ANY query (semantic_search without a
     model/index) is marked "degraded": true -- zeros from an unavailable
     mode must stay distinguishable from zeros of a bad retrieval.
-    Chunk-level metrics are computed only when at least one query has
-    relevant_chunk_ids; otherwise the chunk_level key is omitted.
+    For hybrid this needs an explicit probe: hybrid_search degrades to
+    lexical-only when semantic is unavailable and never returns None
+    itself, so without the probe a hybrid run on a broken model would
+    silently pass as healthy. Chunk-level metrics are computed only
+    when at least one query has relevant_chunk_ids; otherwise the
+    chunk_level key is omitted.
     """
     doc_ranked: list[list[str]] = []
     doc_relevant: list[set[str]] = []
@@ -205,11 +219,20 @@ def evaluate_mode(
     chunk_relevant: list[set[str]] = []
     per_query: list[dict[str, Any]] = []
     any_unavailable = False
+    hybrid_semantic_unavailable = False
 
-    for q in queries:
+    for i, q in enumerate(queries):
         t0 = time.time()
         results = run_mode(mode, cfg, chunks, q["query"], top_k, namespace)
         elapsed = time.time() - t0
+
+        if mode == "hybrid" and i == 0:
+            # One-time probe on the first query: semantic up or down?
+            # hybrid_search hides the answer (lexical-only fallback),
+            # so ask semantic_search directly and cache the verdict.
+            hybrid_semantic_unavailable = (
+                run_mode("semantic", cfg, chunks, q["query"], top_k, namespace) is None
+            )
 
         if results is None:
             # Mode unavailable (no model / no index): count the query as
@@ -254,7 +277,7 @@ def evaluate_mode(
 
     out: dict[str, Any] = {
         "mode": mode,
-        "degraded": any_unavailable,
+        "degraded": any_unavailable or hybrid_semantic_unavailable,
         "per_query": per_query,
         "doc_level": aggregate_scores(doc_ranked, doc_relevant, METRIC_K),
     }
@@ -310,11 +333,20 @@ def save_report(
     queries_path: Path,
     results: dict[str, dict[str, Any]],
     corpus_meta: dict[str, Any],
+    label: str | None = None,
 ) -> Path:
-    """Persist the full report (per-query + aggregate) as JSON."""
+    """Persist the full report (per-query + aggregate) as JSON.
+
+    With --label (e.g. "baseline") the file is named
+    <label>-<date>-<modes>.json instead of the timestamped default.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    path = out_dir / f"{ts}-{','.join(modes)}.json"
+    if label:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = out_dir / f"{label}-{date}-{','.join(modes)}.json"
+    else:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        path = out_dir / f"{ts}-{','.join(modes)}.json"
     report = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "queries_file": str(queries_path),
@@ -336,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--modes", default=",".join(DEFAULT_MODES), help="Comma-separated modes")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="Ranking depth")
     parser.add_argument("--namespace", default="default", help="Index namespace")
+    parser.add_argument("--label", default=None, help="Report filename prefix (e.g. 'baseline')")
     args = parser.parse_args(argv)
 
     # DOC_RAG_ROOT must be set BEFORE the first retrieval import/call:
@@ -384,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         queries_path,
         results,
         {"n_chunks": len(chunks), "n_documents": len(doc_ids)},
+        label=args.label,
     )
     print(f"\nJSON report: {path}")
     return 0
