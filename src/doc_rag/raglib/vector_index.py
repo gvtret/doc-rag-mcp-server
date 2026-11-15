@@ -385,7 +385,8 @@ class VectorIndex:
                 self._emit("done", store.size, store.size)
                 return True
             log(f"[doc-rag][index] Incremental update: +{len(new_ids)} chunks")
-            new_chunks = [c for c in chunks if c.get("chunk_id") in set(new_ids)]
+            new_id_set = set(new_ids)
+            new_chunks = [c for c in chunks if c.get("chunk_id") in new_id_set]
             texts = [str(c.get("text", "")) for c in new_chunks]
             vecs = self._encode(texts)
             store.add(vecs, new_ids)

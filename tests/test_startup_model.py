@@ -121,6 +121,39 @@ def test_readiness_ok_without_model_in_hybrid_mode_is_gated(tmp_corpus_root, mon
     assert "model_missing" in state["reasons"]
 
 
+def test_readiness_fails_without_index_in_semantic_mode(tmp_corpus_root, monkeypatch):
+    """Missing faiss.index makes semantic search unusable: readiness fails."""
+    from doc_rag.server.mcp_http import _readiness_state
+
+    _write_manifest(tmp_corpus_root)
+    # index_meta.json written but faiss.index absent -> index_missing, not stale.
+    (tmp_corpus_root / "build" / "index" / "index_meta.json").write_text(
+        json.dumps({"weights_sha256": "fp"}), encoding="utf-8"
+    )
+    _patch_status(monkeypatch, ready=True, fingerprint="fp")
+
+    state = _readiness_state()
+    assert state["ready"] is False
+    assert "index_missing" in state["reasons"]
+    assert state["checks"]["faiss_index"] is False
+    # Separate reason: the fingerprint check stays intact.
+    assert "index_stale" not in state["reasons"]
+
+
+def test_readiness_lexical_mode_not_gated_on_missing_index(tmp_corpus_root, monkeypatch):
+    """In lexical mode a missing index is informational, not a failure."""
+    from doc_rag.server.mcp_http import _readiness_state
+
+    _set_retrieval_mode(tmp_corpus_root, monkeypatch, "lexical")
+    _write_manifest(tmp_corpus_root)
+    _patch_status(monkeypatch, ready=True, fingerprint="fp")
+
+    state = _readiness_state()
+    assert state["ready"] is True
+    assert "index_missing" not in state["reasons"]
+    assert state["checks"]["faiss_index"] is False  # still reported
+
+
 def test_readiness_reports_stale_index(tmp_corpus_root, monkeypatch):
     from doc_rag.server.mcp_http import _readiness_state
 
