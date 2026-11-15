@@ -419,5 +419,6 @@ query and aggregate) under `build/eval/`:
 `<label>-<date>-<modes>.json` with `--label`, timestamped otherwise.
 Modes, depth and query file are configurable (`--modes semantic,hybrid,lexical`,
 `--top-k`, `--queries`). Compare two reports by diffing the aggregate
-metrics; baseline reports are committed to `build/eval/` so a regression
-is provable, not anecdotal.
+metrics; reports are kept locally under `build/eval/` (gitignored), so
+a baseline must be re-taken or shared manually -- a regression is
+provable only against a preserved baseline file.
