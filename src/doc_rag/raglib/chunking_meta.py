@@ -20,7 +20,9 @@ from typing import Any
 
 # Bump when the chunker's behaviour changes in a way that changes chunk
 # boundaries for the same config values (1 = current len//4 behaviour).
-CHUNKING_SCHEMA_VERSION = "2"
+# 3 = postprocessing regex no longer collapses newlines, and rebuild runs
+# postprocessing on the full merged chunk set (chunk text changed).
+CHUNKING_SCHEMA_VERSION = "3"
 # Bump when the embedding-text scheme changes (prefixes, metadata injection,
 # trimming rules), even if chunk boundaries stay the same.
 EMBEDDING_TEXT_VERSION = "1"
