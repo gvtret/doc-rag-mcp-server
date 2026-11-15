@@ -790,3 +790,96 @@ def test_id_to_chunk_invalidated_after_chunks_rewrite(
     # New revision -> new map object with the new chunk id.
     assert m2 is not m1
     assert "d0:1" in m2 and "d0:0" not in m2
+
+
+def test_doc_search_semantic_mode_bad_filter_raises(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doc_search in semantic mode with an unknown filter key must raise
+    ValueError (fail loud), not silently fall back to lexical results --
+    same policy as hybrid/lexical (final review finding 1)."""
+    pytest.importorskip("faiss")
+    import yaml
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "index": {"backend": "faiss", "metric": "ip"},
+                "mcp": {"retrieval_mode": "semantic"},
+                "paths": {
+                    "chunks_dir": "build/chunks_jsonl",
+                    "index_dir": "build/index",
+                    "manifest_path": "build/manifest.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    chunks_dir = root / "build" / "chunks_jsonl"
+    chunks_dir.mkdir(parents=True)
+    chunks = [{"chunk_id": "d0:0", "doc_id": "d0", "text": "0", "source_file": "a.pdf"}]
+    with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        f.write(json.dumps(chunks[0], ensure_ascii=False) + "\n")
+    _write_vector_index(root, ["0"], chunk_ids=["d0:0"])
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    with pytest.raises(ValueError, match="unsupported filter keys"):
+        retrieval.doc_search("0", top_k=2, filters={"bogus": 1})
+
+
+def test_semantic_search_bad_filter_raises_before_legacy_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """semantic_search itself (not just doc_search) must propagate the
+    filter-validation ValueError instead of entering the legacy path."""
+    pytest.importorskip("faiss")
+    import numpy as np
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index.VectorIndex.__init__",
+        lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("no vector backend")),
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    root = tmp_path
+    chunks_dir = root / "build" / "chunks_jsonl"
+    chunks_dir.mkdir(parents=True)
+    chunks = [{"chunk_id": "d:0", "doc_id": "d", "text": "hello", "source_file": "d.pdf"}]
+    with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        f.write(json.dumps(chunks[0], ensure_ascii=False) + "\n")
+
+    # Legacy layout present so a silent fallback would return results
+    # instead of raising (making the regression observable).
+    vec = np.ones((1, 8), dtype="float32")
+    import faiss as _faiss
+
+    index = _faiss.IndexFlatIP(8)
+    index.add(vec)
+    index_dir = root / "build" / "index"
+    index_dir.mkdir(parents=True)
+    _faiss.write_index(index, str(index_dir / "faiss.index"))
+
+    class FakeModel:
+        def encode(self, texts, normalize_embeddings=True):
+            return np.ones((1, 8), dtype="float32")
+
+    monkeypatch.setattr("doc_rag.raglib.model_loader.load_embedder", lambda cfg: FakeModel())
+
+    cfg = {
+        "_root": str(root),
+        "paths": {"chunks_dir": "build/chunks_jsonl", "index_dir": "build/index"},
+        "embeddings": {"model_name": "stub", "device": "cpu"},
+    }
+    with pytest.raises(ValueError, match="unsupported filter keys"):
+        semantic_search(cfg, chunks, "hello", top_k=2, filters={"bogus": 1})

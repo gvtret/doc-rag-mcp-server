@@ -73,13 +73,31 @@ class FaissVectorStore:
         self._meta: IndexMeta | None = None
         self._id_to_pos: dict[str, int] = {}
         # Latch: set when the on-disk index/meta pair failed the integrity
-        # check, so _ensure_loaded does not re-read the files (and re-log
-        # the ERROR) on every request. Cleared by reset() and init().
+        # check or could not be loaded at all, so _ensure_loaded does not
+        # re-read the files (and re-log the ERROR) on every request. Cleared
+        # by reset() and init(), and when the on-disk pair's mtimes change
+        # (an atomic re-write by ingest heals the latch without restart).
         self._degraded: bool = False
+        self._degraded_mtime: tuple[float | None, float | None] | None = None
+
+    def _pair_mtimes(self) -> tuple[float | None, float | None]:
+        def _mt(path: str) -> float | None:
+            try:
+                return os.stat(path).st_mtime
+            except Exception:
+                return None
+
+        return (_mt(self._index_path), _mt(self._meta_path))
 
     def _ensure_loaded(self) -> None:
         if self._degraded:
-            return
+            # An ingest that atomically rewrites the pair changes mtimes:
+            # release the latch so the new files are actually loaded.
+            if self._degraded_mtime != self._pair_mtimes():
+                self._degraded = False
+                self._degraded_mtime = None
+            else:
+                return
         if self._index is not None:
             return
         try:
@@ -90,9 +108,27 @@ class FaissVectorStore:
             ) from exc
 
         if os.path.exists(self._index_path) and os.path.exists(self._meta_path):
-            index = faiss.read_index(self._index_path)
-            with open(self._meta_path, encoding="utf-8") as f:
-                meta = IndexMeta.from_dict(json.load(f))
+            try:
+                index = faiss.read_index(self._index_path)
+                with open(self._meta_path, encoding="utf-8") as f:
+                    meta = IndexMeta.from_dict(json.load(f))
+            except Exception as exc:
+                # Corrupt index or meta: latch so later requests do not
+                # re-read the (large) index file before failing again. A
+                # later atomic re-write (mtime change) releases the latch.
+                logger.error(
+                    "faiss: failed to load index pair for %s: %s: %s -- "
+                    "degrading to unavailable (full rebuild required)",
+                    self._index_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                self._index = None
+                self._meta = None
+                self._id_to_pos = {}
+                self._degraded = True
+                self._degraded_mtime = self._pair_mtimes()
+                return
             if int(index.ntotal) != len(meta.chunk_ids):
                 # Fail closed (crash window between the index replace and the
                 # meta write in save()): a positional mapping built from this
@@ -100,7 +136,7 @@ class FaissVectorStore:
                 # the latch keeps later calls from re-reading and re-logging.
                 logger.error(
                     "faiss: index integrity check failed: ntotal=%d != len(chunk_ids)=%d "
-                    "for %s -- degrading to unavailable (rebuild the index)",
+                    "for %s -- degrading to unavailable (full rebuild required)",
                     int(index.ntotal),
                     len(meta.chunk_ids),
                     self._index_path,
@@ -109,6 +145,7 @@ class FaissVectorStore:
                 self._meta = None
                 self._id_to_pos = {}
                 self._degraded = True
+                self._degraded_mtime = self._pair_mtimes()
             else:
                 self._index = index
                 self._meta = meta
@@ -158,6 +195,7 @@ class FaissVectorStore:
         )
         self._id_to_pos = {}
         self._degraded = False
+        self._degraded_mtime = None
         logger.info("faiss: initialized empty %s index (dim=%d)", self._metric_type, dim)
 
     def add(self, vectors: np.ndarray, ids: list[str]) -> None:
@@ -298,6 +336,7 @@ class FaissVectorStore:
         self._meta = None
         self._id_to_pos = {}
         self._degraded = False
+        self._degraded_mtime = None
         for p in (self._index_path, self._meta_path):
             if os.path.exists(p):
                 os.remove(p)

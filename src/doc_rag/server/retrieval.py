@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Any
 
 from doc_rag.raglib import model_loader as model_loader
@@ -40,6 +41,9 @@ _SEMANTIC_CACHE: dict[str, Any] = {
 # is capped at 8 entries.
 _VECTOR_INDEX_CACHE_CAP = 8
 _VECTOR_INDEX_CACHE: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+# Serializes the build-and-store critical section below: two concurrent
+# first requests would otherwise each load the model and build a VectorIndex.
+_VECTOR_INDEX_CACHE_LOCK = threading.Lock()
 
 
 def invalidate_index_cache() -> None:
@@ -727,17 +731,27 @@ def semantic_search(
         if entry is not None:
             _VECTOR_INDEX_CACHE.move_to_end(cache_key)
         if entry is None:
-            from doc_rag.raglib.chunking_meta import configure_tokenizer
+            # Double-checked pattern: re-read the cache inside the lock in
+            # case another thread populated it while this one waited.
+            with _VECTOR_INDEX_CACHE_LOCK:
+                entry = _VECTOR_INDEX_CACHE.get(cache_key)
+                if entry is not None and (entry["index_mtime"], entry["meta_mtime"]) != (
+                    idx_mt,
+                    meta_mt,
+                ):
+                    entry = None
+                if entry is None:
+                    from doc_rag.raglib.chunking_meta import configure_tokenizer
 
-            # Seed the count_tokens default tokenizer path so chunker
-            # sizing honours this cfg's embeddings.model_path (the server
-            # tools build VectorIndex directly, past pipeline.load_config).
-            configure_tokenizer(cfg)
-            vi = VectorIndex(cfg, namespace=namespace)
-            entry = {"index": vi, "index_mtime": idx_mt, "meta_mtime": meta_mt}
-            _VECTOR_INDEX_CACHE[cache_key] = entry
-            while len(_VECTOR_INDEX_CACHE) > _VECTOR_INDEX_CACHE_CAP:
-                _VECTOR_INDEX_CACHE.popitem(last=False)
+                    # Seed the count_tokens default tokenizer path so chunker
+                    # sizing honours this cfg's embeddings.model_path (the server
+                    # tools build VectorIndex directly, past pipeline.load_config).
+                    configure_tokenizer(cfg)
+                    vi = VectorIndex(cfg, namespace=namespace)
+                    entry = {"index": vi, "index_mtime": idx_mt, "meta_mtime": meta_mt}
+                    _VECTOR_INDEX_CACHE[cache_key] = entry
+                    while len(_VECTOR_INDEX_CACHE) > _VECTOR_INDEX_CACHE_CAP:
+                        _VECTOR_INDEX_CACHE.popitem(last=False)
         vi = entry["index"]
 
         if not vi.is_available():
@@ -765,6 +779,10 @@ def semantic_search(
                 item["score"] = float(dist)
                 out.append(item)
         return out
+    except ValueError:
+        # Filter validation (unknown keys etc.) must fail loud like in
+        # hybrid/lexical, not silently degrade to the legacy path.
+        raise
     except Exception:
         pass
 
@@ -782,6 +800,14 @@ def semantic_search(
     legacy_meta_path = os.path.join(root, index_dir, "index_meta.json")
     if not os.path.exists(index_path):
         return None
+
+    if filters:
+        # Fail loud on unknown keys here too: the legacy path post-filters
+        # chunk dicts, so an unknown key would otherwise be silently
+        # ignored and the client would receive unfiltered results.
+        from doc_rag.raglib.vector_index import _validate_filter_keys
+
+        _validate_filter_keys(filters)
 
     if os.path.exists(legacy_meta_path):
         try:
