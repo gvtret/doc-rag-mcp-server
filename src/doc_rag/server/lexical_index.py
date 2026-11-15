@@ -14,6 +14,32 @@ BM25: k1 = 1.2, b = 0.75, idf(t) = log(1 + (N - df + 0.5)/(df + 0.5)).
 Code tokens ("62056-5-3", "32144-2013") survive tokenization whole, are
 exempt from stemming and get a x1.5 query weight bonus. The exact-phrase
 bonus from the old scorer is kept, normalized: min(5.0, 2.0 + 3.0*count).
+
+Code-term prefix expansion: a query code token that is itself not in
+postings (or additionally to the exact hit) is expanded to the <= 50
+most frequent vocabulary terms CONTAINING it as a substring, each
+carrying the same 1.5x code weight ("34.12" matches text "34.12-2018",
+"62056-5" matches "62056-5-3" — the old scorer served these via raw
+substring phrase matching; the whole-phrase count still applies via the
+phrase bonus when the query string appears verbatim).
+
+RU suffix removal nuance vs the brief: the brief says "words >= 5
+letters"; implemented as "the token is >= 5 letters AND the remaining
+stem after suffix removal is >= 4 letters" (cut >= _MIN_STEM_LEN - 1
+with _MIN_STEM_LEN = 5). This keeps «шифра»/«шифры» -> «шифр» (stem 4)
+while preventing «вода» -> «вод» garbage cuts on 4-letter stems. Without
+the stem guard, single-letter stems («и» from «имя»-class words) would
+join unrelated postings.
+
+Memory: the singleton for the real corpus (20498 chunks, vocab ~84k)
+adds ~83 MB RSS on top of the already-loaded chunk dicts (measured via
+ru_maxrss delta; the chunk dicts themselves are another ~780 MB process
+peak shared with the rest of the server). postings tuples, per-chunk
+metadata and the lowercase phrase_haystacks copy dominate the index
+footprint; phrase_haystacks keeps the verbatim lowercase text per chunk
+on purpose for the exact-phrase bonus (a deduplicated/interned
+representation was considered and rejected to preserve old-scorer
+behavior).
 """
 
 from __future__ import annotations
@@ -26,9 +52,10 @@ from typing import Any
 K1 = 1.2
 B = 0.75
 
-# Explicit RU suffix list, applied once per token, longest match first.
-# Only words of >= _MIN_STEM_LEN letters are eligible (before AND after
-# the cut, so "вода" -> "вод" is prevented but "прибора" -> "прибор" works).
+# Explicit RU suffix list, applied once per token: the LONGEST matching
+# suffix wins (max by length, list order irrelevant). A token is eligible
+# when it has >= _MIN_STEM_LEN letters and the stem left after the cut
+# has >= _MIN_STEM_LEN - 1 letters (see module docstring for the nuance).
 _RU_SUFFIXES: tuple[str, ...] = (
     "ования",
     "ироваться",
@@ -37,12 +64,17 @@ _RU_SUFFIXES: tuple[str, ...] = (
     "ирует",
     "ировал",
     "ация",
+    "ыми",
     "ями",
     "ами",
+    "ным",
+    "ного",
     "ого",
     "его",
     "ому",
     "ему",
+    "ый",
+    "ой",
     "ых",
     "ий",
     "ая",
@@ -60,6 +92,7 @@ _RU_SUFFIXES: tuple[str, ...] = (
 
 _RU_RE = re.compile(r"[а-яё]")
 _MIN_STEM_LEN = 5
+_STEM_MIN_CUT = _MIN_STEM_LEN - 1  # shortest stem left after a cut
 
 # Code-like tokens: "62056-5-3", "32144-2013", dates "2021-12-03".
 _CODE_TOKEN_RE = re.compile(r"^\d+(?:[.-]\d+)+$")
@@ -69,23 +102,31 @@ _CODE_TOKEN_RE = re.compile(r"^\d+(?:[.-]\d+)+$")
 # position because it is listed first.
 _TOKEN_RE = re.compile(r"\d+(?:[.-]\d+)+|\w+")
 
+# Cap on code-prefix expansion: the <= 50 most frequent vocabulary terms
+# containing the query code token as substring.
+_CODE_EXPANSION_CAP = 50
+
 
 def is_code_token(token: str) -> bool:
     return _CODE_TOKEN_RE.match(token) is not None
 
 
 def _normalize(token: str) -> str:
-    """One normalization pass: RU suffix removal (longest match, one per
-    token, words >= 5 letters) or EN s/es stripping (words >= 4 letters,
-    "ies" -> "y"). Code tokens pass through untouched."""
+    """One normalization pass: RU suffix removal (longest match wins, one
+    per token; token >= 5 letters, stem after the cut >= 4) or EN s/es
+    stripping (words >= 4 letters, "ies" -> "y"). Code tokens pass
+    through untouched."""
     if is_code_token(token):
         return token
     if _RU_RE.search(token):
         if len(token) >= _MIN_STEM_LEN:
-            for suf in _RU_SUFFIXES:
-                cut = len(token) - len(suf)
-                if cut >= _MIN_STEM_LEN and token.endswith(suf):
-                    return token[:cut]
+            best = max(
+                (suf for suf in _RU_SUFFIXES if token.endswith(suf)),
+                key=len,
+                default="",
+            )
+            if best and len(token) - len(best) >= _STEM_MIN_CUT:
+                return token[: len(token) - len(best)]
         return token
     # EN: light stemming only.
     if len(token) >= 4:
@@ -133,6 +174,9 @@ class LexicalIndex:
         self._phrase_haystacks = phrase_haystacks
         self._n = len(doc_len)
         self._avgdl = (sum(doc_len) / self._n) if self._n else 0.0
+        # Per-query-token cache of code-prefix expansions: code token ->
+        # (exact term list, expanded term list with per-term df).
+        self._code_expansion_cache: dict[str, tuple[list[str], list[tuple[str, int]]]] = {}
 
     @classmethod
     def build(
@@ -182,6 +226,14 @@ class LexicalIndex:
         return cls(postings, doc_len, df, chunk_meta, phrase_haystacks)
 
     # -- filters (Task 7 contract) -----------------------------------------
+    # NOTE: filter semantics exist in three intentionally parallel copies:
+    # raglib.vector_index._chunk_matches_filters (vector path),
+    # retrieval._chunk_passes_filters (legacy/semantic dict path) and
+    # LexicalIndex._meta_passes (this index path). Keys and semantics are
+    # identical (doc_id equality, doc_ids membership, section_path prefix,
+    # is_table bool; doc_id falls back to the chunk_id prefix); a matrix
+    # test in tests/test_lexical_index.py pins this copy's behavior to
+    # retrieval._chunk_passes_filters. Keep the three in sync.
 
     @staticmethod
     def _validate_filter_keys(filters: dict[str, Any]) -> None:
@@ -221,6 +273,37 @@ class LexicalIndex:
             return None
         return [i for i, m in enumerate(self._chunk_meta) if self._meta_passes(m, filters)]
 
+    def _code_expansion(self, code_token: str) -> tuple[list[str], list[tuple[str, int]]]:
+        """Expand a query code token to vocabulary terms containing it as
+        a substring.
+
+        Returns (exact_terms, expanded_terms_with_df): exact terms are the
+        verbatim postings hits (usually the token itself), expanded terms
+        are the <= _CODE_EXPANSION_CAP most frequent vocabulary matches
+        (a single pass over the ~85k-term vocabulary), each carrying its
+        df so the caller can compute BM25 idf. Results are cached per
+        index instance.
+        """
+        cached = self._code_expansion_cache.get(code_token)
+        if cached is not None:
+            return cached
+
+        exact = [t for t in (code_token,) if t in self._postings]
+        # Single pass over the vocabulary; vocabulary is ~85k terms so
+        # this stays in the tens-of-milliseconds range.
+        matches: list[tuple[str, int]] = []
+        for term, plist in self._postings.items():
+            if code_token in term and term != code_token:
+                matches.append((term, len(plist)))
+        # Most frequent first: a partial code should prefer terms that
+        # actually occur in many chunks over rare split variants.
+        matches.sort(key=lambda x: x[1], reverse=True)
+        matches = matches[:_CODE_EXPANSION_CAP]
+
+        out = (exact, matches)
+        self._code_expansion_cache[code_token] = out
+        return out
+
     # -- search ------------------------------------------------------------
 
     def search(
@@ -248,7 +331,9 @@ class LexicalIndex:
             return []
 
         # Query terms: normalized, code tokens kept whole with a 1.5x
-        # weight (dedup by normalized term, first weight wins).
+        # weight (dedup by normalized term, first weight wins). Code
+        # tokens additionally expand to vocabulary terms containing them
+        # as a substring ("34.12" -> "34.12-2018"), see module docstring.
         q_weights: dict[str, float] = {}
         for p in _TOKEN_RE.findall(q.lower()):
             if len(p) <= 1:
@@ -258,17 +343,32 @@ class LexicalIndex:
             if term not in q_weights:
                 q_weights[term] = w
 
+        # Code-prefix expansion: every code term in the query gets its
+        # substring matches from the vocabulary, at the same 1.5x weight.
+        expanded: dict[str, int] = {}
+        for term in list(q_weights):
+            if not is_code_token(term):
+                continue
+            _exact, matches = self._code_expansion(term)
+            for match_term, _df in matches:
+                if match_term not in q_weights:
+                    expanded.setdefault(match_term, len(q_weights))
+
         allowed_set = set(allowed) if allowed is not None else None
         q_lower = q.lower()
 
-        if not q_weights:
+        if not q_weights and not expanded:
             # Old-scorer fallback: single-character queries scored only
             # via the exact phrase bonus.
             return self._phrase_scan(q_lower, top_k, allowed_set)
 
-        # Accumulate BM25 over postings (O(postings) not O(N*V)).
+        # Accumulate BM25 over postings (O(postings) not O(N*V)). Exact
+        # code terms keep their query weight; expanded terms share the
+        # weight of the code token that produced them (also 1.5x).
         scores: dict[int, float] = {}
-        for term, qw in q_weights.items():
+        all_terms: list[tuple[str, float]] = list(q_weights.items())
+        all_terms.extend((t, 1.5) for t in expanded)
+        for term, qw in all_terms:
             plist = self._postings.get(term)
             if not plist:
                 continue
@@ -284,7 +384,10 @@ class LexicalIndex:
                 contrib = qw * idf * (tf * (K1 + 1.0)) / (tf + K1 * denom_norm)
                 scores[idx] = scores.get(idx, 0.0) + contrib
 
-        # Exact phrase bonus on candidates only (keeps latency low).
+        # Exact phrase bonus on candidates only (keeps latency low). Note:
+        # with filters the idf of rare terms can dominate, but the phrase
+        # bonus is applied AFTER filtering so a filtered run keeps the
+        # same relative term weighting as an unfiltered one.
         for idx in scores:
             count = self._phrase_haystacks[idx].count(q_lower)
             if count > 0:
@@ -322,14 +425,24 @@ def get_lexical_index(
     chunks_path: str | None = None,
     metadata: dict[str, dict[str, Any]] | None = None,
 ) -> LexicalIndex:
-    """Return a cached LexicalIndex for the corpus at chunks_path.
+    """Return a LexicalIndex for the corpus at chunks_path.
 
     Cache key is (path, mtime) like _CHUNKS_CACHE: a rewritten
     chunks.jsonl invalidates the index on the next call. Without a path
     (synthetic chunk lists in tests), builds fresh every time.
+
+    IMPORTANT: metadata-filtered builds are NEVER cached — the singleton
+    has no key dimension for the metadata map, so caching a build tied to
+    one metadata snapshot would serve stale filter semantics to other
+    callers. Passing metadata != None always bypasses the cache and never
+    populates it.
     """
-    if not chunks_path:
+    if metadata is not None:
+        # Metadata-tied build: cache would leak this map to other callers.
         return LexicalIndex.build(chunks, metadata)
+
+    if not chunks_path:
+        return LexicalIndex.build(chunks)
 
     try:
         mt = os.stat(chunks_path).st_mtime
@@ -343,7 +456,7 @@ def get_lexical_index(
     ):
         return _LEXICAL_CACHE["index"]
 
-    idx = LexicalIndex.build(chunks, metadata)
+    idx = LexicalIndex.build(chunks)
     if mt is not None:
         _LEXICAL_CACHE["path"] = chunks_path
         _LEXICAL_CACHE["mtime"] = mt

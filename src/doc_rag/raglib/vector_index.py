@@ -55,6 +55,12 @@ def _chunk_matches_filters(chunk_id: str, meta: dict[str, Any], filters: dict[st
     non-table chunks only). doc_id falls back to the chunk_id prefix when
     the metadata lacks an explicit doc_id. Unknown keys are rejected by
     _validate_filter_keys before this runs.
+
+    NOTE: filter semantics exist in three intentionally parallel copies:
+    this function (vector path), retrieval._chunk_passes_filters
+    (legacy/semantic dict path) and LexicalIndex._meta_passes (lexical
+    index path). A matrix test in tests/test_lexical_index.py pins the
+    lexical copy's behavior to the retrieval one. Keep the three in sync.
     """
     doc_id = str(meta.get("doc_id", "") or chunk_id.split(":")[0])
     if "doc_id" in filters and doc_id != str(filters["doc_id"]):
