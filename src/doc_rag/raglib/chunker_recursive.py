@@ -7,6 +7,13 @@ The fixed-size splitter (`_chunk_text`) works on raw Markdown text and
 has no awareness of document structure. This module uses the typed
 `Block` layer (v1.5+) to produce chunks that preserve section context
 and keep tables intact.
+
+Chunk sizing uses the real bge-m3 tokenizer (`count_tokens`) rather than
+the len//4 estimate: Cyrillic text tokenizes at roughly 2.5-3 chars per
+token, so the old estimate undershot by ~25% and pushed chunk tails past
+the model's 512-token window. A hard cap (CHUNK_MAX_TOKENS = 504) is
+enforced by a final safety pass over every emitted chunk, tables
+included; T12 refines how oversized tables are split along row lines.
 """
 
 from __future__ import annotations
@@ -15,14 +22,18 @@ import logging
 from typing import Any
 
 from doc_rag.raglib.blocks import Block
+from doc_rag.raglib.chunking_meta import CHUNK_MAX_TOKENS, count_tokens
 
 logger = logging.getLogger(__name__)
 
-CHARS_PER_TOKEN = 4
-
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // CHARS_PER_TOKEN)
+    """Real bge-m3 token count (chunk sizing unit).
+
+    Kept as a thin wrapper: the name is used across the module and in
+    tests, but the semantics changed from len//4 to tokenizer-accurate.
+    """
+    return count_tokens(text)
 
 
 class ChunkNode:
@@ -70,12 +81,12 @@ def _build_tree(blocks: list[Block]) -> list[ChunkNode]:
     return root.children if root.children else [root]
 
 
-def _count_tokens(node: ChunkNode) -> int:
+def _count_node_tokens(node: ChunkNode) -> int:
     total = 0
     for b in node.blocks:
         total += _estimate_tokens(b.text)
     for c in node.children:
-        total += _count_tokens(c)
+        total += _count_node_tokens(c)
     return total
 
 
@@ -98,6 +109,63 @@ def _render_table_summary(table: Block) -> str:
     header = lines[0] if lines else ""
     cell_count = sum(line.count("|") for line in lines)
     return f"Таблица ({len(lines)} строк, {cell_count} ячеек): {header[:200]}"
+
+
+def _split_text_token_budget(text: str, cap: int) -> list[str]:
+    """Split `text` into pieces each within `cap` real tokens.
+
+    Strategy: prefer breaking at the largest \\n\\n boundary whose prefix
+    fits the cap; if a piece has no usable boundary, hard-split at the
+    char offset that keeps the prefix under the cap (found by binary
+    search on count_tokens). Recurses until every piece fits.
+    """
+    if _estimate_tokens(text) <= cap:
+        return [text]
+    # Longest prefix boundary under the cap
+    best = -1
+    pos = 0
+    while True:
+        idx = text.find("\n\n", pos)
+        if idx == -1:
+            break
+        if _estimate_tokens(text[:idx]) <= cap:
+            best = max(best, idx)
+            pos = idx + 1
+        else:
+            break
+    if best > 0:
+        head = text[:best].rstrip("\n")
+        tail = text[best:].lstrip("\n")
+        parts = [p for p in [head, tail] if p.strip()]
+        if len(parts) == 2:
+            return _split_text_token_budget(parts[0], cap) + _split_text_token_budget(parts[1], cap)
+    # No \\n\\n boundary fits — hard split by binary search on char offset
+    n = len(text)
+    lo, hi = 1, n
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _estimate_tokens(text[:mid]) <= cap:
+            lo = mid
+        else:
+            hi = mid - 1
+    head = text[:lo].rstrip()
+    tail = text[lo:].lstrip()
+    if not head.strip():
+        # Degenerate guard: a single token larger than the whole prefix
+        head, tail = text[:1], text[1:]
+    parts = [p for p in [head, tail] if p.strip()]
+    if len(parts) == 2:
+        return _split_text_token_budget(parts[0], cap) + _split_text_token_budget(parts[1], cap)
+    return [text]
+
+
+def _enforce_cap(text: str, cap: int) -> list[str]:
+    """Final safety pass: guarantee a chunk text fits the hard cap."""
+    if not text.strip():
+        return []
+    if _estimate_tokens(text) <= cap:
+        return [text]
+    return _split_text_token_budget(text, cap)
 
 
 def _chunk_node(
@@ -159,7 +227,8 @@ def _chunk_node(
         group_tokens = sum(_estimate_tokens(b.text) for b in group)
 
         if len(group) == 1 and group[0].type == "table":
-            # Atomic table
+            # Atomic table — oversized ones are split by the final cap
+            # pass in chunk_recursive (T12 will split them along rows).
             _flush_pending()
             table_block = group[0]
             # Main table chunk
@@ -229,25 +298,25 @@ def _chunk_node(
                             )
                             pending_tokens = _estimate_tokens(para)
                 else:
-                    # No paragraph breaks — hard split by character count
-                    text = block.text
-                    window = target_tokens * CHARS_PER_TOKEN
-                    for i in range(0, len(text), window):
-                        segment = text[i : i + window].strip()
-                        if segment:
-                            _flush_pending()
-                            pending.append(
-                                Block(
-                                    block_id=block.block_id,
-                                    doc_id=block.doc_id,
-                                    type=block.type,
-                                    text=segment,
-                                    source_backend=block.source_backend,
-                                    level=block.level,
-                                    page=block.page,
-                                )
+                    # No paragraph breaks — hard split at the token budget
+                    block = group[0]
+                    for segment in _split_text_token_budget(block.text, target_tokens):
+                        segment = segment.strip()
+                        if not segment:
+                            continue
+                        _flush_pending()
+                        pending.append(
+                            Block(
+                                block_id=block.block_id,
+                                doc_id=block.doc_id,
+                                type=block.type,
+                                text=segment,
+                                source_backend=block.source_backend,
+                                level=block.level,
+                                page=block.page,
                             )
-                            pending_tokens = _estimate_tokens(segment)
+                        )
+                        pending_tokens = _estimate_tokens(segment)
             else:
                 pending.extend(group)
                 pending_tokens += group_tokens
@@ -262,9 +331,14 @@ def chunk_recursive(
 ) -> list[dict[str, Any]]:
     """Produce chunks from typed blocks using structure-aware splitting.
 
+    Chunk sizes are measured in real bge-m3 tokens; every emitted chunk
+    (tables included) is guaranteed to be at most CHUNK_MAX_TOKENS real
+    tokens via a final safety pass.
+
     Args:
         blocks: Ordered list of Block objects from the parser.
-        target_tokens: Target chunk size in tokens (~4 chars each).
+        target_tokens: Target chunk size in real tokens (soft grouping
+            budget; the hard cap CHUNK_MAX_TOKENS is enforced separately).
 
     Returns:
         List of chunk dicts with keys: text, section_path, optionally
@@ -280,14 +354,38 @@ def chunk_recursive(
         root_chunks = _chunk_node(root_node, target_tokens)
         chunks.extend(root_chunks)
 
+    # Final safety pass: no chunk may exceed the hard cap, tables included.
+    # Grouping above already uses real-token budgets, so this rarely
+    # splits; it guarantees the invariant for tables and edge cases.
+    capped: list[dict[str, Any]] = []
+    for c in chunks:
+        pieces = _enforce_cap(c["text"], CHUNK_MAX_TOKENS)
+        if not pieces:
+            continue
+        if len(pieces) == 1 and pieces[0] == c["text"]:
+            capped.append(c)
+            continue
+        for piece in pieces:
+            replacement = dict(c)
+            replacement["text"] = piece
+            capped.append(replacement)
+    if len(capped) != len(chunks):
+        logger.info(
+            "chunk_recursive: hard cap %d tokens split %d chunk(s)",
+            CHUNK_MAX_TOKENS,
+            len(capped) - len(chunks),
+        )
+    chunks = capped
+
     # Assign sequential IDs
     for i, c in enumerate(chunks):
         c["chunk_idx"] = i
 
     logger.info(
-        "chunk_recursive: %d blocks → %d chunks (target=%d tokens)",
+        "chunk_recursive: %d blocks → %d chunks (target=%d tokens, cap=%d)",
         len(blocks),
         len(chunks),
         target_tokens,
+        CHUNK_MAX_TOKENS,
     )
     return chunks

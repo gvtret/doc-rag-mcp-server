@@ -27,9 +27,11 @@ def _block(**kwargs) -> Block:
 
 class TestEstimateTokens:
     def test_basic(self):
-        assert _estimate_tokens("abcd") == 1
-        assert _estimate_tokens("") >= 1
-        assert _estimate_tokens("x" * 80) == 20
+        # _estimate_tokens now wraps the real bge-m3 tokenizer
+        # (count_tokens); the len//4 contract is gone.
+        assert _estimate_tokens("abcd") >= 1
+        assert _estimate_tokens("") >= 0
+        assert _estimate_tokens("x" * 80) >= 1
 
 
 class TestBuildTree:
