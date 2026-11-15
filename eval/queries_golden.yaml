@@ -11,13 +11,23 @@
 #
 # Schema per entry:
 #   query: str
-#   relevant_doc_ids: [doc_id, ...]       (required, one or more)
+#   relevant_doc_ids: [doc_id, ...]       (required, one or more; an
+#                                          entry with only chunk ids
+#                                          derives doc ids from the
+#                                          chunk_id prefix)
 #   relevant_chunk_ids: [chunk_id, ...]   (optional; chunk-level metrics
-#                                          are computed only for queries
-#                                          that provide them)
+#                                          are computed only when at
+#                                          least one evaluated query
+#                                          provides them)
 #
 # Note: queries 7 and 10 are Russian and retrieve English-language
 # documents -- intentional cross-lingual probes.
+#
+# The three chunk-level annotations observed in the validation run are
+# parked under "pending operator annotation" below and are NOT part of
+# the evaluated set: single-chunk labels (":0") make chunk-level
+# metrics degenerate. The harness computes chunk rows only when the
+# queries actually evaluated carry relevant_chunk_ids.
 
 - query: "DNP3 secure authentication implementation"
   relevant_doc_ids:
@@ -42,14 +52,10 @@
 - query: "COSEM interface classes OBIS object identification"
   relevant_doc_ids:
     - dlms_ua_1000_1_blue_book_cosem_interface_classes_and_obis_object_identification__2902387028
-  relevant_chunk_ids:
-    - dlms_ua_1000_1_blue_book_cosem_interface_classes_and_obis_object_identification__2902387028:0
 
 - query: "HDLC protocol specification and verification"
   relevant_doc_ids:
     - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4
-  relevant_chunk_ids:
-    - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4:0
 
 - query: "ГОСТ Р 34.11-2018 криптографическая хеш-функция"
   relevant_doc_ids:
@@ -65,9 +71,22 @@
 - query: "TLS handshake protocol"
   relevant_doc_ids:
     - rfc8446_47871bc882
-  relevant_chunk_ids:
-    - rfc8446_47871bc882:26
 
 - query: "протокол телемеханики МЭК 60870-5-104"
   relevant_doc_ids:
     - iec_60870_5_104_ed2_2006_8f9000f646
+
+# --- pending operator annotation -------------------------------------
+# Chunk-level labels observed during the validation run (top-1 chunks
+# of the target docs). Keep the structure, move into the evaluated set
+# only with real operator annotation (multi-chunk, non-trivial labels).
+pending_chunk_annotations:
+  - query: "COSEM interface classes OBIS object identification"
+    relevant_chunk_ids:
+      - dlms_ua_1000_1_blue_book_cosem_interface_classes_and_obis_object_identification__2902387028:0
+  - query: "HDLC protocol specification and verification"
+    relevant_chunk_ids:
+      - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4:0
+  - query: "TLS handshake protocol"
+    relevant_chunk_ids:
+      - rfc8446_47871bc882:26

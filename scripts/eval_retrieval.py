@@ -44,7 +44,13 @@ METRIC_K = 10
 
 def load_queries(path: Path) -> list[dict[str, Any]]:
     """Read the golden queries YAML: list of {query, relevant_doc_ids,
-    relevant_chunk_ids (optional)}."""
+    relevant_chunk_ids (optional)}.
+
+    An entry with only relevant_chunk_ids (no doc ids) derives its
+    doc-level relevance from the chunk ids (doc_id = chunk_id prefix
+    before the first colon) instead of silently skipping doc-level
+    evaluation for that query.
+    """
     import yaml
 
     with open(path, encoding="utf-8") as f:
@@ -55,8 +61,13 @@ def load_queries(path: Path) -> list[dict[str, Any]]:
     for i, item in enumerate(data):
         if not isinstance(item, dict) or not item.get("query"):
             raise ValueError(f"{path}: entry #{i} must be a dict with a 'query' key")
-        rel_docs = item.get("relevant_doc_ids") or []
-        rel_chunks = item.get("relevant_chunk_ids") or []
+        rel_docs = [str(d) for d in item.get("relevant_doc_ids") or []]
+        rel_chunks = [str(c) for c in item.get("relevant_chunk_ids") or []]
+        if not rel_docs and rel_chunks:
+            # Doc-level relevance inferred from chunk ids: a chunk-level
+            # label must imply its document is relevant, otherwise the
+            # entry would be invisible to doc-level metrics.
+            rel_docs = sorted({chunk_doc_id(c) for c in rel_chunks})
         if not rel_docs and not rel_chunks:
             raise ValueError(
                 f"{path}: entry #{i} ('{item['query'][:40]}') has neither "
@@ -65,8 +76,8 @@ def load_queries(path: Path) -> list[dict[str, Any]]:
         out.append(
             {
                 "query": str(item["query"]),
-                "relevant_doc_ids": [str(d) for d in rel_docs],
-                "relevant_chunk_ids": [str(c) for c in rel_chunks],
+                "relevant_doc_ids": rel_docs,
+                "relevant_chunk_ids": rel_chunks,
             }
         )
     return out
@@ -153,16 +164,18 @@ def run_mode(
     query: str,
     top_k: int,
     namespace: str = "default",
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     """Run one query in the given mode, calling the retrieval functions
-    directly (doc_search would follow the config's retrieval_mode)."""
+    directly (doc_search would follow the config's retrieval_mode).
+
+    Returns None only when the mode is unavailable (semantic_search
+    yields None for a missing model/index) -- distinct from an empty
+    result so the caller can mark the mode degraded.
+    """
     from doc_rag.server import retrieval
 
     if mode == "semantic":
-        res = retrieval.semantic_search(cfg, chunks, query, top_k, namespace=namespace)
-        # None = index/model unavailable; fall through to lexical so the
-        # eval still produces numbers but the JSON marks the degradation.
-        return res if res is not None else []
+        return retrieval.semantic_search(cfg, chunks, query, top_k, namespace=namespace)
     if mode == "hybrid":
         return retrieval.hybrid_search(cfg, chunks, query, top_k, namespace=namespace)
     if mode == "lexical":
@@ -178,17 +191,31 @@ def evaluate_mode(
     top_k: int,
     namespace: str = "default",
 ) -> dict[str, Any]:
-    """Evaluate one mode over all queries; returns per-query + aggregate."""
+    """Evaluate one mode over all queries; returns per-query + aggregate.
+
+    A mode that returned None for ANY query (semantic_search without a
+    model/index) is marked "degraded": true -- zeros from an unavailable
+    mode must stay distinguishable from zeros of a bad retrieval.
+    Chunk-level metrics are computed only when at least one query has
+    relevant_chunk_ids; otherwise the chunk_level key is omitted.
+    """
     doc_ranked: list[list[str]] = []
     doc_relevant: list[set[str]] = []
     chunk_ranked: list[list[str]] = []
     chunk_relevant: list[set[str]] = []
     per_query: list[dict[str, Any]] = []
+    any_unavailable = False
 
     for q in queries:
         t0 = time.time()
         results = run_mode(mode, cfg, chunks, q["query"], top_k, namespace)
         elapsed = time.time() - t0
+
+        if results is None:
+            # Mode unavailable (no model / no index): count the query as
+            # served-empty but flag the whole mode as degraded.
+            any_unavailable = True
+            results = []
 
         ranked_doc_ids: list[str] = []
         ranked_chunk_ids: list[str] = []
@@ -225,12 +252,15 @@ def evaluate_mode(
         chunk_ranked.append(ranked_chunk_ids)
         chunk_relevant.append(want_chunks)
 
-    return {
+    out: dict[str, Any] = {
         "mode": mode,
+        "degraded": any_unavailable,
         "per_query": per_query,
         "doc_level": aggregate_scores(doc_ranked, doc_relevant, METRIC_K),
-        "chunk_level": aggregate_scores(chunk_ranked, chunk_relevant, METRIC_K),
     }
+    if any(q.get("relevant_chunk_ids") for q in queries):
+        out["chunk_level"] = aggregate_scores(chunk_ranked, chunk_relevant, METRIC_K)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +269,14 @@ def evaluate_mode(
 
 
 def print_table(aggregates: dict[str, dict[str, Any]], top_k: int) -> None:
-    """Human-readable summary table on stdout."""
+    """Human-readable summary table on stdout.
+
+    Degraded modes (model/index unavailable) get a notice line under the
+    mode's rows so zero scores are never mistaken for bad retrieval.
+    Chunk-level rows print only when chunk labels exist (otherwise the
+    pending-annotation placeholder); n_evaluated == 0 shows "n/a"
+    instead of 0.000 (nothing was evaluated, not a zero score).
+    """
     levels = [("doc_level", "doc"), ("chunk_level", "chunk")]
     header = f"{'mode':<10} {'level':<6} {'recall@k':>9} {'MRR@k':>9} {'nDCG@k':>9} {'n_eval':>7}"
     print(f"\nRetrieval eval (top_k={top_k})")
@@ -247,14 +284,23 @@ def print_table(aggregates: dict[str, dict[str, Any]], top_k: int) -> None:
     print("-" * len(header))
     for mode in aggregates:
         for level_key, level_name in levels:
+            if level_key not in aggregates[mode]:
+                print(f"{mode:<10} {level_name:<6} {'--':>9} {'--':>9} {'--':>9} {'--':>7}")
+                print("chunk-level: pending operator annotation")
+                continue
             agg = aggregates[mode][level_key]
-            print(
-                f"{mode:<10} {level_name:<6} "
-                f"{agg.get(f'recall@{METRIC_K}', 0.0):>9.3f} "
-                f"{agg.get(f'mrr@{METRIC_K}', 0.0):>9.3f} "
-                f"{agg.get(f'ndcg@{METRIC_K}', 0.0):>9.3f} "
-                f"{agg.get('n_evaluated', 0):>7}"
-            )
+            n_eval = agg.get("n_evaluated", 0)
+            if n_eval == 0:
+                vals = ("n/a", "n/a", "n/a")
+            else:
+                vals = (
+                    f"{agg.get(f'recall@{METRIC_K}', 0.0):.3f}",
+                    f"{agg.get(f'mrr@{METRIC_K}', 0.0):.3f}",
+                    f"{agg.get(f'ndcg@{METRIC_K}', 0.0):.3f}",
+                )
+            print(f"{mode:<10} {level_name:<6} {vals[0]:>9} {vals[1]:>9} {vals[2]:>9} {n_eval:>7}")
+        if aggregates[mode].get("degraded"):
+            print(f"{mode:<10} (DEGRADED -- model/index unavailable, scores are zeros)")
 
 
 def save_report(
@@ -301,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [m for m in modes if m not in {"semantic", "hybrid", "lexical"}]
     if invalid:
         parser.error(f"unknown modes: {','.join(invalid)}")
+
+    # Metrics are fixed at @10: a smaller --top-k would silently relabel
+    # a shallower ranking as @10.
+    if args.top_k < METRIC_K:
+        parser.error(f"--top-k must be >= {METRIC_K} (metrics are @{METRIC_K})")
 
     from doc_rag.server import retrieval
 
