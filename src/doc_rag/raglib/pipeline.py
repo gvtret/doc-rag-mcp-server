@@ -32,18 +32,53 @@ def set_progress_callback(cb: Any) -> None:
     _PROGRESS_CB = cb
 
 
-def _build_index_with_progress(cfg: dict[str, Any], chunks: list[dict], force: bool) -> None:
+def _title_hints_for_index(manifest_path: str) -> dict[str, str]:
+    """doc_id -> title_hint map for embedding prefixes, from the manifest.
+
+    Best-effort: a missing, unreadable or malformed manifest yields {}
+    (build() then embeds raw text, exactly the pre-task behaviour).
+    Titles are stripped and capped at 80 chars by build_embedding_text's
+    sanitization; garbage filenames (e.g. rfc1928.errata) are passed as
+    is -- operator markup can improve them later.
+    """
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    docs = data.get("documents") if isinstance(data, dict) else None
+    if not isinstance(docs, list):
+        return {}
+    hints: dict[str, str] = {}
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        did = d.get("doc_id")
+        th = d.get("title_hint")
+        if isinstance(did, str) and did and isinstance(th, str) and th.strip():
+            hints[did] = th.strip()[:80]
+    return hints
+
+
+def _build_index_with_progress(
+    cfg: dict[str, Any],
+    chunks: list[dict],
+    force: bool,
+    title_hints: dict[str, str] | None = None,
+) -> None:
     """Build the vector index with the module progress hook wired in.
 
     Shared by ingest/rebuild/rebuild-index so the UI always sees the
-    indexing phase (embed X/N) regardless of the entry point.
+    indexing phase (embed X/N) regardless of the entry point. title_hints
+    (doc_id -> title) feeds the embedding context prefixes; None keeps
+    the plain-text embedding behaviour.
     """
     vi = _get_vector_index(cfg)
     cb = _PROGRESS_CB
     if cb is not None and hasattr(vi, "set_progress_callback"):
         vi.set_progress_callback(cb)
     try:
-        vi.build(chunks, force=force, log=print)
+        vi.build(chunks, force=force, log=print, title_hints=title_hints)
     finally:
         if cb is not None and hasattr(vi, "set_progress_callback"):
             vi.set_progress_callback(None)
@@ -829,7 +864,12 @@ def ingest(config_path: str) -> None:
                     if line:
                         chunks.append(json.loads(line))
             if chunks:
-                _build_index_with_progress(cfg, chunks, force=False)
+                _build_index_with_progress(
+                    cfg,
+                    chunks,
+                    force=False,
+                    title_hints=_title_hints_for_index(manifest_path),
+                )
     except Exception as e:
         _log("WARN", f"index update skipped: {e}")
 
@@ -1214,7 +1254,12 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
             if os.path.exists(chunks_path):
                 chunks = _load_existing_chunks(chunks_path)
                 if chunks:
-                    _build_index_with_progress(cfg, chunks, force=True)
+                    _build_index_with_progress(
+                        cfg,
+                        chunks,
+                        force=True,
+                        title_hints=_title_hints_for_index(manifest_path),
+                    )
             else:
                 _log("INFO", "rebuild: no chunks — index unchanged")
         except Exception as e:
@@ -1230,6 +1275,7 @@ def rebuild_index(config_path: str) -> None:
     cfg = load_config(config_path)
     root = cfg["_root"]
     chunks_path = os.path.join(root, cfg["paths"]["chunks_dir"], "chunks.jsonl")
+    manifest_path = os.path.join(root, cfg["paths"]["manifest_path"])
 
     if not os.path.exists(chunks_path):
         _log("ERROR", f"rebuild_index: {chunks_path} not found")
@@ -1252,7 +1298,12 @@ def rebuild_index(config_path: str) -> None:
         chunks = _load_existing_chunks(chunks_path)
         _log("INFO", f"rebuild_index: {len(chunks)} chunks loaded")
         if chunks:
-            _build_index_with_progress(cfg, chunks, force=True)
+            _build_index_with_progress(
+                cfg,
+                chunks,
+                force=True,
+                title_hints=_title_hints_for_index(manifest_path),
+            )
             _log("INFO", f"rebuild_index: done, {vi.size} vectors in index")
         else:
             _log("WARN", "rebuild_index: no chunks found")
@@ -1558,7 +1609,12 @@ def rebuild_docs(
         vi = _get_vector_index(cfg)
         vi.delete(target_ids)
         if all_chunks:
-            _build_index_with_progress(cfg, all_chunks, force=False)
+            _build_index_with_progress(
+                cfg,
+                all_chunks,
+                force=False,
+                title_hints=_title_hints_for_index(manifest_path),
+            )
     except Exception as e:
         _log("WARN", f"index rebuild skipped: {e}")
 

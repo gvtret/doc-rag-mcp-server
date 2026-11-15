@@ -30,7 +30,7 @@ from typing import Any
 CHUNKING_SCHEMA_VERSION = "5"
 # Bump when the embedding-text scheme changes (prefixes, metadata injection,
 # trimming rules), even if chunk boundaries stay the same.
-EMBEDDING_TEXT_VERSION = "1"
+EMBEDDING_TEXT_VERSION = "2"
 
 #: Hard cap on real (bge-m3) tokens per chunk, including tables. The
 #: embedding model truncates inputs at 512 tokens; 8 tokens of headroom
