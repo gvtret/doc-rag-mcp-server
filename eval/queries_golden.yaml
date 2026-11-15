@@ -9,77 +9,73 @@
 # NOT ground truth -- expect this file to be replaced wholesale once
 # the operator annotates the real set.
 #
-# Schema per entry:
-#   query: str
-#   relevant_doc_ids: [doc_id, ...]       (required, one or more; an
-#                                          entry with only chunk ids
-#                                          derives doc ids from the
-#                                          chunk_id prefix)
-#   relevant_chunk_ids: [chunk_id, ...]   (optional; chunk-level metrics
-#                                          are computed only when at
-#                                          least one evaluated query
-#                                          provides them)
+# Structure: root-level mapping with two keys.
+#   queries: evaluated set, list of
+#     query: str
+#     relevant_doc_ids: [doc_id, ...]       (required, one or more; an
+#                                            entry with only chunk ids
+#                                            derives doc ids from the
+#                                            chunk_id prefix)
+#     relevant_chunk_ids: [chunk_id, ...]   (optional; chunk-level
+#                                            metrics are computed only
+#                                            when at least one evaluated
+#                                            query provides them)
+#   pending_chunk_annotations: NOT evaluated. Chunk-level labels observed
+#     during the validation run (top-1 chunks of the target docs), kept
+#     for the operator to review. Move into "queries" only with real
+#     operator annotation (multi-chunk, non-trivial labels).
 #
 # Note: queries 7 and 10 are Russian and retrieve English-language
 # documents -- intentional cross-lingual probes.
-#
-# The three chunk-level annotations observed in the validation run are
-# parked under "pending operator annotation" below and are NOT part of
-# the evaluated set: single-chunk labels (":0") make chunk-level
-# metrics degenerate. The harness computes chunk rows only when the
-# queries actually evaluated carry relevant_chunk_ids.
 
-- query: "DNP3 secure authentication implementation"
-  relevant_doc_ids:
-    - 3002003736_dnp3_ieee_std_1815tm_secure_authentication_implementation_and_migrati_2bc59cdead
-    - dnp3_secure_authentication_v5_2011_11_08_19500584e6
+queries:
+  - query: "DNP3 secure authentication implementation"
+    relevant_doc_ids:
+      - 3002003736_dnp3_ieee_std_1815tm_secure_authentication_implementation_and_migrati_2bc59cdead
+      - dnp3_secure_authentication_v5_2011_11_08_19500584e6
 
-- query: "IEC 61850 SCL configuration language"
-  relevant_doc_ids:
-    - iec_61850_6_2009_from_archive_below_489e546cf3
-    - iec_61850_6_2024_ed2_2_e2a22ddef3
+  - query: "IEC 61850 SCL configuration language"
+    relevant_doc_ids:
+      - iec_61850_6_2009_from_archive_below_489e546cf3
+      - iec_61850_6_2024_ed2_2_e2a22ddef3
 
-- query: "ГОСТ 34.12 блочный шифр"
-  relevant_doc_ids:
-    - gost_34_12_2018_2140ac7a09
-    - gost_34_12_15634beade
+  - query: "ГОСТ 34.12 блочный шифр"
+    relevant_doc_ids:
+      - gost_34_12_2018_2140ac7a09
+      - gost_34_12_15634beade
 
-- query: "IEC 60870-5-104 telecontrol companion standard"
-  relevant_doc_ids:
-    - iec_60870_5_104_2006_f559d94e0d
-    - iec_60870_5_104_ed2_2006_8f9000f646
+  - query: "IEC 60870-5-104 telecontrol companion standard"
+    relevant_doc_ids:
+      - iec_60870_5_104_2006_f559d94e0d
+      - iec_60870_5_104_ed2_2006_8f9000f646
 
-- query: "COSEM interface classes OBIS object identification"
-  relevant_doc_ids:
-    - dlms_ua_1000_1_blue_book_cosem_interface_classes_and_obis_object_identification__2902387028
+  - query: "COSEM interface classes OBIS object identification"
+    relevant_doc_ids:
+      - dlms_ua_1000_1_blue_book_cosem_interface_classes_and_obis_object_identification__2902387028
 
-- query: "HDLC protocol specification and verification"
-  relevant_doc_ids:
-    - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4
+  - query: "HDLC protocol specification and verification"
+    relevant_doc_ids:
+      - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4
 
-- query: "ГОСТ Р 34.11-2018 криптографическая хеш-функция"
-  relevant_doc_ids:
-    - gost_34_11_2018_d9eef42850
-    - gost_r_34_11_2018_94b4447313
-    - rfc6986_fd5ea9e36d
+  - query: "ГОСТ Р 34.11-2018 криптографическая хеш-функция"
+    relevant_doc_ids:
+      - gost_34_11_2018_d9eef42850
+      - gost_r_34_11_2018_94b4447313
+      - rfc6986_fd5ea9e36d
 
-- query: "IEC 62351 security power systems"
-  relevant_doc_ids:
-    - iec_ts_62351_4_2007_0a90dc324b
-    - iec_62351_3_2014_4eddadef3c
+  - query: "IEC 62351 security power systems"
+    relevant_doc_ids:
+      - iec_ts_62351_4_2007_0a90dc324b
+      - iec_62351_3_2014_4eddadef3c
 
-- query: "TLS handshake protocol"
-  relevant_doc_ids:
-    - rfc8446_47871bc882
+  - query: "TLS handshake protocol"
+    relevant_doc_ids:
+      - rfc8446_47871bc882
 
-- query: "протокол телемеханики МЭК 60870-5-104"
-  relevant_doc_ids:
-    - iec_60870_5_104_ed2_2006_8f9000f646
+  - query: "протокол телемеханики МЭК 60870-5-104"
+    relevant_doc_ids:
+      - iec_60870_5_104_ed2_2006_8f9000f646
 
-# --- pending operator annotation -------------------------------------
-# Chunk-level labels observed during the validation run (top-1 chunks
-# of the target docs). Keep the structure, move into the evaluated set
-# only with real operator annotation (multi-chunk, non-trivial labels).
 pending_chunk_annotations:
   - query: "COSEM interface classes OBIS object identification"
     relevant_chunk_ids:
