@@ -535,8 +535,9 @@ def _postprocess_chunks(
         cleaned = re.sub(r"[\ufffd\x00-\x08\x0e-\x1f]", "", text)
         cleaned = re.sub(r"[^\w\s.,;:!?()\-+/=<>%§°±×÷†‡∞≈≠≤≥\[\]{}|/\\\"\'`~@#&*^]", "", cleaned)
 
-        # Collapse multiple spaces/newlines
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        # Collapse runs of spaces/tabs; preserve single newlines so markdown
+        # structure (tables, lists) survives, then cap paragraph breaks.
+        cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
 
         if len(cleaned) < min_text_len:
@@ -1093,6 +1094,13 @@ def rebuild(config_path: str, *, force: bool = False, skip_index: bool = False) 
         all_chunks = _load_existing_chunks(chunks_path)
     original_chunk_count = len(all_chunks)
 
+    # Postprocess the FULL merged set (same as the ingest path) BEFORE dedup:
+    # duplicate header/footer detection is corpus-wide, and running it here
+    # keeps chunk text identical to what ingest() would produce for the same
+    # document. Gaps in chunk_idx numbering after filtering are acceptable —
+    # chunk_ids are already assigned and must stay stable.
+    all_chunks = _postprocess_chunks(all_chunks)
+
     # Phase 3: Dedup by doc_id AND sha256
     seen_ids: set[str] = set()
     seen_hashes: set[str] = set()
@@ -1220,6 +1228,14 @@ def rebuild_docs(
 
     Removes their .md and chunks, re-parses the source files, then
     merges everything back. Returns a summary dict.
+
+    NOTE: this path intentionally does NOT run chunk postprocessing
+    (_postprocess_chunks). Postprocessing is corpus-wide (duplicate
+    header/footer detection counts repeats across ALL chunks), so running
+    it here would modify chunks of OTHER documents while the vector index
+    updates incrementally only for the targeted doc_ids — leaving the
+    index texts out of sync with chunks.jsonl. Run a full `rebuild` when
+    consistent postprocessing across the corpus is needed.
     """
     cfg = load_config(config_path)
     root = cfg["_root"]

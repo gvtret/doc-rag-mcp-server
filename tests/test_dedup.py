@@ -196,9 +196,21 @@ def test_rebuild_deduplicates_chunks_by_chunk_id(tmp_path: Path) -> None:
     _write_chunks(
         chunks_path,
         [
-            {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero"},
-            {"doc_id": "doc_a", "chunk_id": "doc_a:0", "text": "chunk zero dup"},
-            {"doc_id": "doc_a", "chunk_id": "doc_a:1", "text": "chunk one"},
+            {
+                "doc_id": "doc_a",
+                "chunk_id": "doc_a:0",
+                "text": "chunk zero with enough text to survive postprocessing",
+            },
+            {
+                "doc_id": "doc_a",
+                "chunk_id": "doc_a:0",
+                "text": "chunk zero duplicate entry with different body content",
+            },
+            {
+                "doc_id": "doc_a",
+                "chunk_id": "doc_a:1",
+                "text": "chunk one with enough text to survive postprocessing too",
+            },
         ],
     )
 
