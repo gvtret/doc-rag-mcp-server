@@ -52,12 +52,15 @@ chunking:
 embeddings:
   # Multilingual (RU+EN): bge-m3, 1024-dim. On a 4 GB GPU (GTX 1650)
   # batch 32 is ~4x faster than 8 (7.9 vs 1.9 chunks/s) and still fits;
-  # 48+ hits VRAM limits and degrades. max_seq_length is capped to the
-  # chunk size (~512 tokens) so bge-m3's 8192 default doesn't inflate cost.
+  # 48+ hits VRAM limits and degrades. max_seq_length covers the chunk
+  # size (~512 tokens) PLUS the embedding context prefix (up to 40
+  # tokens + separator headroom; see raglib/embedding_text.py), so a
+  # saturated chunk is not silently tail-truncated by the model. bge-m3
+  # supports 8192 natively; 576 keeps the extra encode cost ~12%.
   model_name: "BAAI/bge-m3"
   device: "cuda"
   batch_size: 32
-  max_seq_length: 512
+  max_seq_length: 576
   normalize: true
   # Periodic read-only comparison of local weights against the HF Hub
   # (no download, no swap; result surfaces as model_update_available).

@@ -331,3 +331,96 @@ def test_embedding_text_version_bumped() -> None:
     from doc_rag.raglib.chunking_meta import EMBEDDING_TEXT_VERSION
 
     assert EMBEDDING_TEXT_VERSION == "2"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: table budget, trailing space, max-size fit, fingerprint pin
+# ---------------------------------------------------------------------------
+
+
+def test_table_title_respects_budget(monkeypatch) -> None:
+    """Table chunks' title-only prefix is capped at the same 40 tokens."""
+    import doc_rag.raglib.embedding_text as et
+
+    monkeypatch.setattr(et, "count_tokens", lambda text, tokenizer_path=None: len(text) // 2)
+
+    out = build_embedding_text(
+        {"text": "body", "is_table": True, "section_path": "5.3"},
+        "T" * 120,  # 60 tokens > 40
+    )
+    prefix, body = out.split("\n\n", 1)
+    assert body == "body"
+    assert et.count_tokens(prefix) <= et.PREFIX_TOKEN_BUDGET
+    assert prefix.startswith("T")
+    assert prefix == prefix.rstrip()  # no trailing space before \n\n
+
+
+def test_trimmed_parts_have_no_trailing_space(monkeypatch) -> None:
+    """A char-level cut must not leave "  > " or a trailing space prefix."""
+    import doc_rag.raglib.embedding_text as et
+
+    # 1 token per char with a per-call extra: makes count_tokens
+    # non-additive and forces mid-title cuts that can land on spaces.
+    monkeypatch.setattr(
+        et,
+        "count_tokens",
+        lambda text, tokenizer_path=None: max(1, len(text)) if text else 0,
+    )
+
+    title = "word " * 20  # trailing spaces at many cut points
+    sp = "5.3 Требования"
+    out = build_embedding_text({"text": "body", "section_path": sp}, title)
+    prefix, body = out.split("\n\n", 1)
+    assert body == "body"
+    assert "  > " not in prefix  # separator is exactly " > "
+    assert not prefix.endswith(" ")
+    assert prefix.split(" > ")[0] == prefix.split(" > ")[0].rstrip()
+
+
+def test_max_size_chunk_fits_576_budget(monkeypatch) -> None:
+    """Worst case: max-size chunk body + full-size prefix stays within
+    the 576-token max_seq_length (review finding 1)."""
+    import doc_rag.raglib.embedding_text as et
+    from doc_rag.raglib.chunking_meta import CHUNK_MAX_TOKENS
+
+    # Deterministic 1 token/char meter, like the real tokenizer on
+    # repeated ASCII: makes the arithmetic exact (504 body + 40 prefix).
+    monkeypatch.setattr(et, "count_tokens", lambda text, tokenizer_path=None: len(text))
+
+    body = "x" * CHUNK_MAX_TOKENS  # max-size chunk body: 504 "tokens"
+    title = "T" * 34
+    sp = "S" * 3
+    # "T"*34 + " > " + "S"*3 = 40 chars = exactly the prefix budget.
+    out = build_embedding_text({"text": body, "section_path": sp}, title)
+    prefix, embedded_body = out.split("\n\n", 1)
+    assert embedded_body == body
+    assert et.count_tokens(out) <= 576  # 504 + 40 + "\n\n" is not counted
+    assert et.count_tokens(prefix) == 40
+
+
+def test_config_max_seq_length_covers_prefix_budget() -> None:
+    """Deployed config: max_seq_length >= chunk cap (512) + prefix budget
+    (40) + headroom, per the embedding_text docstring contract."""
+    import yaml
+
+    from doc_rag.raglib.embedding_text import PREFIX_TOKEN_BUDGET
+
+    with open("config/config.yaml", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    max_seq = int(cfg["embeddings"]["max_seq_length"])
+    assert max_seq >= 512 + PREFIX_TOKEN_BUDGET  # 576
+
+
+def test_embedding_text_version_in_fingerprint(monkeypatch) -> None:
+    """EMBEDDING_TEXT_VERSION is fingerprinted: bumping it must change
+    config_fingerprint, so stale FAISS indexes rebuild (review finding 8)."""
+    from doc_rag.raglib import chunking_meta
+
+    cfg = {
+        "chunking": {"strategy": "recursive", "target_tokens": 512, "overlap_tokens": 64},
+        "_root": "/nonexistent-root-for-test",
+    }
+    base = chunking_meta.config_fingerprint(cfg)
+    monkeypatch.setattr(chunking_meta, "EMBEDDING_TEXT_VERSION", "3")
+    bumped = chunking_meta.config_fingerprint(cfg)
+    assert bumped != base
