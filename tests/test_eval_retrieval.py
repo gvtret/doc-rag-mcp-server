@@ -204,51 +204,25 @@ def _write_corpus(root: Path) -> list[dict[str, Any]]:
     return chunks
 
 
-def _write_queries(root: Path) -> Path:
+def _write_queries(root: Path, *, with_chunk_labels: bool = False) -> Path:
+    lines = [
+        "- query: transformer substation dispatch\n  relevant_doc_ids: [doc-alpha]\n",
+        "- query: optical fibre link budget\n  relevant_doc_ids: [doc-beta]\n",
+        "- query: grounding lightning protection\n  relevant_doc_ids: [doc-gamma]\n",
+    ]
+    if with_chunk_labels:
+        lines[0] = (
+            "- query: transformer substation dispatch\n"
+            "  relevant_doc_ids: [doc-alpha]\n"
+            "  relevant_chunk_ids: [doc-alpha:000, doc-alpha:001]\n"
+        )
     q = root / "queries.yaml"
-    q.write_text(
-        "- query: transformer substation dispatch\n"
-        "  relevant_doc_ids: [doc-alpha]\n"
-        "  relevant_chunk_ids: [doc-alpha:000, doc-alpha:001]\n"
-        "- query: optical fibre link budget\n"
-        "  relevant_doc_ids: [doc-beta]\n"
-        "- query: grounding lightning protection\n"
-        "  relevant_doc_ids: [doc-gamma]\n",
-        encoding="utf-8",
-    )
+    q.write_text("".join(lines), encoding="utf-8")
     return q
 
 
-@pytest.fixture
-def eval_env(tmp_path, monkeypatch):
-    """tmp corpus + DOC_RAG_ROOT, with semantic_search stubbed so all
-    modes run without a model; lexical always returns results, so
-    semantic/hybrid/lexical all serve the same lexical ranking."""
-    root = tmp_path
-    (root / "config").mkdir()
-    (root / "config" / "config.yaml").write_text(
-        "paths:\n  chunks_dir: build/chunks_jsonl\n"
-        "  index_dir: build/index\n"
-        "  manifest_path: build/manifest.json\n"
-        "embeddings:\n  model_name: stub\n"
-        "index:\n  backend: faiss\n"
-        "mcp:\n  retrieval_mode: semantic\n",
-        encoding="utf-8",
-    )
-    chunks = _write_corpus(root)
-    queries = _write_queries(root)
-
-    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
-    return root, chunks, queries
-
-
-def test_eval_end_to_end_recall_one(tmp_path, monkeypatch, capsys):
-    """Full pipeline: 3-doc synthetic corpus, 3 queries with exact
-    lexical matches -> recall@10 == 1.0 at doc level for all modes,
-    JSON report written under <root>/build/eval/."""
-    mod = load_eval_script()
-
-    root = tmp_path
+def _setup_corpus(root: Path) -> Path:
+    """Config + corpus + queries; returns the queries path."""
     (root / "config").mkdir()
     (root / "config" / "config.yaml").write_text(
         "paths:\n  chunks_dir: build/chunks_jsonl\n"
@@ -260,19 +234,32 @@ def test_eval_end_to_end_recall_one(tmp_path, monkeypatch, capsys):
         encoding="utf-8",
     )
     _write_corpus(root)
-    queries_path = _write_queries(root)
+    return _write_queries(root)
 
-    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
 
-    # No embedding model in tests: semantic_search must not crash the
-    # harness. Stub it to return the lexical ranking (same list) so the
-    # metric math for semantic/hybrid matches the lexical expectation.
+def _stub_semantic_to_lexical(monkeypatch) -> None:
+    """No embedding model in tests: stub semantic_search to return the
+    lexical ranking so semantic/hybrid metrics match lexical."""
     import doc_rag.server.retrieval as retrieval
 
     def fake_semantic(cfg, chunks, query, top_k, namespace="default", filters=None):
         return retrieval.lexical_search(chunks, query, top_k, filters=filters)
 
     monkeypatch.setattr(retrieval, "semantic_search", fake_semantic)
+
+
+def test_eval_end_to_end_recall_one(tmp_path, monkeypatch, capsys):
+    """Full pipeline: 3-doc synthetic corpus, 3 queries with exact
+    lexical matches -> recall@10 == 1.0 at doc level for all modes,
+    JSON report written under <root>/build/eval/. No query carries
+    chunk labels -> no chunk_level key in the report and the table
+    prints the pending-annotation placeholder."""
+    mod = load_eval_script()
+
+    root = tmp_path
+    queries_path = _setup_corpus(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    _stub_semantic_to_lexical(monkeypatch)
 
     rc = mod.main(
         [
@@ -285,6 +272,7 @@ def test_eval_end_to_end_recall_one(tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "recall@k" in out  # table header label
+    assert "chunk-level: pending operator annotation" in out
 
     reports = sorted((root / "build" / "eval").glob("*.json"))
     assert reports, "JSON report missing under build/eval/"
@@ -292,29 +280,52 @@ def test_eval_end_to_end_recall_one(tmp_path, monkeypatch, capsys):
     assert report["modes"] == ["semantic", "hybrid", "lexical"]
     assert report["corpus"]["n_chunks"] == 12
     for mode in ("semantic", "hybrid", "lexical"):
-        agg = report["results"][mode]["doc_level"]
+        mode_res = report["results"][mode]
+        assert mode_res["degraded"] is False
+        agg = mode_res["doc_level"]
         assert agg["n_evaluated"] == 3
         assert agg["recall@10"] == pytest.approx(1.0)
         assert agg["mrr@10"] == pytest.approx(1.0)
         assert agg["ndcg@10"] == pytest.approx(1.0)
-    # Chunk level: only the first query has chunk labels. The lexical
-    # query ranks all four doc-alpha chunks above everything else, so
-    # both labelled chunks (doc-alpha:000, doc-alpha:001) land in top-10
-    # -> recall@10 == 1.0 (the label set is a subset of the returned set).
-    chunk_agg = report["results"]["lexical"]["chunk_level"]
-    assert chunk_agg["n_evaluated"] == 1
-    assert chunk_agg["recall@10"] == pytest.approx(1.0)
+        # No chunk labels in the evaluated set -> chunk metrics omitted.
+        assert "chunk_level" not in mode_res
+
+
+def test_eval_chunk_labels_present(tmp_path, monkeypatch):
+    """When at least one query has relevant_chunk_ids, chunk_level is
+    computed (kept in code; gated on label availability)."""
+    mod = load_eval_script()
+    root = tmp_path
+    _setup_corpus(root)
+    # Rewrite queries with chunk labels on the first query.
+    q = root / "queries.yaml"
+    q.write_text(
+        "- query: transformer substation dispatch\n"
+        "  relevant_doc_ids: [doc-alpha]\n"
+        "  relevant_chunk_ids: [doc-alpha:000, doc-alpha:001]\n"
+        "- query: optical fibre link budget\n"
+        "  relevant_doc_ids: [doc-beta]\n"
+        "- query: grounding lightning protection\n"
+        "  relevant_doc_ids: [doc-gamma]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    from doc_rag.server import retrieval as retrieval_mod
+
+    cfg = {"_root": str(root), "paths": {"chunks_dir": "build/chunks_jsonl"}}
+    chunks = retrieval_mod.load_chunks(cfg)
+    res = mod.evaluate_mode("lexical", cfg, chunks, mod.load_queries(q), top_k=10)
+    # The lexical query ranks all four doc-alpha chunks above everything
+    # else, so both labelled chunks land in top-10 -> recall 1.0.
+    assert res["chunk_level"]["n_evaluated"] == 1
+    assert res["chunk_level"]["recall@10"] == pytest.approx(1.0)
 
 
 def test_eval_per_query_records_rankings(tmp_path, monkeypatch):
     mod = load_eval_script()
     root = tmp_path
-    (root / "config").mkdir()
-    (root / "config" / "config.yaml").write_text(
-        "paths:\n  chunks_dir: build/chunks_jsonl\n", encoding="utf-8"
-    )
-    _write_corpus(root)
-    queries_path = _write_queries(root)
+    queries_path = _setup_corpus(root)
     monkeypatch.setenv("DOC_RAG_ROOT", str(root))
 
     from doc_rag.server import retrieval as retrieval_mod
@@ -340,12 +351,111 @@ def test_eval_per_query_records_rankings(tmp_path, monkeypatch):
 
 def test_main_rejects_unknown_mode(tmp_path, monkeypatch, capsys):
     mod = load_eval_script()
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text(
-        "paths:\n  chunks_dir: build/chunks_jsonl\n", encoding="utf-8"
-    )
-    _write_corpus(tmp_path)
-    _write_queries(tmp_path)
+    queries_path = _setup_corpus(tmp_path)
     monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
     with pytest.raises(SystemExit):
-        mod.main(["--modes", "bogus", "--queries", str(tmp_path / "queries.yaml")])
+        mod.main(["--modes", "bogus", "--queries", str(queries_path)])
+
+
+def test_main_rejects_top_k_below_metric_k(tmp_path, monkeypatch, capsys):
+    """--top-k < 10 would silently relabel a shallower ranking as @10;
+    metrics are fixed @10, so smaller values must fail loudly."""
+    mod = load_eval_script()
+    queries_path = _setup_corpus(tmp_path)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    with pytest.raises(SystemExit):
+        mod.main(["--top-k", "2", "--queries", str(queries_path)])
+    assert "--top-k must be >= 10" in capsys.readouterr().err
+
+
+def test_main_accepts_top_k_equal_10(tmp_path, monkeypatch):
+    """Boundary: --top-k 10 is the minimum accepted value."""
+    mod = load_eval_script()
+    queries_path = _setup_corpus(tmp_path)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    _stub_semantic_to_lexical(monkeypatch)
+    assert mod.main(["--top-k", "10", "--queries", str(queries_path), "--modes", "lexical"]) == 0
+
+
+def test_root_flag_sets_env_before_retrieval_import():
+    """--root must set DOC_RAG_ROOT BEFORE retrieval is imported/called
+    (project_root() reads and caches it at config load time). Verified
+    in a fresh subprocess: a clean interpreter runs main(["--root", X])
+    with a stub-free lexical mode, then asserts the env var the script
+    set matches X and that the report was written under X/build/eval."""
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _setup_corpus(root)
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('eval_retrieval', {str(ROOT / 'scripts' / 'eval_retrieval.py')!r})\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            f"rc = mod.main(['--root', {str(root)!r}, '--modes', 'lexical', '--queries', {str(root / 'queries.yaml')!r}])\n"
+            "import os\n"
+            "assert rc == 0\n"
+            f"assert os.environ['DOC_RAG_ROOT'] == {str(root)!r}, os.environ.get('DOC_RAG_ROOT')\n"
+            "import glob\n"
+            "assert glob.glob(os.environ['DOC_RAG_ROOT'] + '/build/eval/*.json'), 'no report under --root'\n"
+            "print('ok')\n"
+        )
+        # No DOC_RAG_ROOT in the subprocess environment: only --root may
+        # provide it, proving the flag runs before any retrieval call.
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=120,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip().endswith("ok")
+
+
+def test_eval_degraded_mode_marked(tmp_path, monkeypatch, capsys):
+    """semantic_search returning None (no model/index) must mark the
+    mode degraded: true in JSON and print the DEGRADED suffix -- zeros
+    of an unavailable mode must not read as bad retrieval."""
+    mod = load_eval_script()
+    root = tmp_path
+    queries_path = _setup_corpus(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    import doc_rag.server.retrieval as retrieval
+
+    monkeypatch.setattr(retrieval, "semantic_search", lambda *a, **kw: None)
+
+    rc = mod.main(["--queries", str(queries_path), "--modes", "semantic,lexical"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DEGRADED" in out
+
+    reports = sorted((root / "build" / "eval").glob("*.json"))
+    report = json.loads(reports[-1].read_text(encoding="utf-8"))
+    assert report["results"]["semantic"]["degraded"] is True
+    # The available mode is not degraded.
+    assert report["results"]["lexical"]["degraded"] is False
+    # Degraded semantic doc_level still present (zeros) for the record.
+    assert report["results"]["semantic"]["doc_level"]["n_evaluated"] == 3
+
+
+def test_load_queries_derives_doc_ids_from_chunk_ids(tmp_path):
+    """Entry with only relevant_chunk_ids: doc-level relevance derived
+    from the chunk_id prefix, not silently skipped."""
+    mod = load_eval_script()
+    p = tmp_path / "q.yaml"
+    p.write_text(
+        "- query: chunks only\n  relevant_chunk_ids: [doc-x:3, doc-y:0, doc-x:7]\n",
+        encoding="utf-8",
+    )
+    qs = mod.load_queries(p)
+    assert qs[0]["relevant_doc_ids"] == ["doc-x", "doc-y"]
+    assert qs[0]["relevant_chunk_ids"] == ["doc-x:3", "doc-y:0", "doc-x:7"]
