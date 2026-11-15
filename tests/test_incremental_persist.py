@@ -229,9 +229,9 @@ def test_rebuild_force_index_full_rebuild(tmp_path: Path) -> None:
     build_calls = []
     original_build = None
 
-    def tracking_build(self, chunks, force=False, log=print):
+    def tracking_build(self, chunks, force=False, log=print, **kwargs):
         build_calls.append({"force": force, "chunk_count": len(chunks)})
-        return original_build(self, chunks, force=force, log=log)
+        return original_build(self, chunks, force=force, log=log, **kwargs)
 
     from doc_rag.raglib import vector_index
 
@@ -258,9 +258,9 @@ def test_rebuild_incremental_index_update(tmp_path: Path) -> None:
     build_calls = []
     original_build = None
 
-    def tracking_build(self, chunks, force=False, log=print):
+    def tracking_build(self, chunks, force=False, log=print, **kwargs):
         build_calls.append({"force": force, "chunk_count": len(chunks)})
-        return original_build(self, chunks, force=force, log=log)
+        return original_build(self, chunks, force=force, log=log, **kwargs)
 
     from doc_rag.raglib import vector_index
 
@@ -294,10 +294,10 @@ def test_ingest_builds_index_once_after_all_documents(tmp_path: Path) -> None:
     chunks_at_build = []
     original_build = None
 
-    def tracking_build(self, chunks, force=False, log=print):
+    def tracking_build(self, chunks, force=False, log=print, **kwargs):
         build_calls.append({"force": force, "chunk_count": len(chunks)})
         chunks_at_build.append(len(chunks))
-        return original_build(self, chunks, force=force, log=log)
+        return original_build(self, chunks, force=force, log=log, **kwargs)
 
     from doc_rag.raglib import vector_index
 

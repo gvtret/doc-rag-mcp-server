@@ -16,6 +16,7 @@ import numpy as np
 
 from doc_rag.raglib import model_loader, model_paths
 from doc_rag.raglib.chunking_meta import config_fingerprint
+from doc_rag.raglib.embedding_text import build_embedding_text
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -324,8 +325,20 @@ class VectorIndex:
 
         raise RuntimeError(f"Embedding failed after {max_retries} attempts: {last_error}")
 
-    def build(self, chunks: list[dict[str, Any]], force: bool = False, log=print) -> bool:
+    def build(
+        self,
+        chunks: list[dict[str, Any]],
+        force: bool = False,
+        log=print,
+        title_hints: dict[str, str] | None = None,
+    ) -> bool:
         """Build or update the index from chunk dicts.
+
+        title_hints maps doc_id -> document title hint; when given, the
+        EMBEDDING text of each chunk gets a "{title} > {section_path}"
+        context prefix (via build_embedding_text). Stored chunk text and
+        served results are NOT changed -- only the encoded input. Queries
+        are encoded without a prefix.
 
         Returns True if index is available after build.
         """
@@ -387,7 +400,7 @@ class VectorIndex:
             log(f"[doc-rag][index] Incremental update: +{len(new_ids)} chunks")
             new_id_set = set(new_ids)
             new_chunks = [c for c in chunks if c.get("chunk_id") in new_id_set]
-            texts = [str(c.get("text", "")) for c in new_chunks]
+            texts = [self._embedding_text(c, title_hints) for c in new_chunks]
             vecs = self._encode(texts)
             store.add(vecs, new_ids)
             self._chunk_ids.extend(new_ids)
@@ -399,10 +412,29 @@ class VectorIndex:
         if not needs_full_rebuild and not force and store_size > 0:
             log("[doc-rag][index] Embedding settings changed -> forcing full rebuild")
 
-        self._run_full_build(chunks, log)
+        self._run_full_build(chunks, log, title_hints)
         return True
 
-    def _run_full_build(self, chunks: list[dict[str, Any]], log: Any) -> None:
+    @staticmethod
+    def _embedding_text(chunk: dict[str, Any], title_hints: dict[str, str] | None) -> str:
+        """Text to encode for `chunk`: raw text or a context-prefixed one.
+
+        title_hints maps doc_id -> title (fallback: the doc_id's chunk_id
+        prefix before ":" -- the pipeline always sets doc_id, but direct
+        callers may pass chunks without it).
+        """
+        title = ""
+        if title_hints:
+            doc_id = str(chunk.get("doc_id", "") or str(chunk.get("chunk_id", "")).split(":")[0])
+            title = title_hints.get(doc_id, "") or ""
+        return build_embedding_text(chunk, title)
+
+    def _run_full_build(
+        self,
+        chunks: list[dict[str, Any]],
+        log: Any,
+        title_hints: dict[str, str] | None = None,
+    ) -> None:
         """Rebuild the index from scratch over `chunks`.
 
         Extracted from build() so the corrupt-meta fallthrough reuses the
@@ -420,7 +452,7 @@ class VectorIndex:
         weights_sha256 = model_paths.fingerprint_for_cfg(self._cfg) or ""
         cfg_fingerprint = config_fingerprint(self._cfg) or ""
         self._emit("embed", 0, len(chunks))
-        texts = [str(c.get("text", "")) for c in chunks]
+        texts = [self._embedding_text(c, title_hints) for c in chunks]
         vecs = self._encode(texts)
         self._emit("index", len(chunks), len(chunks))
         dim = int(vecs.shape[1])
