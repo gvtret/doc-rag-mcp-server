@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from doc_rag.raglib import model_loader as model_loader
+from doc_rag.server.lexical_index import LexicalIndex, get_lexical_index, reset_lexical_cache
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ _VECTOR_INDEX_CACHE: collections.OrderedDict[str, dict[str, Any]] = collections.
 def invalidate_index_cache() -> None:
     """Drop every cached VectorIndex (e.g. after an ingest/rebuild job)."""
     _VECTOR_INDEX_CACHE.clear()
+    reset_lexical_cache()
 
 
 def _vector_index_cache_paths(cfg: dict[str, Any], root: str, namespace: str) -> tuple[str, str]:
@@ -505,6 +507,19 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.split(r"[\s\W]+", text.lower()) if len(t) > 1]
 
 
+def _chunks_jsonl_path() -> str | None:
+    """Absolute path of the corpus chunks.jsonl (or None when absent).
+
+    Used as the LexicalIndex singleton cache key: one build per corpus
+    revision, mtime-validated like _CHUNKS_CACHE.
+    """
+    root = project_root()
+    paths = load_config().get("paths", {}) or {}
+    chunks_dir = paths.get("chunks_dir", "build/chunks_jsonl")
+    path = os.path.join(root, chunks_dir, "chunks.jsonl")
+    return path if os.path.exists(path) else None
+
+
 def chunk_meta_from_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build the chunk_id -> metadata map VectorIndex.search_with_filter needs.
 
@@ -554,74 +569,29 @@ def lexical_search(
     top_k: int,
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Improved lexical search with tokenization, IDF weighting, and phrase
-    matching. Filters apply before scoring; unknown filter keys raise
-    ValueError (fail loud, same policy as the vector path)."""
+    """BM25 lexical search over the precomputed index (Task 14).
+
+    The index is a mtime-keyed singleton over chunks.jsonl, so the corpus
+    is tokenized once per revision instead of on every query (the old
+    scorer recomputed DF over all chunks per request: seconds at 20k
+    chunks). Filters apply before scoring; unknown filter keys raise
+    ValueError (fail loud, same policy as the vector path). When the
+    corpus did not come from the cached chunks.jsonl (synthetic lists in
+    tests, sub-selected chunk sets), the index is built fresh.
+    """
     q = (query or "").strip()
     if not q:
         return []
 
-    # Fail loud on unknown keys: a typo would silently filter nothing.
-    if filters:
-        from doc_rag.raglib.vector_index import _validate_filter_keys
+    chunks_path = _chunks_jsonl_path()
+    if chunks_path is not None and chunks is load_chunks(load_config()):
+        idx = get_lexical_index(chunks, chunks_path)
+    else:
+        idx = LexicalIndex.build(chunks)
 
-        _validate_filter_keys(filters)
-
-    # Metadata pre-filter BEFORE scoring: a filter matching nothing must stay
-    # empty, not degrade to unfiltered results.
-    if filters:
-        chunks = [c for c in chunks if _chunk_passes_filters(c, filters)]
-        if not chunks:
-            return []
-
-    query_tokens = _tokenize(q)
-    q_lower = q.lower()
-
-    # Precompute document frequency for IDF
-    df: dict[str, int] = {}
-    n_docs = len(chunks)
-    for ch in chunks:
-        txt = str(ch.get("text", ""))
-        seen = set(_tokenize(txt))
-        for t in seen:
-            df[t] = df.get(t, 0) + 1
-
-    scored: list[dict[str, Any]] = []
-    for ch in chunks:
-        txt = str(ch.get("text", ""))
-        hay = txt.lower()
-        score = 0.0
-
-        # Exact phrase match (highest weight)
-        phrase_count = hay.count(q_lower)
-        if phrase_count > 0:
-            score += 10.0 + phrase_count * 3.0
-
-        # Token-level TF-IDF scoring
-        doc_tokens = _tokenize(txt)
-        tf: dict[str, int] = {}
-        for t in doc_tokens:
-            tf[t] = tf.get(t, 0) + 1
-
-        for qt in query_tokens:
-            if qt in tf:
-                term_tf = 1.0 + float(tf[qt])
-                doc_freq = df.get(qt, 1)
-                idf = float(n_docs) / float(doc_freq) if doc_freq > 0 else 1.0
-                score += term_tf * idf * 0.5
-
-        # Bonus for matching many query tokens
-        matched = sum(1 for qt in query_tokens if qt in tf)
-        if query_tokens and matched > 0:
-            score += float(matched) / float(len(query_tokens)) * 2.0
-
-        if score > 0:
-            item = dict(ch)
-            item["score"] = round(score, 4)
-            scored.append(item)
-
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[: max(1, top_k)]
+    hits = idx.search(q, top_k, filters=filters)
+    # Materialize results as full chunk dicts (same shape as before).
+    return [dict(chunks[i], score=round(score, 4)) for i, score in hits]
 
 
 def semantic_search(
@@ -831,21 +801,24 @@ def semantic_search(
 def _rrf_fusion(
     *ranked_lists: list[dict[str, Any]],
     k: int = 60,
+    weights: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion of multiple ranked lists.
 
     Each list is ordered best-first. Chunks are identified by chunk_id.
-    Final score = sum(1 / (k + rank_i)) across all lists containing
-    the chunk. Returns merged list sorted by fused score descending.
+    Final score = sum(weights[i] / (k + rank + 1)) across all lists
+    containing the chunk (weights default to 1.0 per list). Returns the
+    merged list sorted by fused score descending.
     """
     scores: dict[str, float] = {}
     chunks_by_id: dict[str, dict[str, Any]] = {}
-    for ranked in ranked_lists:
+    for list_no, ranked in enumerate(ranked_lists):
+        w = float(weights[list_no]) if weights and list_no < len(weights) else 1.0
         for rank, item in enumerate(ranked):
             cid = item.get("chunk_id", "")
             if not cid:
                 continue
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            scores[cid] = scores.get(cid, 0.0) + w / (k + rank + 1)
             if cid not in chunks_by_id:
                 chunks_by_id[cid] = dict(item)
 
@@ -867,7 +840,13 @@ def hybrid_search(
     lexical_weight: float = 0.5,
     semantic_weight: float = 0.5,
 ) -> list[dict[str, Any]]:
-    """Hybrid search: combine lexical + semantic via RRF."""
+    """Hybrid search: combine lexical + semantic via RRF.
+
+    lexical_weight/semantic_weight weight the two channels in the fusion
+    (lists arrive semantic-first, so weights=[semantic_weight,
+    lexical_weight]); previously these parameters were accepted but
+    silently unused.
+    """
     lex_results = lexical_search(chunks, query, top_k * 2, filters=filters)
     sem_results = semantic_search(
         cfg, chunks, query, top_k * 2, namespace=namespace, filters=filters
@@ -881,7 +860,7 @@ def hybrid_search(
         return []
     if len(lists) == 1:
         return lists[0][:top_k]
-    return _rrf_fusion(*lists)[:top_k]
+    return _rrf_fusion(*lists, k=60, weights=[semantic_weight, lexical_weight])[:top_k]
 
 
 def doc_search(
