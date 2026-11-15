@@ -334,11 +334,14 @@ class VectorIndex:
     ) -> bool:
         """Build or update the index from chunk dicts.
 
-        title_hints maps doc_id -> document title hint; when given, the
-        EMBEDDING text of each chunk gets a "{title} > {section_path}"
-        context prefix (via build_embedding_text). Stored chunk text and
-        served results are NOT changed -- only the encoded input. Queries
-        are encoded without a prefix.
+        title_hints maps doc_id -> document title hint and feeds the
+        TITLE part of the embedding context prefix: the EMBEDDING text of
+        each chunk becomes "{title} > {section_path}" (via
+        build_embedding_text). title_hints=None only disables the title
+        part -- the section_path part of the prefix still applies (that
+        is the recall fix itself, independent of titles). Stored chunk
+        text and served results are NOT changed -- only the encoded
+        input. Queries are encoded without a prefix.
 
         Returns True if index is available after build.
         """

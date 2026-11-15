@@ -15,6 +15,7 @@ from doc_rag.raglib.atomic import atomic_write_text
 from doc_rag.raglib.audit_log import record_event as _audit
 from doc_rag.raglib.blocks import BLOCKS_SCHEMA_VERSION, Block, dump_blocks
 from doc_rag.raglib.edition_year import resolve_edition_year
+from doc_rag.raglib.embedding_text import TITLE_HINT_MAX_CHARS
 from doc_rag.raglib.parsers import parse_document
 from doc_rag.raglib.utils import ensure_dir, list_files_recursive, safe_slug
 
@@ -36,10 +37,11 @@ def _title_hints_for_index(manifest_path: str) -> dict[str, str]:
     """doc_id -> title_hint map for embedding prefixes, from the manifest.
 
     Best-effort: a missing, unreadable or malformed manifest yields {}
-    (build() then embeds raw text, exactly the pre-task behaviour).
-    Titles are stripped and capped at 80 chars by build_embedding_text's
-    sanitization; garbage filenames (e.g. rfc1928.errata) are passed as
-    is -- operator markup can improve them later.
+    (build() then skips the title part of the prefix; the section_path
+    part still applies). Titles are stripped and capped at
+    TITLE_HINT_MAX_CHARS (from embedding_text); garbage filenames
+    (e.g. rfc1928.errata) are passed as is -- operator markup can
+    improve them later.
     """
     try:
         with open(manifest_path, encoding="utf-8") as f:
@@ -56,7 +58,7 @@ def _title_hints_for_index(manifest_path: str) -> dict[str, str]:
         did = d.get("doc_id")
         th = d.get("title_hint")
         if isinstance(did, str) and did and isinstance(th, str) and th.strip():
-            hints[did] = th.strip()[:80]
+            hints[did] = th.strip()[:TITLE_HINT_MAX_CHARS]
     return hints
 
 
@@ -70,8 +72,9 @@ def _build_index_with_progress(
 
     Shared by ingest/rebuild/rebuild-index so the UI always sees the
     indexing phase (embed X/N) regardless of the entry point. title_hints
-    (doc_id -> title) feeds the embedding context prefixes; None keeps
-    the plain-text embedding behaviour.
+    (doc_id -> title) feeds the TITLE part of the embedding context
+    prefix; None only disables the title part -- the section_path part
+    of the prefix still applies (see build_embedding_text).
     """
     vi = _get_vector_index(cfg)
     cb = _PROGRESS_CB

@@ -17,7 +17,15 @@ it to the prefix would duplicate it.
 The prefix carries a budget of PREFIX_TOKEN_BUDGET tokens, measured
 with chunking_meta.count_tokens. When the combined prefix is over
 budget, title_hint is truncated first (it is the least specific part),
-then section_path; the separator stays valid (no dangling " > ").
+then section_path; the separator stays valid (no dangling " > "), and
+trimmed parts carry no trailing whitespace.
+
+SEPARATE FROM CHUNK_BUDGET: the prefix lives ON TOP of the chunk
+text budget (CHUNK_MAX_TOKENS = 504 in chunking_meta), so a saturated
+chunk embeds up to 504 + 40 + separator tokens. embeddings.max_seq_length
+must therefore be >= 512 + PREFIX_TOKEN_BUDGET (40) + headroom -- the
+deployed config uses 576. Without that headroom the model silently
+truncates the tail of the embedding input (no error, lost tokens).
 """
 
 from __future__ import annotations
@@ -42,11 +50,12 @@ def _sanitize_title_hint(title_hint: Any) -> str:
 
 
 def _truncate_to_budget(prefix: str, budget: int) -> str:
-    """Truncate `prefix` to at most `budget` tokens, keeping it whole-word.
+    """Truncate `prefix` to at most `budget` tokens, cutting at char level.
 
-    Chops characters off the end in small steps until the token count
-    fits; the loop is bounded because count_tokens is monotone in text
-    length (both the real tokenizer and the len//4 fallback).
+    NOT word-whole: binary search finds the largest character cut whose
+    token count fits the budget (count_tokens is monotone in text length
+    for both the real tokenizer and the len//4 fallback, so bisect is
+    exact). A cut may land mid-word; callers rstrip the result.
     """
     if count_tokens(prefix) <= budget:
         return prefix
@@ -92,12 +101,14 @@ def _trim_prefix(title: str, section_path: str) -> tuple[str, str]:
             else:
                 hi = mid - 1
         if best > 0:
-            return title[:best], section_path
+            # rstrip: a char-level cut can leave trailing whitespace, which
+            # would otherwise render the separator as "  > ".
+            return title[:best].rstrip(), section_path
         # No title cut fits: drop the title, budget section_path alone.
-        return "", _truncate_to_budget(section_path, PREFIX_TOKEN_BUDGET)
+        return "", _truncate_to_budget(section_path, PREFIX_TOKEN_BUDGET).rstrip()
 
     # section_path only (title absent or dropped): truncate it.
-    return "", _truncate_to_budget(section_path, PREFIX_TOKEN_BUDGET)
+    return "", _truncate_to_budget(section_path, PREFIX_TOKEN_BUDGET).rstrip()
 
 
 def build_embedding_text(chunk: dict[str, Any], title_hint: str | None) -> str:
@@ -110,14 +121,17 @@ def build_embedding_text(chunk: dict[str, Any], title_hint: str | None) -> str:
     The prefix is truncated to PREFIX_TOKEN_BUDGET tokens, title first.
     """
     text = str(chunk.get("text", ""))
-    is_table = chunk.get("is_table") is True
+    is_table = bool(chunk.get("is_table"))
     section_path = str(chunk.get("section_path", "") or "").strip()
 
     title = _sanitize_title_hint(title_hint)
     if is_table:
         # section_path is already IN the table text (task 12): prefixing
-        # it again would duplicate it. Title only.
-        return f"{title}\n\n{text}" if title else text
+        # it again would duplicate it. Title only, same 40-token budget
+        # as the full prefix (a filename-derived title can be long).
+        if title:
+            return f"{_truncate_to_budget(title, PREFIX_TOKEN_BUDGET).rstrip()}\n\n{text}"
+        return text
 
     if not section_path:
         # A lone title does not prefix: without a section_path there is no
