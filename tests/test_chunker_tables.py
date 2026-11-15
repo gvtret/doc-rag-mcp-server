@@ -1,8 +1,9 @@
 """Tests for table chunking (task 12).
 
 Covers:
-- a table within the 504-token cap stays ONE chunk whose text starts
-  with the section_path line + header line, with no summary sibling;
+- a table within the 504-token cap stays ONE chunk whose text is
+  exactly the section_path line + header line + data rows, with no
+  summary sibling;
 - an oversized (~14k real tokens) table splits at row boundaries:
   every chunk starts with the same prefix, every chunk fits the hard
   cap, and no line is cut mid-row;
@@ -16,8 +17,10 @@ cleanly on machines without a local model checkout.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -111,7 +114,8 @@ def _assert_no_summary(chunks: list[dict]) -> None:
 
 def test_small_table_single_chunk_with_prefix() -> None:
     """Table within the cap -> ONE chunk, prefixed, no summary sibling."""
-    table = _block(type="table", text=_HEADER + "\n| a | b | c | d |\n| e | f | g | h |")
+    row_a, row_b = "| a | b | c | d |", "| e | f | g | h |"
+    table = _block(type="table", text=_HEADER + "\n" + row_a + "\n" + row_b)
     blocks = [
         _block(type="heading", level=1, text=_SECTION),
         table,
@@ -120,9 +124,9 @@ def test_small_table_single_chunk_with_prefix() -> None:
     table_chunks = [c for c in chunks if c.get("is_table")]
     assert len(table_chunks) == 1
     chunk = table_chunks[0]
-    # text starts with section_path line, then the table header line
-    assert chunk["text"].startswith(_PREFIX + "\n")
-    assert chunk["text"].count("\n") >= 2  # data rows survive
+    # The exact expected line set: section_path, header, then both data
+    # rows, in order, with nothing else mixed in.
+    assert chunk["text"].split("\n") == [_SECTION, _HEADER, row_a, row_b]
     assert not chunk.get("is_table_fragment"), "small table is not a fragment"
     assert chunk["section_path"] == _SECTION
     # whole chunk fits the hard cap
@@ -184,3 +188,148 @@ def test_empty_table_no_chunks() -> None:
         chunks = chunk_recursive([_block(type="table", text=text)], target_tokens=512)
         assert not [c for c in chunks if c.get("is_table")], f"text={text!r}"
         _assert_no_summary(chunks)
+
+
+# --------------------------------------------------------------------------
+# Pipeline persistence (T12 review finding 3): is_table_fragment survives
+# into chunks.jsonl, and is absent for whole (unsplit) tables.
+# --------------------------------------------------------------------------
+
+
+def _make_pipeline_root(base: Path) -> Path:
+    """Minimal corpus root with recursive chunking, like test_atomic_writes."""
+    import textwrap
+
+    config_dir = base / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    for d in [
+        "build/docs_md",
+        "build/chunks",
+        "build/blocks",
+        "build/index",
+        "sources/archived",
+        "sources/incoming",
+    ]:
+        (base / d).mkdir(parents=True, exist_ok=True)
+    (base / "config" / "config.yaml").write_text(
+        textwrap.dedent("""\
+        paths:
+          sources_archived: sources/archived
+          sources_incoming: sources/incoming
+          docs_md_dir: build/docs_md
+          chunks_dir: build/chunks
+          manifest_path: build/manifest.json
+          blocks_dir: build/blocks
+          index_dir: build/index
+        parsing:
+          pdf_backend: docling
+        chunking:
+          strategy: recursive
+          target_tokens: 512
+          overlap_tokens: 64
+        embeddings:
+          model_name: BAAI/bge-small-en-v1.5
+          device: cpu
+        sources:
+          archive_after_ingest: false
+          incremental_ingest: false
+    """)
+    )
+    return base / "config" / "config.yaml"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def test_pipeline_persists_is_table_fragment(tmp_path: Path) -> None:
+    """chunks.jsonl carries is_table_fragment on split-table pieces and
+    NOT on whole tables (pipeline copy sites, review finding 3)."""
+    import json as _json
+
+    from doc_rag.raglib.pipeline import rebuild
+
+    config_path = _make_pipeline_root(tmp_path)
+    # One doc with an oversized table: .md/.txt sources go through the
+    # baseline parser (single paragraph block), so patch parse_document
+    # to return a real table block list.
+    archived = tmp_path / "sources" / "archived"
+    src = archived / "tables.txt"
+    src.write_text("table document")
+
+    table_small = _HEADER + "\n" + _ROW
+    # Distinct rows: _postprocess_chunks md5-dedups identical chunk texts,
+    # so identical rows across fragments would collapse the pieces before
+    # we can assert on them (see report "concerns").
+    table_big = (
+        _HEADER
+        + "\n"
+        + "\n".join(
+            f"| датчик {i:03d} | температура | давление | состояние канала |" for i in range(900)
+        )
+    )
+
+    def fake_parse(cfg, path):
+        from doc_rag.raglib.blocks import blocks_to_markdown
+
+        blocks = [
+            Block(
+                block_id="tmp:0000",
+                doc_id="tmp",
+                type="heading",
+                level=1,
+                text=_SECTION,
+                source_backend="direct",
+            ),
+            Block(
+                block_id="tmp:0001",
+                doc_id="tmp",
+                type="table",
+                text=table_small,
+                source_backend="direct",
+            ),
+            Block(
+                block_id="tmp:0002",
+                doc_id="tmp",
+                type="table",
+                text=table_big,
+                source_backend="direct",
+            ),
+        ]
+        return {
+            "markdown": blocks_to_markdown(blocks, "tables"),
+            "tables": [],
+            "stats": {},
+            "blocks": blocks,
+        }
+
+    from doc_rag.raglib import pipeline
+
+    with patch.object(pipeline, "parse_document", side_effect=fake_parse):
+        rebuild(str(config_path), force=True, skip_index=True)
+
+    chunks_path = tmp_path / "build" / "chunks" / "chunks.jsonl"
+    persisted = _read_jsonl(chunks_path)
+    assert persisted, "no chunks persisted"
+    table_chunks = [c for c in persisted if c.get("is_table")]
+    assert table_chunks, "no is_table chunks persisted"
+    _assert_no_summary(persisted)
+
+    fragments = [c for c in table_chunks if c.get("is_table_fragment")]
+    wholes = [c for c in table_chunks if not c.get("is_table_fragment")]
+    # the oversized table split -> fragments exist; the small table did not
+    assert fragments, "fragments of the oversized table must be persisted"
+    assert len(fragments) > 1, "oversized table must yield multiple pieces"
+    assert any(count_tokens(c["text"]) <= CHUNK_MAX_TOKENS for c in fragments)
+    # each fragment still carries the prefixed header line
+    for c in fragments:
+        lines = c["text"].split("\n")
+        assert lines[0] == _SECTION and lines[1] == _HEADER
+    # the small table persisted whole: exactly one non-fragment table chunk
+    # whose text is the full table (header + one row) and has no fragment flag
+    assert len(wholes) == 1, f"expected exactly 1 whole table chunk, got {len(wholes)}"
+    assert _json.dumps(wholes[0], ensure_ascii=False).count("is_table_fragment") == 0
+    assert wholes[0]["text"].startswith(_PREFIX)
+    _assert_no_summary(table_chunks)

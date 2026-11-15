@@ -1,7 +1,8 @@
 """Structure-aware recursive chunker.
 
 Walks typed blocks from the parser, grouping siblings into chunks while
-respecting headings as hard boundaries and tables as atomic units.
+respecting headings as hard boundaries and keeping table rows intact
+across chunk boundaries.
 
 The fixed-size splitter (`_chunk_text`) works on raw Markdown text and
 has no awareness of document structure. This module uses the typed
@@ -117,11 +118,18 @@ def _table_prefix(section_path: str, header_line: str) -> str:
 def _split_table_rows(text: str, section_path: str, cap: int) -> list[str]:
     """Split a table's text into row-boundary pieces within `cap` tokens.
 
-    Every piece starts with the section-path + header prefix; the data
-    rows are packed greedily under a budget of cap minus the prefix's
-    real token cost. Breaks only at ``\\n`` (between rows), never
-    mid-line. A single row larger than the budget still becomes its own
-    piece (the final cap pass handles that degenerate case).
+    Every piece starts with the section-path + header prefix; data rows
+    are packed greedily, measuring the JOINED candidate text with the
+    real tokenizer (summing per-row counts underfills chunks, because
+    tokenization is subadditive). Breaks only at ``\\n`` (between rows),
+    never mid-line.
+
+    Degenerate cases (accepted degradation, handled by the final cap
+    pass, which may cut mid-row):
+    - a single row larger than the budget becomes its own piece;
+    - when the prefix itself is at/above the cap (the data budget floors
+      at 1 token), pieces are cut mid-row and subsequent pieces lose the
+      prefix -- same degradation family as the single-row case.
     """
     lines = [ln for ln in text.split("\n") if ln.strip()]
     header_line = lines[0] if lines else ""
@@ -133,14 +141,16 @@ def _split_table_rows(text: str, section_path: str, cap: int) -> list[str]:
 
     pieces: list[str] = []
     current: list[str] = []
-    current_tokens = 0
     for row in data_rows:
-        row_tokens = _estimate_tokens(row)
-        if current and current_tokens + row_tokens > budget:
+        candidate = current + [row]
+        # Measure the joined text, not the sum of per-row counts: the
+        # tokenizer's subadditivity means summing underestimates the
+        # joined block by ~13% and leaves chunk budget unused.
+        if current and _estimate_tokens("\n".join(candidate)) > budget:
             pieces.append(prefix + "\n" + "\n".join(current))
-            current, current_tokens = [], 0
-        current.append(row)
-        current_tokens += row_tokens
+            current = [row]
+        else:
+            current = candidate
     if current:
         pieces.append(prefix + "\n" + "\n".join(current))
     elif header_line and not pieces:
@@ -276,8 +286,9 @@ def _chunk_node(
         if len(group) == 1 and group[0].type == "table":
             # Table chunks carry a section_path + header prefix in their
             # text; oversized tables split at row boundaries. No summary
-            # chunks are generated (T12 removed them: they made up ~12%
-            # of the index and displaced real results).
+            # chunks are generated (T12 removed them: they made up a
+            # significant share of the index, see audit, and displaced
+            # real results).
             _flush_pending()
             table_block = group[0]
             pieces = _split_table_rows(table_block.text, path, CHUNK_MAX_TOKENS)
