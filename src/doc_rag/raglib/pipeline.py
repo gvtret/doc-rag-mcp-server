@@ -101,19 +101,34 @@ def _hash_file(path: str) -> str:
 def _chunk_text(text: str, target_tokens: int, overlap_tokens: int) -> list[str]:
     if not text.strip():
         return []
-    chars_per_token = 4
-    window = target_tokens * chars_per_token
-    overlap = overlap_tokens * chars_per_token
-    step = max(1, window - overlap)
+    from doc_rag.raglib.chunking_meta import CHUNK_MAX_TOKENS
 
-    chunks = []
+    # Window/step are now measured in real bge-m3 tokens. The window is
+    # min(target, hard cap) so no emitted chunk can exceed the model's
+    # effective 512-token input (504 + special-token headroom).
+    window_tokens = max(1, min(target_tokens, CHUNK_MAX_TOKENS))
+    overlap = max(0, min(overlap_tokens, window_tokens - 1))
+    # Convert the token budget to a char window with a conservative
+    # chars/token ratio (2 for Cyrillic-heavy corpora) and then verify
+    # each chunk with count_tokens, shrinking oversized ones.
+    chars_per_token = 2
+    window = window_tokens * chars_per_token
+    step = max(1, window - overlap * chars_per_token)
+
+    chunks: list[str] = []
     start = 0
     n = len(text)
     while start < n:
         end = min(n, start + window)
         chunk = text[start:end].strip()
         if chunk:
-            chunks.append(chunk)
+            # Token-accurate correction: cut the chunk down until it fits
+            # the cap (rare: the char window already under-counts chars
+            # per token for Cyrillic, but ASCII-heavy text can exceed).
+            from doc_rag.raglib.chunker_recursive import _split_text_token_budget
+
+            for piece in _split_text_token_budget(chunk, window_tokens):
+                chunks.append(piece.strip())
         if end >= n:
             break
         start += step

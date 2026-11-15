@@ -6,8 +6,9 @@ changing any of these inputs changes the fingerprint, which forces a full
 index rebuild (vectors and texts would otherwise silently desynchronize
 from the configuration that produced them).
 
-Stdlib-only: imported by vector_index and migrate_vectors, which must not
-pull in heavy deps just to compute a hash.
+Also hosts ``count_tokens`` — the real bge-m3 token count used by the
+chunkers for sizing (replaces the len//4 estimate). The tokenizer is
+loaded lazily once per process and shared across threads.
 """
 
 from __future__ import annotations
@@ -15,17 +16,24 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
 # Bump when anything that determines chunk boundaries OR chunk text changes
-# for the same config values (1 = current len//4 behaviour).
-# 3 = postprocessing regex no longer collapses newlines, and rebuild runs
-# postprocessing on the full merged chunk set (chunk text changed).
-CHUNKING_SCHEMA_VERSION = "3"
+# for the same config values (1 = len//4 sizing, 2 = postprocessing v2,
+# 3 = postprocessing full-set rebuild).
+# 4 = chunk sizing moved to the real bge-m3 tokenizer with a hard 504-token
+# cap: chunk boundaries change for the same config values.
+CHUNKING_SCHEMA_VERSION = "4"
 # Bump when the embedding-text scheme changes (prefixes, metadata injection,
 # trimming rules), even if chunk boundaries stay the same.
 EMBEDDING_TEXT_VERSION = "1"
+
+#: Hard cap on real (bge-m3) tokens per chunk, including tables. The
+#: embedding model truncates inputs at 512 tokens; 8 tokens of headroom
+#: absorb special tokens ([CLS]/[SEP]/[EOS]-style) added by the encoder.
+CHUNK_MAX_TOKENS = 504
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +53,101 @@ def _warn_once(flag: str, message: str) -> None:
         _warned_bad_chunking_values = True
     if not already:
         logger.warning(message)
+
+
+# --------------------------------------------------------------------------
+# count_tokens: real bge-m3 token counting with lazy tokenizer singleton
+# --------------------------------------------------------------------------
+
+_tokenizer_lock = threading.Lock()
+_tokenizer_cache: dict[str, Any] = {}  # path -> tokenizers.Tokenizer or None
+
+
+def _load_tokenizer(tokenizer_path: str) -> Any:
+    """Load and cache a Tokenizer for `tokenizer_path` (or None on failure).
+
+    The double-checked-lock singleton: the first caller loads the file
+    while holding the lock; concurrent callers block and then reuse the
+    cached object. A failed load (missing file / no `tokenizers` package)
+    is cached as None so we do not retry on every call.
+    """
+    with _tokenizer_lock:
+        if tokenizer_path in _tokenizer_cache:
+            return _tokenizer_cache[tokenizer_path]
+        tok = None
+        try:
+            from tokenizers import Tokenizer
+
+            tok = Tokenizer.from_file(tokenizer_path)
+        except FileNotFoundError:
+            _warn_once(
+                "no_tokenizer",
+                "tokenizer.json not found: count_tokens falls back to "
+                "len(text)//4 (chunk sizes become estimates)",
+            )
+        except ImportError:
+            _warn_once(
+                "no_tokenizer",
+                "tokenizers package not installed: count_tokens falls back "
+                "to len(text)//4 (chunk sizes become estimates)",
+            )
+        except Exception as e:  # malformed tokenizer.json and the like
+            _warn_once(
+                "no_tokenizer",
+                f"tokenizer load failed ({e}): count_tokens falls back to "
+                "len(text)//4 (chunk sizes become estimates)",
+            )
+        _tokenizer_cache[tokenizer_path] = tok
+        return tok
+
+
+def _default_tokenizer_file() -> str | None:
+    """Default tokenizer.json path resolved without a cfg at hand.
+
+    Uses resolve_model_path({}) which honours DOC_RAG_ROOT / repo-root
+    discovery; returns None when no model dir (or no tokenizer.json in
+    it) can be found.
+    """
+    from doc_rag.raglib.model_paths import resolve_model_path
+
+    model_dir = resolve_model_path({})
+    if model_dir is None:
+        return None
+    candidate = model_dir / "tokenizer.json"
+    return str(candidate) if candidate.is_file() else None
+
+
+def count_tokens(text: str, tokenizer_path: str | None = None) -> int:
+    """Real bge-m3 token count for `text`.
+
+    Uses the model's tokenizer.json (path resolved via the shared
+    model-path discovery when `tokenizer_path` is None). Without a
+    usable tokenizer, falls back to max(1, len(text)//4) with a WARN
+    logged once per process.
+    """
+    if not text:
+        return 0
+    if tokenizer_path is None:
+        tokenizer_path = _default_tokenizer_file()
+    if tokenizer_path is None:
+        _warn_once(
+            "no_tokenizer",
+            "no model dir / tokenizer.json found: count_tokens falls back "
+            "to len(text)//4 (chunk sizes become estimates)",
+        )
+        return max(1, len(text) // 4)
+    tok = _load_tokenizer(tokenizer_path)
+    if tok is None:
+        return max(1, len(text) // 4)
+    return len(tok.encode(text).ids)
+
+
+def reset_count_tokens_for_tests() -> None:
+    """Drop the tokenizer cache and WARN latches (test isolation only)."""
+    global _warned_no_tokenizer
+    with _tokenizer_lock:
+        _tokenizer_cache.clear()
+    _warned_no_tokenizer = False
 
 
 def _tokenizer_sha256(tokenizer_path: Path | None) -> str:
