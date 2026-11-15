@@ -484,3 +484,155 @@ def test_vectorindex_cache_missing_files_recreated(tmp_path, monkeypatch) -> Non
     # Files gone: new VectorIndex finds no index -> falls through to legacy
     # path, which also finds nothing -> None (no stale results served).
     assert out is None
+
+
+# --------------------------------------------------------------------------
+# Task 15: hot-path caches
+# --------------------------------------------------------------------------
+
+
+def _reset_retrieval_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fresh module-level caches so tests do not see state from other tests."""
+    monkeypatch.setattr(
+        retrieval, "_MANIFEST_CACHE", {"root": None, "mtime": None, "map": None, "manifest": None}
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_CHUNKS_CACHE",
+        {"path": None, "mtime": None, "chunks": None, "id_to_chunk": None},
+    )
+
+
+def test_indexed_catalog_manifest_served_from_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second indexed_catalog() call with unchanged manifest mtime must not
+    re-read/parse the manifest (cache hit on (root, mtime), task 15)."""
+    _reset_retrieval_caches(monkeypatch)
+
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        "paths:\n  manifest_path: build/manifest.json\n", encoding="utf-8"
+    )
+    manifest = {
+        "generated_at_utc": "2026-01-01T00:00:00Z",
+        "pipeline_version": "test",
+        "corpus_content_sha256": "cafe" * 8,
+        "documents": [
+            {"doc_id": "d1", "source_file": "sources/archived/a.pdf", "chunk_count": 1},
+        ],
+    }
+    (root / "build" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    monkeypatch.setattr("doc_rag.raglib.model_loader.status", lambda: {"ready": False})
+
+    import builtins
+
+    real_open = builtins.open
+    manifest_opens = []
+
+    def counting_open(file, *args, **kwargs):
+        if isinstance(file, (str, bytes)) and str(file).endswith("manifest.json"):
+            manifest_opens.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+
+    c1 = indexed_catalog()
+    assert c1["manifest_present"] is True
+    assert c1["document_count"] == 1
+    opens_after_first = len(manifest_opens)
+    assert opens_after_first >= 1
+
+    c2 = indexed_catalog()
+    # Cache hit: zero additional manifest opens between the two calls.
+    assert len(manifest_opens) == opens_after_first
+    assert c2["documents"] == c1["documents"]
+
+
+def test_indexed_catalog_corrupt_manifest_not_cached(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt (unparseable) manifest is never cached: the next call with
+    a repaired file must read it again."""
+    _reset_retrieval_caches(monkeypatch)
+
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        "paths:\n  manifest_path: build/manifest.json\n", encoding="utf-8"
+    )
+    mp = root / "build" / "manifest.json"
+    mp.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    monkeypatch.setattr("doc_rag.raglib.model_loader.status", lambda: {"ready": False})
+
+    c1 = indexed_catalog()
+    assert c1["manifest_present"] is False
+
+    import time
+
+    time.sleep(0.02)
+    mp.write_text(json.dumps({"documents": [{"doc_id": "d1"}]}), encoding="utf-8")
+    c2 = indexed_catalog()
+    assert c2["manifest_present"] is True
+    assert c2["document_count"] == 1
+
+
+def test_id_to_chunk_served_from_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """semantic_search with a filtered query must reuse the derived
+    chunk_id -> chunk dict across calls (same identity, task 15)."""
+    pytest.importorskip("faiss")
+    import yaml
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    # Real chunks.jsonl on disk so load_chunks returns the cached list
+    # (identity check in id_to_chunk_store requires it).
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "index": {"backend": "faiss", "metric": "ip"},
+                "mcp": {"retrieval_mode": "semantic"},
+                "paths": {
+                    "chunks_dir": "build/chunks_jsonl",
+                    "index_dir": "build/index",
+                    "manifest_path": "build/manifest.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    chunks = [
+        {"chunk_id": "d0:0", "doc_id": "d0", "text": "0", "source_file": "a.pdf"},
+        {"chunk_id": "d1:0", "doc_id": "d1", "text": "1", "source_file": "a.pdf"},
+    ]
+    chunks_dir = root / "build" / "chunks_jsonl"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+    _write_vector_index(root, ["0", "1"], chunk_ids=["d0:0", "d1:0"])
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    first = retrieval.doc_search("0", top_k=2, filters={"doc_id": "d0"})
+    assert [c["chunk_id"] for c in first] == ["d0:0"]
+    m1 = retrieval._CHUNKS_CACHE.get("id_to_chunk")
+    assert isinstance(m1, dict)
+    assert m1["d0:0"]["text"] == "0"
+
+    second = retrieval.doc_search("1", top_k=2, filters={"doc_id": "d1"})
+    assert [c["chunk_id"] for c in second] == ["d1:0"]
+    m2 = retrieval._CHUNKS_CACHE.get("id_to_chunk")
+    # Same dict object served from the cache (not rebuilt per query).
+    assert m1 is m2
