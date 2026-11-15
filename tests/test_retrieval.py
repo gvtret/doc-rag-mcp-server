@@ -636,3 +636,157 @@ def test_id_to_chunk_served_from_cache(tmp_path, monkeypatch: pytest.MonkeyPatch
     m2 = retrieval._CHUNKS_CACHE.get("id_to_chunk")
     # Same dict object served from the cache (not rebuilt per query).
     assert m1 is m2
+
+
+def _manifest_cache_setup(tmp_path) -> object:
+    """Shared corpus root for the cross-invalidation regression tests."""
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        "paths:\n  manifest_path: build/manifest.json\n", encoding="utf-8"
+    )
+    return root
+
+
+def _write_manifest_v1(root) -> None:
+    (root / "build" / "manifest.json").write_text(
+        json.dumps({"documents": [{"doc_id": "d1", "source_file": "sources/archived/a.pdf"}]}),
+        encoding="utf-8",
+    )
+
+
+def _write_manifest_v2(root) -> None:
+    (root / "build" / "manifest.json").write_text(
+        json.dumps({"documents": [{"doc_id": "d2", "source_file": "sources/archived/b.pdf"}]}),
+        encoding="utf-8",
+    )
+
+
+def test_manifest_map_invalidated_after_rewrite_manifest_first(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Order: map at T1 -> rewrite manifest -> indexed_catalog (fills
+    'manifest') -> _load_manifest_source_map must return the NEW map
+    (the stale one must not survive under the shared (root, mtime) key)."""
+    _reset_retrieval_caches(monkeypatch)
+    root = _manifest_cache_setup(tmp_path)
+    _write_manifest_v1(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    monkeypatch.setattr("doc_rag.raglib.model_loader.status", lambda: {"ready": False})
+
+    cfg = retrieval.load_config()
+    m1 = retrieval._load_manifest_source_map(cfg)
+    assert m1 == {"d1": "sources/archived/a.pdf"}
+
+    import time
+
+    time.sleep(0.02)
+    _write_manifest_v2(root)
+
+    # indexed_catalog parses the new revision and stamps it into the cache.
+    cat = indexed_catalog()
+    assert cat["document_count"] == 1
+    assert cat["documents"][0]["doc_id"] == "d2"
+
+    m2 = retrieval._load_manifest_source_map(cfg)
+    assert m2 == {"d2": "sources/archived/b.pdf"}
+
+
+def test_manifest_catalog_invalidated_after_rewrite_map_first(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reverse order: indexed_catalog at T1 -> rewrite manifest ->
+    _load_manifest_source_map (stamps its map) -> indexed_catalog must
+    return the NEW documents, not the stale cached ones."""
+    _reset_retrieval_caches(monkeypatch)
+    root = _manifest_cache_setup(tmp_path)
+    _write_manifest_v1(root)
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+    monkeypatch.setattr("doc_rag.raglib.model_loader.status", lambda: {"ready": False})
+
+    cfg = retrieval.load_config()
+    cat1 = indexed_catalog()
+    assert cat1["document_count"] == 1
+    assert cat1["documents"][0]["doc_id"] == "d1"
+
+    import time
+
+    time.sleep(0.02)
+    _write_manifest_v2(root)
+
+    # _load_manifest_source_map re-parses (mtime changed) and stamps its map.
+    m2 = retrieval._load_manifest_source_map(cfg)
+    assert m2 == {"d2": "sources/archived/b.pdf"}
+
+    cat2 = indexed_catalog()
+    assert cat2["document_count"] == 1
+    assert cat2["documents"][0]["doc_id"] == "d2"
+
+
+def test_id_to_chunk_invalidated_after_chunks_rewrite(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After chunks.jsonl is rewritten, load_chunks re-reads the list and
+    resets the derived id->chunk map (stale map must not survive)."""
+    pytest.importorskip("faiss")
+    import yaml
+
+    monkeypatch.setattr(
+        "doc_rag.raglib.vector_index._load_embedder", lambda cfg: _StubQueryEmbedder()
+    )
+    retrieval._VECTOR_INDEX_CACHE.clear()
+
+    root = tmp_path
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "index": {"backend": "faiss", "metric": "ip"},
+                "mcp": {"retrieval_mode": "semantic"},
+                "paths": {
+                    "chunks_dir": "build/chunks_jsonl",
+                    "index_dir": "build/index",
+                    "manifest_path": "build/manifest.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _write_chunks(chunk_id: str) -> None:
+        chunks_dir = root / "build" / "chunks_jsonl"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"chunk_id": chunk_id, "doc_id": "d0", "text": "x", "source_file": "a.pdf"},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    _write_chunks("d0:0")
+    _write_vector_index(root, ["0"], chunk_ids=["d0:0"])
+    monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+
+    assert retrieval.doc_search("0", top_k=2)  # fills chunks + id_to_chunk
+    m1 = retrieval._CHUNKS_CACHE.get("id_to_chunk")
+    assert isinstance(m1, dict) and "d0:0" in m1
+
+    import time
+
+    time.sleep(0.02)
+    # Rewrite BOTH chunks.jsonl and the index files: the vector index
+    # metadata still references the old chunk_id, so only rewriting
+    # chunks.jsonl would legitimately yield an empty semantic result.
+    _write_chunks("d0:1")
+    _write_vector_index(root, ["0"], chunk_ids=["d0:1"])
+
+    assert retrieval.doc_search("0", top_k=2)
+    m2 = retrieval._CHUNKS_CACHE.get("id_to_chunk")
+    assert isinstance(m2, dict)
+    # New revision -> new map object with the new chunk id.
+    assert m2 is not m1
+    assert "d0:1" in m2 and "d0:0" not in m2

@@ -191,9 +191,9 @@ def load_chunks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     _CHUNKS_CACHE["path"] = chunks_path
     _CHUNKS_CACHE["mtime"] = st.st_mtime
     _CHUNKS_CACHE["chunks"] = out
-    # Derived id->chunk map is built lazily by id_to_chunk_map() and stored
-    # here; kept None here so a fresh corpus load does not pay for the
-    # derivation when no filtered/semantic query follows.
+    # Derived id->chunk map is built lazily by id_to_chunk_store() and
+    # stored here; kept None here so a fresh corpus load does not pay for
+    # the derivation when no filtered/semantic query follows.
     _CHUNKS_CACHE["id_to_chunk"] = None
     return out
 
@@ -241,6 +241,10 @@ def _load_manifest_source_map(cfg: dict[str, Any]) -> dict[str, str]:
     _MANIFEST_CACHE["root"] = root
     _MANIFEST_CACHE["mtime"] = st.st_mtime
     _MANIFEST_CACHE["map"] = out
+    # Cross-invalidation: this entry was parsed from the CURRENT manifest,
+    # so a "manifest" dict cached under an older revision is stale -- drop
+    # it instead of leaving it tagged with the new (root, mtime) key.
+    _MANIFEST_CACHE["manifest"] = None
     return out
 
 
@@ -290,7 +294,9 @@ def _load_manifest_cached() -> dict[str, Any] | None:
     Same (root, mtime) key as the source-file map: ingest rewrites the
     manifest (new mtime), so a fresh parse is served after any rewrite.
     A corrupt or missing manifest is NOT cached -- the next call retries
-    the read. Callers must treat the returned dict as read-only.
+    the read. An EMPTY dict ({}) IS cached as valid: it is a legitimate
+    parse result (fresh index with zero documents), unlike a JSON error.
+    Callers must treat the returned dict as read-only.
     """
     cfg = load_config()
     root = str(cfg.get("_root", project_root()))
@@ -321,6 +327,10 @@ def _load_manifest_cached() -> dict[str, Any] | None:
     _MANIFEST_CACHE["root"] = root
     _MANIFEST_CACHE["mtime"] = st.st_mtime
     _MANIFEST_CACHE["manifest"] = data
+    # Cross-invalidation: same reasoning as in _load_manifest_source_map --
+    # a "map" derived from an older manifest revision is stale under the
+    # new (root, mtime) key.
+    _MANIFEST_CACHE["map"] = None
     return data
 
 
