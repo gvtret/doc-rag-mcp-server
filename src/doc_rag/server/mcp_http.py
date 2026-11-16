@@ -63,6 +63,12 @@ from doc_rag.raglib.pipeline import (
 from doc_rag.raglib.pipeline import (
     wipe_index as _pipeline_wipe_index,
 )
+from doc_rag.server.stats_helpers import (
+    build_sources_index,
+    count_chunks_per_doc,
+    make_size_resolver,
+    stat_size,
+)
 from doc_rag.raglib.utils import ensure_dir
 from doc_rag.server import metrics as _metrics
 from doc_rag.server.logging_setup import (
@@ -2164,66 +2170,16 @@ async def ui_doc_stats() -> JSONResponse:
         manifest_path = root / paths.get("manifest_path", "build/manifest.json")
         quality_dir = root / "build" / "quality"
 
-        # One-time index of every file under sources/ (basename -> path).
-        # Manifest entries may point into subdirectories (dnp3/, iec61850/,
-        # ...) or at paths that no longer exist; the old code looked only at
-        # the root of archived/ and incoming/ and reported a misleading
-        # "0 bytes" for everything else. On a basename collision (same name
-        # in two subdirectories) prefer archived, then incoming, so the
-        # resolved size is deterministic rather than FS-walk-order dependent.
-        sources_index: dict[str, Path] = {}
-        _bn_rank = {"archived": 0, "incoming": 1}
-        sources_root = root / "sources"
-        if sources_root.is_dir():
-            for p in sources_root.rglob("*"):
-                try:
-                    if not p.is_file():
-                        continue
-                except OSError:
-                    continue  # vanished mid-walk (ingest move), skip
-                name = p.name
-                prev = sources_index.get(name)
-                if prev is None:
-                    sources_index[name] = p
-                else:
-                    # rank 0 = archived, 1 = incoming, 2 = other subdirs
-                    rank_new = _bn_rank.get(p.parent.name, 2)
-                    rank_old = _bn_rank.get(prev.parent.name, 2)
-                    if rank_new < rank_old:
-                        sources_index[name] = p
+        # Shared size resolver (same as /ui/documents): exact manifest
+        # path -> legacy roots -> basename index under sources/.
+        sources_index = build_sources_index(root)
+        resolve_size = make_size_resolver(root, paths, sources_index)
 
-        def _stat_size(path: Path) -> int | None:
-            """st_size with TOCTOU/OSError safety: ingest moves files."""
-            try:
-                return path.stat().st_size
-            except OSError:
-                return None
-
-        def _resolve_size(source_file: str) -> int | None:
-            """Real byte size of the source file, or None when it is gone."""
-            # 1. The path exactly as recorded in the manifest.
-            cand = root / source_file
-            if cand.is_file():
-                size = _stat_size(cand)
-                if size is not None:
-                    return size
-            # 2. Legacy layout: basename in the root of archived/incoming.
-            for dir_key in ("sources_archived", "sources_incoming"):
-                d_rel = paths.get(dir_key)
-                if d_rel:
-                    cand = root / d_rel / os.path.basename(source_file)
-                    if cand.is_file():
-                        size = _stat_size(cand)
-                        if size is not None:
-                            return size
-            # 3. Same basename somewhere under sources/ (moved subdirectory).
-            hit = sources_index.get(os.path.basename(source_file))
-            if hit is not None:
-                size = _stat_size(hit)
-                if size is not None:
-                    return size
-            # File is gone from disk: report null, not 0.
-            return None
+        # One pass over chunks.jsonl for ALL doc_ids: the old code
+        # re-scanned the whole file per document (~12 s at 199 docs).
+        chunk_counts = count_chunks_per_doc(
+            root / paths.get("chunks_dir", "build/chunks_jsonl") / "chunks.jsonl"
+        )
 
         stats = []
         if manifest_path.is_file():
@@ -2244,19 +2200,7 @@ async def ui_doc_stats() -> JSONResponse:
                     except Exception:
                         pass
 
-                sz = _resolve_size(source_file)
-
-                # Get chunks count from chunks.jsonl
-                chunks_path = root / paths.get("chunks_dir", "build/chunks_jsonl") / "chunks.jsonl"
-                chunk_count = 0
-                if chunks_path.is_file():
-                    try:
-                        with chunks_path.open(encoding="utf-8") as f:
-                            for line in f:
-                                if doc_id in line:
-                                    chunk_count += 1
-                    except Exception:
-                        pass
+                sz = resolve_size(source_file)
 
                 # Get blocks count from quality
                 blocks = quality.get("blocks", {})
@@ -2269,7 +2213,7 @@ async def ui_doc_stats() -> JSONResponse:
                         "source_file": source_file,
                         "size_bytes": sz,
                         "size_mb": round(sz / 1024 / 1024, 2) if sz is not None else None,
-                        "chunk_count": chunk_count or d.get("chunk_count", 0),
+                        "chunk_count": chunk_counts.get(doc_id) or d.get("chunk_count", 0),
                         "quality_score": quality.get("score", d.get("quality_score", 0)),
                         # Per-doc quality reports have no "warning_count"
                         # key -- count the warnings list (the old lookup
@@ -2333,13 +2277,20 @@ def _build_documents_list() -> dict[str, Any]:
                     {
                         "path": str(p.relative_to(root)),
                         "basename": p.name,
-                        "size": p.stat().st_size,
+                        "size": stat_size(p),
                     }
                 )
         return out
 
     incoming_files = _scan_dir(incoming_dir)
     archived_files = _scan_dir(archived_dir)
+
+    # Same resolver as /ui/doc-stats: exact manifest path -> legacy roots
+    # -> basename index. Before this, the Documents page kept the old
+    # root-only lookup and rendered a dash for ~60 documents whose real
+    # size Stats showed fine.
+    sources_index = build_sources_index(root)
+    resolve_size = make_size_resolver(root, paths, sources_index)
 
     indexed_docs: list[dict[str, Any]] = []
     indexed_basenames: set[str] = set()
@@ -2356,14 +2307,9 @@ def _build_documents_list() -> dict[str, Any]:
                     continue
                 _seen_doc_ids.add(did)
                 indexed_basenames.add(bn)
-                sz = 0
-                for dir_key in ("sources_archived", "sources_incoming"):
-                    d_rel = cfg.get("paths", {}).get(dir_key)
-                    if d_rel:
-                        cand = root / d_rel / bn
-                        if cand.is_file():
-                            sz = cand.stat().st_size
-                            break
+                # null (not 0) when the source file is gone from disk;
+                # a real empty file keeps size 0 and is rendered as "0 B".
+                sz = resolve_size(sf)
                 indexed_docs.append(
                     {
                         "doc_id": did,

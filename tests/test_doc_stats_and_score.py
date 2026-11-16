@@ -54,13 +54,14 @@ def subcorpus(built_corpus):
 
 
 class TestDocStatsSizeResolution:
-    def _sizes(self, root: Path) -> dict[str, int | None]:
+    def _sizes(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, int | None]:
         pytest.importorskip("fastapi")
         from fastapi.testclient import TestClient
 
-        import os
-
-        os.environ["DOC_RAG_ROOT"] = str(root)
+        # monkeypatch auto-restores the env var even when an assert fails
+        # (the previous manual set/pop leaked DOC_RAG_ROOT into later
+        # tests and clobbered fixture-set values).
+        monkeypatch.setenv("DOC_RAG_ROOT", str(root))
         from doc_rag.server.mcp_http import app
 
         c = TestClient(app)
@@ -68,28 +69,26 @@ class TestDocStatsSizeResolution:
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
-        docs = {d["doc_id"]: d["size_bytes"] for d in data["documents"]}
-        os.environ.pop("DOC_RAG_ROOT", None)
-        return docs
+        return {d["doc_id"]: d["size_bytes"] for d in data["documents"]}
 
-    def test_root_level_file_size(self, subcorpus):
+    def test_root_level_file_size(self, subcorpus, monkeypatch):
         """Root-level archived file keeps its real size."""
         root = subcorpus
-        sizes = self._sizes(root)
+        sizes = self._sizes(root, monkeypatch)
         assert sizes["doc-aaa"] == len(b"%PDF-1.4 stub\n")
 
-    def test_subdirectory_file_size(self, subcorpus):
+    def test_subdirectory_file_size(self, subcorpus, monkeypatch):
         """A file stored under sources/archived/<subdir>/ is found by its
         manifest source_file (previously reported as 0 bytes)."""
         root = subcorpus
-        sizes = self._sizes(root)
+        sizes = self._sizes(root, monkeypatch)
         assert sizes["doc-bbb"] == len(b"%PDF-1.4 subdir stub\n")
 
-    def test_missing_file_reports_null_not_zero(self, subcorpus):
+    def test_missing_file_reports_null_not_zero(self, subcorpus, monkeypatch):
         """A manifest entry whose source file is gone reports null (UI shows
         a dash) instead of a misleading 0 bytes."""
         root = subcorpus
-        sizes = self._sizes(root)
+        sizes = self._sizes(root, monkeypatch)
         assert sizes["doc-gone"] is None
 
 
@@ -119,3 +118,78 @@ class TestComputeScoreNormalization:
 
     def test_empty_blocks_perfect(self):
         assert _compute_score([], 0) == 1.0
+
+
+class TestStatsHelpers:
+    """Direct tests for the shared stats_helpers module (I7: the basename
+    fallback step was never executed by the endpoint tests)."""
+
+    def test_collision_prefers_archived_over_incoming(self, tmp_path: Path):
+        from doc_rag.server.stats_helpers import build_sources_index, make_size_resolver
+
+        inc = tmp_path / "sources" / "incoming"
+        arc = tmp_path / "sources" / "archived"
+        inc.mkdir(parents=True)
+        arc.mkdir(parents=True)
+        (inc / "dup.pdf").write_bytes(b"i" * 10)
+        (arc / "dup.pdf").write_bytes(b"a" * 20)
+        idx = build_sources_index(tmp_path)
+        assert idx["dup.pdf"] == arc / "dup.pdf"
+        resolve = make_size_resolver(tmp_path, {}, idx)
+        # Manifest path points at a file that no longer exists (only the
+        # basename matches, in two places): the index must resolve
+        # deterministically to the archived copy, not FS-walk order.
+        assert resolve("sources/gone/dup.pdf") == 20
+        # Exact manifest path still wins over the index (step 1 priority).
+        assert resolve("sources/incoming/dup.pdf") == 10
+
+    def test_missing_everywhere_returns_none(self, tmp_path: Path):
+        from doc_rag.server.stats_helpers import build_sources_index, make_size_resolver
+
+        (tmp_path / "sources" / "archived").mkdir(parents=True)
+        idx = build_sources_index(tmp_path)
+        resolve = make_size_resolver(tmp_path, {}, idx)
+        assert resolve("sources/archived/nope.pdf") is None
+
+    def test_stat_size_survives_missing_file(self, tmp_path: Path):
+        from doc_rag.server.stats_helpers import stat_size
+
+        assert stat_size(tmp_path / "gone.pdf") is None
+
+    def test_count_chunks_single_pass(self, tmp_path: Path):
+        from doc_rag.server.stats_helpers import count_chunks_per_doc
+
+        p = tmp_path / "chunks.jsonl"
+        lines = []
+        for i in range(5):
+            lines.append(json.dumps({"doc_id": "doc-a", "chunk_id": f"doc-a:{i}", "text": "x"}))
+        for i in range(2):
+            lines.append(json.dumps({"doc_id": "doc-b", "chunk_id": f"doc-b:{i}", "text": "y"}))
+        lines.append("CORRUPT LINE NOT JSON")
+        p.write_text("\n".join(lines), "utf-8")
+        counts = count_chunks_per_doc(p)
+        assert counts == {"doc-a": 5, "doc-b": 2}
+
+    def test_count_chunks_absent_file(self, tmp_path: Path):
+        from doc_rag.server.stats_helpers import count_chunks_per_doc
+
+        assert count_chunks_per_doc(tmp_path / "nope.jsonl") == {}
+
+    def test_documents_endpoint_uses_same_resolver(self, subcorpus, monkeypatch):
+        """I4: /ui/documents must resolve the moved subdirectory file's
+        size too (it showed a dash while Stats showed the real size)."""
+        pytest.importorskip("fastapi")
+        from fastapi.testclient import TestClient
+
+        root = subcorpus
+        monkeypatch.setenv("DOC_RAG_ROOT", str(root))
+        from doc_rag.server.mcp_http import app
+
+        c = TestClient(app)
+        r = c.get("/ui/documents")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        sizes = {d["doc_id"]: d.get("size") for d in data["indexed"]}
+        assert sizes.get("doc-bbb") == len(b"%PDF-1.4 subdir stub\n")
+        assert sizes.get("doc-gone") is None
