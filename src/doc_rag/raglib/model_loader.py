@@ -89,7 +89,6 @@ def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
         return None
     if emb is None:
         return None
-    fingerprint = None
     try:
         from doc_rag.raglib.model_paths import fingerprint_for_cfg
 

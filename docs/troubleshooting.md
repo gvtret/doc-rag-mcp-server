@@ -48,6 +48,26 @@ unavailable, rebuild will not help) and serves lexical fallback results.
    ship it by one of the channels in
    [deploy.md](deploy.md#model-delivery-channels).
 3. Tail `journalctl -u doc-rag-mcp` for the loader's error message. Failed loads
+
+### "Ollama недоступен..." (provider: ollama)
+
+With `embeddings.provider: ollama` the same degraded-mode contract
+applies when the Ollama server is down: `model_ready: false`, semantic
+search off, `doc_search` serves lexical results (a failed embed inside a
+request also falls back instead of raising). The loader probes
+`GET /api/tags` with a 30 s TTL cache, so the service recovers on its
+own once Ollama comes back - no restart needed.
+
+1. Check the server: `curl http://127.0.0.1:11434/api/tags` must answer
+   HTTP 200 and list the configured model.
+2. Pull the model if missing: `ollama pull bge-m3` (name must match
+   `embeddings.model_name` exactly, tags included).
+3. `embeddings.api_base` must point at the right host/port; a remote
+   Ollama works the same way (fingerprint is read from the local
+   manifest store of the server install).
+4. `model_update_available` is always false with ollama: the HF Hub
+   weight watcher is disabled for this provider (weights are managed by
+   `ollama pull`, not by Hub revisions).
    are not cached, so a search request retries on its own; `/health/ready` and
    the banner only change after a successful attempt - restart the service to
    re-run the startup warm-up and refresh the readiness state.

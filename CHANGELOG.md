@@ -8,6 +8,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Offline model supply: `BAAI/bge-m3` ships with the repo instead of being
 downloaded from the HF Hub at runtime.
 
+### Changed
+- **Embeddings served by Ollama** (`embeddings.provider: ollama`): the
+  loader probes `/api/tags` (TTL-cached) so a dead Ollama reports
+  `ready: false` and `doc_search` degrades to lexical results instead of
+  hanging or raising; the index fingerprint comes from the Ollama
+  manifest digest (fail-closed, never a local-dir hash), keeping the
+  BUG-006 rebuild gate for re-pulled weights. The HF Hub weight watcher
+  is disabled for this provider.
+
+### Fixed
+- **UI stats honesty**: file sizes resolve through one shared helper for
+  both `/ui/doc-stats` and `/ui/documents` (the Documents page used to
+  show a dash for ~60 documents whose real size Stats rendered);
+  missing files report null (dash), never "0 B", including the header
+  total; a real 0-byte file is no longer confused with missing data.
+  `/ui/doc-stats` counts chunks in a single pass over chunks.jsonl
+  (~12.5 s -> ~0.4 s at 199 docs).
+- **Quality score**: scaled penalty constants with size-independence and
+  unknown-severity tests; the per-doc `quality_warnings` column now
+  counts the warnings list (the old `warning_count` lookup always
+  rendered "-").
+
 ### Added
 - **`scripts/fetch_model.py`**: downloads the `bge-m3` snapshot into
   `models/bge-m3/` (gitignored) via a staging directory with atomic swap,

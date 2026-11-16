@@ -27,6 +27,12 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
   `docker/Dockerfile` fail without it)
 - ~2.5 GB disk for `models/bge-m3` (fetched by `bootstrap.sh` when the
   embeddings extra is selected)
+- **Ollama provider (current default in `config/config.yaml`)**: a running
+  Ollama server with `bge-m3` pulled (`ollama pull bge-m3`, default
+  `api_base http://127.0.0.1:11434`). When Ollama is unreachable the
+  service starts with `ready: false` and `doc_search` degrades to lexical
+  results (no crash, no hang); the HF-model disk requirements above apply
+  only to the legacy local sentence-transformers branch.
 
 ## Quickstart
 

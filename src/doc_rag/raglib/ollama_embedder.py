@@ -22,15 +22,19 @@ Notes:
   budget (4 chars/token heuristic) because Ollama's embed endpoint has no
   truncation parameter; the chunker already sizes chunks to ~512 tokens,
   so the cap only guards degenerate inputs.
+- One keep-alive HTTP connection per instance (M6): full rebuilds issue
+  ~630 sequential /api/embed calls, and a fresh TCP handshake per batch
+  adds measurable latency on localhost.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import random
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from typing import Any
 
 import numpy as np
@@ -38,6 +42,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _CHARS_PER_TOKEN = 4  # rough guard: chunker targets ~512 tokens -> ~2Ki chars
+_EMBED_RETRIES = 3
+_RETRY_BASE_SLEEP = 0.5  # seconds; exponential with jitter, between attempts only
 
 
 class OllamaEmbedder:
@@ -50,12 +56,21 @@ class OllamaEmbedder:
         normalize: bool = True,
         max_seq_length: int | None = None,
         timeout: float = 120.0,
+        dim: int | None = None,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
+        # Kept for parity with the sentence-transformers surface; encoding
+        # normalization is driven per-call by normalize_embeddings (an
+        # explicit L2 pass on the returned matrix), not by this flag.
         self.normalize = normalize
         self.max_seq_length = max_seq_length
         self.timeout = timeout
+        self._dim = dim
+        self._conn: http.client.HTTPConnection | None = None
+        parsed = urllib.parse.urlsplit(self.api_base)
+        self._host = parsed.hostname or "127.0.0.1"
+        self._port = parsed.port or (443 if parsed.scheme == "https" else 11434)
 
     # -- sentence-transformers compatible surface --------------------------
 
@@ -76,6 +91,8 @@ class OllamaEmbedder:
         **_: Any,
     ) -> np.ndarray:
         if not sentences:
+            # Dimension contract mirrors sentence-transformers: known-dim
+            # instances report (0, dim) even for empty input.
             return np.zeros((0, self._dim or 0), dtype=np.float32)
 
         limit = (self._max_seq or 4096) * _CHARS_PER_TOKEN
@@ -94,31 +111,71 @@ class OllamaEmbedder:
 
     # -- internals ----------------------------------------------------------
 
+    def _connection(self) -> http.client.HTTPConnection:
+        """Reuse one keep-alive connection; rebuild silently when the
+        server closed it (Ollama keeps connections alive, but idle timeouts
+        and restarts happen)."""
+        if self._conn is None:
+            if self.api_base.startswith("https://"):
+                self._conn = http.client.HTTPSConnection(
+                    self._host, self._port, timeout=self.timeout
+                )
+            else:
+                self._conn = http.client.HTTPConnection(
+                    self._host, self._port, timeout=self.timeout
+                )
+        return self._conn
+
+    def _drop_connection(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def _post(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self.model, "input": texts}).encode()
         last_exc: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(_EMBED_RETRIES):
             try:
-                req = urllib.request.Request(
-                    f"{self.api_base}/api/embed",
-                    data=payload,
+                conn = self._connection()
+                conn.request(
+                    "POST",
+                    "/api/embed",
+                    body=payload,
                     headers={"Content-Type": "application/json"},
                 )
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read())
+                resp = conn.getresponse()
+                body = resp.read()
+                data = json.loads(body)
                 emb = data.get("embeddings")
                 if not emb:
                     raise ValueError(f"ollama embed returned no vectors: {str(data)[:200]}")
                 if self._dim is None:
                     self._dim = len(emb[0])
+                if len(emb) != len(texts):
+                    # A desync here would silently misalign chunk->vector
+                    # mapping and surface later as an opaque FAISS size
+                    # error; fail loudly at the source instead.
+                    raise ValueError(
+                        f"ollama embed returned {len(emb)} vectors for {len(texts)} inputs"
+                    )
                 return emb
-            except (urllib.error.URLError, TimeoutError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 last_exc = e
-                logger.warning("Ollama embed attempt %d failed: %s", attempt + 1, e)
-                time.sleep(2**attempt)
+                self._drop_connection()  # broken pipe / closed keep-alive
+                if attempt + 1 < _EMBED_RETRIES:
+                    sleep_s = _RETRY_BASE_SLEEP * (2**attempt) + random.uniform(0, 0.25)
+                    logger.warning(
+                        "Ollama embed attempt %d/%d failed: %s (retrying in %.2fs)",
+                        attempt + 1,
+                        _EMBED_RETRIES,
+                        e,
+                        sleep_s,
+                    )
+                    time.sleep(sleep_s)
         raise RuntimeError(f"Ollama embed failed after retries: {last_exc}")
-
-    _dim: int | None = None
 
 
 def ollama_reachable(api_base: str, timeout: float = 2.0) -> bool:
@@ -129,9 +186,22 @@ def ollama_reachable(api_base: str, timeout: float = 2.0) -> bool:
     of failing every search after retries.
     """
     try:
-        req = urllib.request.Request(f"{api_base.rstrip('/')}/api/tags")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        parsed = urllib.parse.urlsplit(api_base.rstrip("/"))
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if parsed.scheme == "https" else 11434)
+        if parsed.scheme == "https":
+            conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                host, port, timeout=timeout
+            )
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request("GET", "/api/tags")
+            resp = conn.getresponse()
+            resp.read()
             return 200 <= resp.status < 500  # any sane HTTP answer = alive
+        finally:
+            conn.close()
     except Exception:
         return False
 

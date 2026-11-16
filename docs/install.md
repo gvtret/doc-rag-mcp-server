@@ -193,6 +193,30 @@ Main config: `config/config.yaml`. Key sections:
 
 ### Embeddings
 
+Two provider branches, selected by `embeddings.provider`:
+
+**Ollama (current production default):**
+
+```yaml
+embeddings:
+  provider: "ollama"
+  api_base: "http://127.0.0.1:11434"
+  model_name: "bge-m3"        # as known to Ollama (`ollama pull bge-m3`)
+  max_seq_length: 576
+```
+
+Requires a running Ollama server with the model pulled. The loader
+probes `GET /api/tags` (TTL-cached 30 s): when the server is down the
+service reports `ready: false` and `doc_search` degrades to lexical
+results instead of hanging. The index fingerprint is derived from the
+Ollama manifest digest (`<OLLAMA_MODELS>/manifests/...`, fallbacks
+`~/.ollama/models` and `/usr/share/ollama/.ollama/models`), so the
+BUG-006 rebuild gate still fires when the model is re-pulled with
+different weights. With `provider: ollama` the fingerprint never falls
+back to a local-dir hash — a missing manifest yields `None` (fail-closed).
+
+**Local sentence-transformers (legacy, provider unset):**
+
 ```yaml
 embeddings:
   model_name: "BAAI/bge-m3"   # shipped default: multilingual, 1024-dim

@@ -148,6 +148,14 @@ async def check_once(cfg: dict[str, Any], *, api: Any | None = None) -> str | No
 
 
 def _check_once_inner(cfg: dict[str, Any], api: Any | None) -> str | None:
+    # provider=ollama: weights live in the Ollama blob store, there is no
+    # local HF checkout to compare against a Hub revision, and model_name
+    # ("bge-m3") is not even an HF repo id. Checking is meaningless here --
+    # disable explicitly instead of erroring on every cycle.
+    if str((cfg.get("embeddings") or {}).get("provider") or "").strip().lower() == "ollama":
+        _set_state(checked_at=time.time(), error=None, update_available=False)
+        return None
+
     # ``api`` is either a ready-to-call object (test injection) or None;
     # in the latter case a lazily imported HfApi class is instantiated.
     hf = api if api is not None else _import_hf_api()
