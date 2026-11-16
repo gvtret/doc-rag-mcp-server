@@ -898,8 +898,18 @@ def semantic_search(
         _SEMANTIC_CACHE["model_key"] = model_key
         _SEMANTIC_CACHE["index"] = index
 
-    vec = model.encode([query], normalize_embeddings=True)
-    vec = np.asarray(vec, dtype=np.float32)
+    # Degradation contract (docs/troubleshooting.md): a failing embedder
+    # must return None (-> doc_search serves lexical results) instead of
+    # raising, so a dead Ollama cannot turn every search into an error.
+    try:
+        vec = model.encode([query], normalize_embeddings=True)
+        vec = np.asarray(vec, dtype=np.float32)
+        if vec.shape[0] == 0 or vec.size == 0:
+            return None
+    except Exception as e:
+        logger.warning("semantic_search: embed failed (%s: %s) -- lexical fallback",
+                       type(e).__name__, e)
+        return None
 
     # Legacy path has no payload store: oversample + post-filter so the
     # filters are enforced here too (before the fix they were silently

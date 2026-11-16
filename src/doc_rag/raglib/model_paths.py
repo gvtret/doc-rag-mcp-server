@@ -261,22 +261,33 @@ def model_fingerprint(model_dir: Path) -> str | None:
     return fingerprint_from_pairs(pairs)
 
 
+_OLLAMA_MANIFEST_ROOTS = (
+    # Same lookup order Ollama itself uses: env override, user install,
+    # system service install.
+    lambda: os.environ.get("OLLAMA_MODELS") or None,
+    lambda: os.path.expanduser("~/.ollama/models"),
+    lambda: "/usr/share/ollama/.ollama/models",
+)
+
+
 def _ollama_model_digest(model_name: str, api_base: str) -> str | None:
-    """SHA256 digest of the Ollama model blob, or None when unavailable.
+    """Digest of the Ollama model manifest, or None when unavailable.
 
-    Reads the local Ollama manifest directly (no HTTP round-trip): the
-    manifest file at <ollama-home>/models/manifests/<...>/<name>/<tag>
-    contains the config blob digest, which changes whenever the model is
-    re-pulled with different weights. This gives fingerprint_for_cfg the
-    same BUG-006 guarantee as the aggregate weights hash, without keeping
-    a local copy of the weights on disk.
+    Reads the local Ollama manifest file (no HTTP round-trip) at
+    <ollama-home>/models/manifests/<registry>/<ns>/<name>/<tag> and
+    returns its ``config.digest``. Why the *config* blob digest is enough
+    for the BUG-006 guarantee: inside the config blob,
+    ``rootfs.diff_ids`` contains the digest of the weights layer, so any
+    re-pull with different weights changes the layer digest, which
+    changes the config digest, which changes the fingerprint. Do not
+    "simplify" this to ``layers[...]`` — the config digest is stable
+    across layer re-ordering while still deriving from the weights.
+
+    A corrupted manifest (e.g. mid-pull) or an unknown model returns
+    None: fingerprint_for_cfg stays fail-closed for provider=ollama and
+    never falls back to a local-dir hash that would describe weights the
+    index does not use.
     """
-    import json
-    from pathlib import Path as _Path
-
-    home = os.environ.get("OLLAMA_MODELS") or "/usr/share/ollama/.ollama/models"
-    # "bge-m3" -> registry.ollama.ai/library/bge-m3/latest; explicit
-    # "host/name:tag" forms map the same way Ollama does internally.
     parts = model_name.split("/")
     name_tag = parts[-1] if parts else model_name
     if ":" in name_tag:
@@ -284,32 +295,46 @@ def _ollama_model_digest(model_name: str, api_base: str) -> str | None:
     else:
         name, tag = name_tag, "latest"
     ns = "/".join(parts[:-1]) or "library"
-    manifest = _Path(home) / "manifests" / "registry.ollama.ai" / ns / name / tag
-    try:
-        data = json.loads(manifest.read_text())
-    except OSError:
-        return None
-    digest = (data.get("config") or {}).get("digest")
-    return digest or None
+
+    seen: set[str] = set()
+    for home_fn in _OLLAMA_MANIFEST_ROOTS:
+        home = home_fn()
+        if not home or home in seen:
+            continue
+        seen.add(home)
+        manifest = Path(home) / "manifests" / "registry.ollama.ai" / ns / name / tag
+        try:
+            data = json.loads(manifest.read_text())
+        except (OSError, ValueError, TypeError):
+            # OSError: manifest absent/unreadable; ValueError (subclass of
+            # which JSONDecodeError is): corrupted JSON mid-pull.
+            continue
+        digest = (data.get("config") or {}).get("digest")
+        if digest:
+            return str(digest)
+    return None
 
 
 def fingerprint_for_cfg(cfg: dict[str, Any]) -> str | None:
     """Fingerprint of the embedding model backing cfg.
 
     With ``embeddings.provider: ollama`` the Ollama manifest digest is
-    used (weights live in the Ollama blob store, not in the local model
-    dir). Falls back to the local-dir weights hash when Ollama is not the
-    provider or its manifest cannot be read.
+    the only acceptable fingerprint (weights live in the Ollama blob
+    store, not in the local model dir). It deliberately does NOT fall
+    back to the local-dir weights hash: a plausible-looking local hash
+    for a different artifact would silently defeat the BUG-006
+    staleness gate; None is handled fail-closed by _store_matches_config.
+    The local-dir hash is used only when ollama is not the provider.
     """
     e = cfg.get("embeddings") or {}
     if str(e.get("provider") or "").strip().lower() == "ollama":
         model_name = str(e.get("model_name") or "").strip()
-        if model_name:
-            digest = _ollama_model_digest(
-                model_name, str(e.get("api_base") or "http://127.0.0.1:11434")
-            )
-            if digest:
-                return f"ollama:{digest}"
+        if not model_name:
+            return None
+        digest = _ollama_model_digest(
+            model_name, str(e.get("api_base") or "http://127.0.0.1:11434")
+        )
+        return f"ollama:{digest}" if digest else None
     model_dir = resolve_model_path(cfg)
     if model_dir is None:
         return None

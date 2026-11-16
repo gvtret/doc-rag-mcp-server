@@ -121,6 +121,21 @@ class OllamaEmbedder:
     _dim: int | None = None
 
 
+def ollama_reachable(api_base: str, timeout: float = 2.0) -> bool:
+    """Cheap reachability probe: GET /api/tags on the Ollama server.
+
+    Used by the model loader so the service reports ready=False (and
+    doc_search degrades to lexical results) when Ollama is down, instead
+    of failing every search after retries.
+    """
+    try:
+        req = urllib.request.Request(f"{api_base.rstrip('/')}/api/tags")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 500  # any sane HTTP answer = alive
+    except Exception:
+        return False
+
+
 def build_ollama_embedder(cfg: dict[str, Any]) -> OllamaEmbedder | None:
     """Construct an OllamaEmbedder from cfg, or None if not configured."""
     e = cfg.get("embeddings") or {}

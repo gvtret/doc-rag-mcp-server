@@ -27,6 +27,7 @@ Behaviour:
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from doc_rag.raglib.model_paths import fingerprint_for_cfg, resolve_model_path
@@ -62,11 +63,15 @@ _status: dict[str, Any] = dict(_EMPTY_STATUS)
 
 
 def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
-    """Return an OllamaEmbedder when cfg opts in, else None.
+    """Return an OllamaEmbedder when cfg opts in and Ollama is reachable.
 
     Lazy import keeps module importable when the helper module is absent
-    (e.g. partial deployments); a construction error is surfaced via
-    status() the same way local-load failures are.
+    (e.g. partial deployments). A cheap GET /api/tags probe gates the
+    "ready" status: without it the loader would mark the service ready
+    while every search fails after retries instead of degrading to
+    lexical fallback (the documented degradation contract). The probe
+    result is cached for _OLLAMA_PROBE_TTL seconds so the service
+    recovers on its own once Ollama comes back, without a restart.
     """
     try:
         from doc_rag.raglib.ollama_embedder import build_ollama_embedder
@@ -77,15 +82,53 @@ def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
     try:
         emb = build_ollama_embedder(cfg)
     except Exception as exc:
+        # Keep the ollama-specific reason visible: the caller (load_embedder)
+        # must not fall through to the local branch and overwrite status.error.
         _status.update({"ready": False, "path": None, "fingerprint": None,
                         "error": f"ollama embedder config error: {exc}", "source": None})
         return None
     if emb is None:
         return None
-    e = cfg.get("embeddings") or {}
+    fingerprint = None
+    try:
+        from doc_rag.raglib.model_paths import fingerprint_for_cfg
+
+        fingerprint = fingerprint_for_cfg(cfg)
+    except Exception:  # pragma: no cover - defensive: fingerprint is advisory
+        fingerprint = None
+    if not _ollama_probe_ok(emb):
+        _status.update({"ready": False, "path": f"ollama:{emb.model}",
+                        "fingerprint": fingerprint,
+                        "error": f"ollama unreachable at {emb.api_base}",
+                        "source": "ollama"})
+        return None
     _status.update({"ready": True, "path": f"ollama:{emb.model}",
-                    "fingerprint": None, "error": None, "source": "ollama"})
+                    "fingerprint": fingerprint, "error": None, "source": "ollama"})
     return emb
+
+
+_OLLAMA_PROBE_TTL = 30.0
+_OLLAMA_PROBE_STATE: dict[str, tuple[bool, float]] = {}
+_OLLAMA_PROBE_LOCK = threading.Lock()
+
+
+def _ollama_probe_ok(emb: Any) -> bool:
+    """Cached reachability probe for the Ollama server (TTL-gated)."""
+    from doc_rag.raglib.ollama_embedder import ollama_reachable
+
+    now = time.monotonic()
+    with _OLLAMA_PROBE_LOCK:
+        cached = _OLLAMA_PROBE_STATE.get(emb.api_base)
+        if cached is not None and now - cached[1] < _OLLAMA_PROBE_TTL:
+            return cached[0]
+    ok = False
+    try:
+        ok = bool(ollama_reachable(emb.api_base, timeout=2.0))
+    except Exception:
+        ok = False
+    with _OLLAMA_PROBE_LOCK:
+        _OLLAMA_PROBE_STATE[emb.api_base] = (ok, time.monotonic())
+    return ok
 
 
 def _resolve_device(cfg: dict[str, Any]) -> str:
@@ -110,9 +153,17 @@ def load_embedder(cfg: dict[str, Any]) -> Any | None:
     Note: max_seq_length / normalize are not part of the key; changing
     them in config requires a process restart to take effect.
     """
+    ollama_configured = str((cfg.get("embeddings") or {}).get("provider") or "").strip().lower() == "ollama"
     ollama = _load_ollama_embedder(cfg)
     if ollama is not None:
         return ollama
+    if ollama_configured:
+        # Fail-closed: with provider=ollama a dead/misconfigured server must
+        # NOT silently fall through to the local sentence-transformers branch
+        # -- that would mask the real error in status() and try to load a
+        # model directory that (by design of the ollama deployment) has no
+        # weights. Returning None lets callers degrade to lexical search.
+        return None
     device = _resolve_device(cfg)
     model_dir = resolve_model_path(cfg)
     model_name = str((cfg.get("embeddings") or {}).get("model_name") or "")
