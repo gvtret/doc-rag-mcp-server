@@ -152,3 +152,29 @@ export type RestartResponse = {
   message?: string;
   error?: string;
 };
+
+// Per-document statistics for the Stats page (GET /ui/doc-stats).
+// size_bytes/size_mb are null when the source file is missing on disk
+// (UI renders a dash); quality_score mirrors the per-doc quality report.
+export type DocStat = {
+  doc_id: string;
+  filename: string;
+  source_file: string;
+  size_bytes: number | null;
+  size_mb: number | null;
+  chunk_count: number;
+  quality_score: number;
+  quality_warnings: number;
+  pages: number;
+  blocks: Record<string, number>;
+  total_blocks: number;
+  edition_year?: number | null;
+  coverage?: Record<string, unknown>;
+};
+
+export type DocStatsResponse = {
+  ok: boolean;
+  documents: DocStat[];
+  count: number;
+  error?: string;
+};

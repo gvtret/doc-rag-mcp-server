@@ -14,6 +14,7 @@ import type {
   EnvSaveResponse,
   HealthReady,
   RestartResponse,
+  DocStatsResponse,
   StatusPayload,
 } from "./types";
 
@@ -209,7 +210,7 @@ export type AllDocument = {
   path?: string;
   chunk_count?: number | null;
   edition_year?: number | null;
-  size?: number;
+  size?: number | null;
   indexed: boolean;
   status?: "processing" | "processed" | "reprocessing";
   coverage?: { ocr?: OcrCoverage };
@@ -254,4 +255,8 @@ export function rebuildDocs(docIds: string[], filenames: string[] = [], signal?:
       return { ok: false, error: `HTTP ${r.status}` };
     }
   });
+}
+
+export function fetchDocStats(signal?: AbortSignal): Promise<DocStatsResponse> {
+  return getJSON<DocStatsResponse>("/ui/doc-stats", signal);
 }

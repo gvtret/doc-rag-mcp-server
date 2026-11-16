@@ -335,7 +335,7 @@
                 {d.basename}
               </td>
               <td class="mono small">{d.doc_id ?? "—"}</td>
-              <td class="num">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
+              <td class="num">{d.size != null ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num">{d.chunk_count ?? "—"}</td>
               <td class="num">{d.edition_year ?? "—"}</td>
               <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-ok'}">
@@ -374,7 +374,7 @@
               <td class="num muted">{String(allDocs.length + i + 1).padStart(2, "0")}</td>
               <td title={d.path ?? ""}>{d.basename}</td>
               <td class="mono small muted">—</td>
-              <td class="num muted">{d.size ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
+              <td class="num muted">{d.size != null ? `${(d.size / 1024).toFixed(0)} КБ` : "—"}</td>
               <td class="num muted">—</td>
               <td class="num muted">—</td>
               <td><span class="s-badge {d.status === 'processing' ? 's-processing' : d.status === 'processed' ? 's-processed' : 's-pending'}">

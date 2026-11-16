@@ -1,21 +1,8 @@
 <script lang="ts">
   import { t } from "../lib/i18n";
-
-  interface DocStat {
-    doc_id: string;
-    filename: string;
-    source_file: string;
-    size_bytes: number | null;
-    size_mb: number;
-    chunk_count: number;
-    quality_score: number;
-    quality_warnings: number;
-    pages: number;
-    blocks: Record<string, number>;
-    total_blocks: number;
-    edition_year: number | null;
-    coverage: any;
-  }
+  import { fetchDocStats } from "../lib/api";
+  import type { DocStat } from "../lib/types";
+  import { formatSize } from "../lib/format";
 
   const BLOCK_TYPES = [
     { key: "heading",     label: "Заголовки",      color: "#6b9bd2", desc: "Названия разделов и подразделов" },
@@ -35,20 +22,30 @@
     BLOCK_LABEL_MAP[bt.key] = bt.label;
   }
 
+  type SortKey = "filename" | "score" | "chunks" | "size";
   let docs = $state<DocStat[]>([]);
   let loading = $state(true);
-  let sortBy = $state<"filename" | "score" | "chunks" | "size">("filename");
+  let loadError = $state<string | null>(null);
+  let sortBy = $state<SortKey>("filename");
   let sortOrder = $state<"asc" | "desc">("asc");
   let selectedDoc = $state<DocStat | null>(null);
 
   async function loadStats() {
+    loading = true;
+    loadError = null;
     try {
-      const r = await fetch("/ui/doc-stats", { credentials: "same-origin" });
-      const d = await r.json();
+      // Typed API wrapper: the response contract is checked by
+      // svelte-check, not silently accepted as `any`.
+      const d = await fetchDocStats();
       if (d.ok) {
         docs = d.documents;
+      } else {
+        loadError = d.error || "неизвестная ошибка";
       }
-    } catch {}
+    } catch (e) {
+      // A silent failure looks exactly like an empty corpus; surface it.
+      loadError = e instanceof Error ? e.message : String(e);
+    }
     loading = false;
   }
 
@@ -56,28 +53,40 @@
     loadStats();
   });
 
-  function sortedDocs() {
-    const sorted = [...docs];
-    sorted.sort((a, b) => {
-      let va: any, vb: any;
-      switch (sortBy) {
-        case "score": va = a.quality_score; vb = b.quality_score; break;
-        case "chunks": va = a.chunk_count; vb = b.chunk_count; break;
-        case "size": va = a.size_bytes ?? -1; vb = b.size_bytes ?? -1; break;
-        default: va = a.filename; vb = b.filename;
-      }
-      if (typeof va === "string") return sortOrder === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortOrder === "asc" ? va - vb : vb - va;
-    });
-    return sorted;
+  // Typed accessor instead of `any` swap; null sizes sort as
+  // NEGATIVE_INFINITY (not a magic -1) so asc/desc both behave and a
+  // real 0-byte file never mixes with missing data.
+  function sortValue(d: DocStat, key: SortKey): string | number {
+    switch (key) {
+      case "score": return d.quality_score;
+      case "chunks": return d.chunk_count;
+      case "size": return d.size_bytes ?? Number.NEGATIVE_INFINITY;
+      default: return d.filename;
+    }
   }
 
-  function toggleSort(key: typeof sortBy) {
+  const sortedDocs = $derived.by(() => {
+    const sorted = [...docs];
+    sorted.sort((a, b) => {
+      const va = sortValue(a, sortBy);
+      const vb = sortValue(b, sortBy);
+      if (typeof va === "string" && typeof vb === "string") {
+        return sortOrder === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      }
+      const na = typeof va === "number" ? va : Number.NEGATIVE_INFINITY;
+      const nb = typeof vb === "number" ? vb : Number.NEGATIVE_INFINITY;
+      return sortOrder === "asc" ? na - nb : nb - na;
+    });
+    return sorted;
+  });
+
+  function toggleSort(key: SortKey) {
     if (sortBy === key) {
       sortOrder = sortOrder === "asc" ? "desc" : "asc";
     } else {
       sortBy = key;
-      sortOrder = "asc";
+      // Sizes read naturally largest-first; start desc there.
+      sortOrder = key === "size" ? "desc" : "asc";
     }
   }
 
@@ -87,41 +96,45 @@
     return "err";
   }
 
-  function formatSize(bytes: number | null): string {
-    // null = source file missing on disk; show a dash, not "0 B".
-    if (bytes === null || bytes === undefined) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  }
-
   function totalChunks() { return docs.reduce((s, d) => s + d.chunk_count, 0); }
   function totalBlocks() { return docs.reduce((s, d) => s + d.total_blocks, 0); }
-  function totalSize() {
-    return docs.reduce((s, d) => s + (d.size_bytes ?? 0), 0);
+  // Aggregate size summary: unknown sizes must not silently deflate the
+  // total -- all-missing renders a dash (same honesty rule as the rows),
+  // partial coverage appends a count of the files without data.
+  function sizeSummaryLabel(): string {
+    let total = 0;
+    let missing = 0;
+    for (const d of docs) {
+      if (d.size_bytes == null) missing++;
+      else total += d.size_bytes;
+    }
+    if (docs.length === 0 || missing === docs.length) return "—";
+    return missing > 0 ? `${formatSize(total)} (+${missing} без данных)` : formatSize(total);
   }
   function avgScore() { return docs.length ? (docs.reduce((s, d) => s + d.quality_score, 0) / docs.length) : 0; }
 
-  function blockBarSegments(blocks: Record<string, number>): { color: string; pct: number; label: string; count: number }[] {
+  function blockBarSegments(blocks: Record<string, number>): { color: string; pct: string; label: string; count: number }[] {
     const total = Object.values(blocks).reduce((s, v) => s + v, 0);
     if (total === 0) return [];
-    const segments: { color: string; pct: number; label: string; count: number }[] = [];
+    const segments: { color: string; pct: string; label: string; count: number }[] = [];
     for (const bt of BLOCK_TYPES) {
       const count = blocks[bt.key] || 0;
       if (count > 0) {
-        segments.push({ color: bt.color, pct: (count / total) * 100, label: bt.label, count });
+        segments.push({ color: bt.color, pct: ((count / total) * 100).toFixed(2), label: bt.label, count });
       }
     }
     for (const [key, count] of Object.entries(blocks)) {
       if (count > 0 && !BLOCK_TYPES.find(bt => bt.key === key)) {
-        segments.push({ color: "#666", pct: (count / total) * 100, label: key, count });
+        segments.push({ color: "#666", pct: ((count / total) * 100).toFixed(2), label: key, count });
       }
     }
     return segments;
   }
 
-  // Global block type distribution for summary
-  let globalBlockDist = $derived(() => {
+  // Global block type distribution for summary ($derived.by stores the
+  // value, not a factory function -- the old $derived(() => {...}) was
+  // called manually in the template, losing memoization).
+  const globalBlockDist = $derived.by(() => {
     const dist: Record<string, number> = {};
     for (const d of docs) {
       for (const [k, v] of Object.entries(d.blocks)) {
@@ -137,6 +150,8 @@
 
   {#if loading}
     <p class="muted">{t("documents.loading")}</p>
+  {:else if loadError}
+    <p class="warn" role="alert">Не удалось загрузить статистику: {loadError}</p>
   {:else}
     <div class="summary">
       <span>Документов: <strong>{docs.length}</strong></span>
@@ -145,7 +160,7 @@
       <span class="sep">·</span>
       <span>Блоков: <strong>{totalBlocks()}</strong></span>
       <span class="sep">·</span>
-      <span>Размер: <strong>{formatSize(totalSize())}</strong></span>
+      <span>Размер: <strong>{sizeSummaryLabel()}</strong></span>
       <span class="sep">·</span>
       <span>Средний score: <strong class={avgScore() >= 0.8 ? "ok" : "warn"}>{avgScore().toFixed(2)}</strong></span>
     </div>
@@ -153,8 +168,7 @@
     <!-- Legend -->
     <div class="legend">
       {#each BLOCK_TYPES as bt}
-        {@const gDist = globalBlockDist()}
-        {#if (gDist[bt.key] || 0) > 0}
+        {#if (globalBlockDist[bt.key] || 0) > 0}
           <span class="legend-item">
             <span class="legend-dot" style="background:{bt.color}"></span>
             <span class="legend-label" title={bt.desc}>{bt.label}</span>
@@ -166,29 +180,43 @@
     <table class="table stats-table">
       <thead>
         <tr>
-          <th class="sortable" title="Название файла" onclick={() => toggleSort("filename")}>
-            Файл {sortBy === "filename" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+          <th class="sortable" title="Название файла" aria-sort={sortBy === "filename" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}>
+            <button class="th-sort" onclick={() => toggleSort("filename")}>
+              Файл {sortBy === "filename" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+            </button>
           </th>
-          <th class="num sortable" title="Размер исходного файла" onclick={() => toggleSort("size")}>
-            Размер {sortBy === "size" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+          <th class="num sortable" title="Размер исходного файла" aria-sort={sortBy === "size" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}>
+            <button class="th-sort" onclick={() => toggleSort("size")}>
+              Размер {sortBy === "size" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+            </button>
           </th>
-          <th class="num sortable" title="Количество текстовых блоков (чанков) в индексе" onclick={() => toggleSort("chunks")}>
-            Чанки {sortBy === "chunks" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+          <th class="num sortable" title="Количество текстовых блоков (чанков) в индексе" aria-sort={sortBy === "chunks" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}>
+            <button class="th-sort" onclick={() => toggleSort("chunks")}>
+              Чанки {sortBy === "chunks" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+            </button>
           </th>
           <th class="num" title="Общее количество структурных блоков (абзацы, заголовки, таблицы...)">Блоки</th>
           <th class="num" title="Количество страниц в документе">Стр.</th>
-          <th class="sortable" title="Показатель качества парсинга от 0 до 1. Зелёный ≥0.8, жёлтый ≥0.5, красный <0.5" onclick={() => toggleSort("score")}>
-            Score {sortBy === "score" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+          <th class="sortable" title="Показатель качества парсинга от 0 до 1. Зелёный ≥0.8, жёлтый ≥0.5, красный <0.5" aria-sort={sortBy === "score" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}>
+            <button class="th-sort" onclick={() => toggleSort("score")}>
+              Score {sortBy === "score" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+            </button>
           </th>
           <th title="Количество предупреждений при парсинге">Проблемы</th>
           <th class="blocks-col" title="Визуальное распределение блоков по типам (заголовки, абзацы, таблицы...)">Состав блоков</th>
         </tr>
       </thead>
       <tbody>
-        {#each sortedDocs() as d (d.doc_id)}
+        {#each sortedDocs as d (d.doc_id)}
           <tr class="clickable" onclick={() => selectedDoc = selectedDoc?.doc_id === d.doc_id ? null : d}>
             <td title={d.source_file}>{d.filename}</td>
-            <td class="num">{formatSize(d.size_bytes)}</td>
+            <td class="num">
+              {#if d.size_bytes == null}
+                <span title="Исходный файл не найден на диске" aria-label="размер неизвестен">—</span>
+              {:else}
+                {formatSize(d.size_bytes)}
+              {/if}
+            </td>
             <td class="num">{d.chunk_count}</td>
             <td class="num">{d.total_blocks}</td>
             <td class="num">{d.pages || "—"}</td>
@@ -204,7 +232,7 @@
                   <div
                     class="block-segment"
                     style="width:{seg.pct}%;background:{seg.color}"
-                    title="{seg.label}: {seg.count} ({seg.pct.toFixed(0)}%)"
+                    title="{seg.label}: {seg.count} ({seg.pct}%)"
                   ></div>
                 {/each}
               </div>
@@ -291,6 +319,13 @@
   .stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
   .sortable { cursor: pointer; user-select: none; }
   .sortable:hover { color: var(--text-primary); }
+  /* Keyboard-accessible sort buttons inside th (replaces th onclick) */
+  .th-sort {
+    background: none; border: none; padding: 0; margin: 0;
+    font: inherit; color: inherit; cursor: pointer; text-align: inherit;
+  }
+  .th-sort:hover { color: var(--text-primary); }
+  .th-sort:focus-visible { outline: 1px solid var(--text-primary); }
 
   /* Stacked bar in table */
   .blocks-cell { display: flex; align-items: center; gap: 6px; }
