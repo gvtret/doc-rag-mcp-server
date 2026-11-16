@@ -50,6 +50,9 @@ chunking:
   dedup_similarity_threshold: 0.85
 
 embeddings:
+  # Embeddings served by local Ollama (shared with openviking).
+  provider: "ollama"
+  api_base: "http://127.0.0.1:11434"
   # Multilingual (RU+EN): bge-m3, 1024-dim. On a 4 GB GPU (GTX 1650)
   # batch 32 is ~4x faster than 8 (7.9 vs 1.9 chunks/s) and still fits;
   # 48+ hits VRAM limits and degrades. max_seq_length covers the chunk
@@ -57,8 +60,8 @@ embeddings:
   # tokens + separator headroom; see raglib/embedding_text.py), so a
   # saturated chunk is not silently tail-truncated by the model. bge-m3
   # supports 8192 natively; 576 keeps the extra encode cost ~12%.
-  model_name: "BAAI/bge-m3"
-  device: "cuda"
+  model_name: "bge-m3"
+  device: "cpu"
   batch_size: 32
   max_seq_length: 576
   normalize: true

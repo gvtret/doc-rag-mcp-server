@@ -261,8 +261,55 @@ def model_fingerprint(model_dir: Path) -> str | None:
     return fingerprint_from_pairs(pairs)
 
 
+def _ollama_model_digest(model_name: str, api_base: str) -> str | None:
+    """SHA256 digest of the Ollama model blob, or None when unavailable.
+
+    Reads the local Ollama manifest directly (no HTTP round-trip): the
+    manifest file at <ollama-home>/models/manifests/<...>/<name>/<tag>
+    contains the config blob digest, which changes whenever the model is
+    re-pulled with different weights. This gives fingerprint_for_cfg the
+    same BUG-006 guarantee as the aggregate weights hash, without keeping
+    a local copy of the weights on disk.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    home = os.environ.get("OLLAMA_MODELS") or "/usr/share/ollama/.ollama/models"
+    # "bge-m3" -> registry.ollama.ai/library/bge-m3/latest; explicit
+    # "host/name:tag" forms map the same way Ollama does internally.
+    parts = model_name.split("/")
+    name_tag = parts[-1] if parts else model_name
+    if ":" in name_tag:
+        name, tag = name_tag.split(":", 1)
+    else:
+        name, tag = name_tag, "latest"
+    ns = "/".join(parts[:-1]) or "library"
+    manifest = _Path(home) / "manifests" / "registry.ollama.ai" / ns / name / tag
+    try:
+        data = json.loads(manifest.read_text())
+    except OSError:
+        return None
+    digest = (data.get("config") or {}).get("digest")
+    return digest or None
+
+
 def fingerprint_for_cfg(cfg: dict[str, Any]) -> str | None:
-    """Resolve the model directory from cfg and return its fingerprint."""
+    """Fingerprint of the embedding model backing cfg.
+
+    With ``embeddings.provider: ollama`` the Ollama manifest digest is
+    used (weights live in the Ollama blob store, not in the local model
+    dir). Falls back to the local-dir weights hash when Ollama is not the
+    provider or its manifest cannot be read.
+    """
+    e = cfg.get("embeddings") or {}
+    if str(e.get("provider") or "").strip().lower() == "ollama":
+        model_name = str(e.get("model_name") or "").strip()
+        if model_name:
+            digest = _ollama_model_digest(
+                model_name, str(e.get("api_base") or "http://127.0.0.1:11434")
+            )
+            if digest:
+                return f"ollama:{digest}"
     model_dir = resolve_model_path(cfg)
     if model_dir is None:
         return None

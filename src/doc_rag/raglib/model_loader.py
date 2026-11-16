@@ -61,6 +61,33 @@ _EMPTY_STATUS: dict[str, Any] = {
 _status: dict[str, Any] = dict(_EMPTY_STATUS)
 
 
+def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
+    """Return an OllamaEmbedder when cfg opts in, else None.
+
+    Lazy import keeps module importable when the helper module is absent
+    (e.g. partial deployments); a construction error is surfaced via
+    status() the same way local-load failures are.
+    """
+    try:
+        from doc_rag.raglib.ollama_embedder import build_ollama_embedder
+    except Exception as exc:  # pragma: no cover - defensive
+        _status.update({"ready": False, "path": None, "fingerprint": None,
+                        "error": f"ollama_embedder import failed: {exc}", "source": None})
+        return None
+    try:
+        emb = build_ollama_embedder(cfg)
+    except Exception as exc:
+        _status.update({"ready": False, "path": None, "fingerprint": None,
+                        "error": f"ollama embedder config error: {exc}", "source": None})
+        return None
+    if emb is None:
+        return None
+    e = cfg.get("embeddings") or {}
+    _status.update({"ready": True, "path": f"ollama:{emb.model}",
+                    "fingerprint": None, "error": None, "source": "ollama"})
+    return emb
+
+
 def _resolve_device(cfg: dict[str, Any]) -> str:
     """Normalize embeddings.device; '', 'auto' and 'gpu' pick cuda when available."""
     dev = str((cfg.get("embeddings") or {}).get("device") or "auto").strip().lower()
@@ -83,6 +110,9 @@ def load_embedder(cfg: dict[str, Any]) -> Any | None:
     Note: max_seq_length / normalize are not part of the key; changing
     them in config requires a process restart to take effect.
     """
+    ollama = _load_ollama_embedder(cfg)
+    if ollama is not None:
+        return ollama
     device = _resolve_device(cfg)
     model_dir = resolve_model_path(cfg)
     model_name = str((cfg.get("embeddings") or {}).get("model_name") or "")
