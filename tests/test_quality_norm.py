@@ -73,7 +73,7 @@ def test_compute_score_all_info():
     """Info-level warnings should have minimal penalty."""
     warnings = [Warning(severity="info", code="test", message="x")] * 10
     score = _compute_score(warnings, 100)
-    assert score == pytest.approx(0.90, abs=0.01)
+    assert score == pytest.approx(0.95, abs=0.01)
 
 
 def test_compute_score_mixed_severities():
@@ -84,8 +84,29 @@ def test_compute_score_mixed_severities():
         Warning(severity="info", code="i", message="x"),
     ]
     score = _compute_score(warnings, 100)
-    expected = 1.0 - (0.15 + 0.05 + 0.01)
+    expected = 1.0 - (0.10 + 0.02 + 0.005)
     assert score == pytest.approx(expected, abs=0.01)
+
+
+def test_compute_score_scale_independent():
+    """Score must not depend on document size (no saturation to 0.00).
+
+    Regression for the GOST 870-5-101 case: the same 22 empty-table
+    warnings must give the same score for a 10-block and a 1600-block
+    document, instead of flooring both towards 0.00 with a fixed
+    per-document penalty.
+    """
+    warnings = [Warning(severity="warn", code="t", message="x")] * 5
+    small = _compute_score(warnings, 10)
+    large = _compute_score(warnings, 1600)
+    assert small == pytest.approx(large)
+    assert small > 0.5
+
+
+def test_compute_score_unknown_severity_penalized():
+    """Unknown severity still counts as a (small) warning, not a pass."""
+    warnings = [Warning(severity="critical", code="t", message="x")]
+    assert _compute_score(warnings, 100) == pytest.approx(0.995)
 
 
 def test_run_quality_checks_empty_blocks():

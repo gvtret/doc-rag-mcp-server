@@ -2168,31 +2168,60 @@ async def ui_doc_stats() -> JSONResponse:
         # Manifest entries may point into subdirectories (dnp3/, iec61850/,
         # ...) or at paths that no longer exist; the old code looked only at
         # the root of archived/ and incoming/ and reported a misleading
-        # "0 bytes" for everything else.
+        # "0 bytes" for everything else. On a basename collision (same name
+        # in two subdirectories) prefer archived, then incoming, so the
+        # resolved size is deterministic rather than FS-walk-order dependent.
         sources_index: dict[str, Path] = {}
+        _bn_rank = {"archived": 0, "incoming": 1}
         sources_root = root / "sources"
         if sources_root.is_dir():
             for p in sources_root.rglob("*"):
-                if p.is_file():
-                    sources_index.setdefault(p.name, p)
+                try:
+                    if not p.is_file():
+                        continue
+                except OSError:
+                    continue  # vanished mid-walk (ingest move), skip
+                name = p.name
+                prev = sources_index.get(name)
+                if prev is None:
+                    sources_index[name] = p
+                else:
+                    # rank 0 = archived, 1 = incoming, 2 = other subdirs
+                    rank_new = _bn_rank.get(p.parent.name, 2)
+                    rank_old = _bn_rank.get(prev.parent.name, 2)
+                    if rank_new < rank_old:
+                        sources_index[name] = p
+
+        def _stat_size(path: Path) -> int | None:
+            """st_size with TOCTOU/OSError safety: ingest moves files."""
+            try:
+                return path.stat().st_size
+            except OSError:
+                return None
 
         def _resolve_size(source_file: str) -> int | None:
             """Real byte size of the source file, or None when it is gone."""
             # 1. The path exactly as recorded in the manifest.
             cand = root / source_file
             if cand.is_file():
-                return cand.stat().st_size
+                size = _stat_size(cand)
+                if size is not None:
+                    return size
             # 2. Legacy layout: basename in the root of archived/incoming.
             for dir_key in ("sources_archived", "sources_incoming"):
                 d_rel = paths.get(dir_key)
                 if d_rel:
                     cand = root / d_rel / os.path.basename(source_file)
                     if cand.is_file():
-                        return cand.stat().st_size
+                        size = _stat_size(cand)
+                        if size is not None:
+                            return size
             # 3. Same basename somewhere under sources/ (moved subdirectory).
             hit = sources_index.get(os.path.basename(source_file))
             if hit is not None:
-                return hit.stat().st_size
+                size = _stat_size(hit)
+                if size is not None:
+                    return size
             # File is gone from disk: report null, not 0.
             return None
 
@@ -2242,9 +2271,11 @@ async def ui_doc_stats() -> JSONResponse:
                         "size_mb": round(sz / 1024 / 1024, 2) if sz is not None else None,
                         "chunk_count": chunk_count or d.get("chunk_count", 0),
                         "quality_score": quality.get("score", d.get("quality_score", 0)),
-                        "quality_warnings": quality.get(
-                            "warning_count", d.get("quality_warning_count", 0)
-                        ),
+                        # Per-doc quality reports have no "warning_count"
+                        # key -- count the warnings list (the old lookup
+                        # always fell through to 0, rendering "-" in UI).
+                        "quality_warnings": len(quality.get("warnings") or [])
+                        or d.get("quality_warning_count", 0),
                         "pages": quality.get("pages", 0),
                         "blocks": blocks,
                         "total_blocks": total_blocks,

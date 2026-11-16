@@ -221,7 +221,18 @@ def test_missing_hub_package_is_reported(tmp_path, monkeypatch):
     assert model_watcher.state()["error"]
 
 
-def test_unresolvable_model_is_reported(tmp_path):
+def test_unresolvable_model_is_reported(tmp_path, monkeypatch):
+    # Isolate from locally installed gitignored model artefacts
+    # (models/<name>): this test asserts the "cannot resolve" report, but
+    # resolve_model_path() happily finds a real local copy, contacts the
+    # Hub and reports update_available instead. Point the repo-root
+    # inference at an empty tmp_path so nothing resolves.
+    monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        model_watcher, "resolve_model_path",
+        lambda cfg, root=None: None,
+    )
     cfg = {"embeddings": {"model_name": "BAAI/bge-m3"}}
 
     assert asyncio.run(model_watcher.check_once(cfg)) is None
