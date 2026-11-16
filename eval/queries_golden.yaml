@@ -40,9 +40,12 @@ queries:
       - iec_61850_6_2024_ed2_2_e2a22ddef3
 
   - query: "ГОСТ 34.12 блочный шифр"
+    # Re-annotated 2026-11-16: crypto-GOST docs were rebuilt from fresh
+    # PDFs, doc_id hashes changed (old: gost_34_12_2018_2140ac7a09,
+    # gost_34_12_15634beade -- removed from the corpus).
     relevant_doc_ids:
-      - gost_34_12_2018_2140ac7a09
-      - gost_34_12_15634beade
+      - 34_12_2018_deed3ddb5d
+      - 34_12_2015_974743b920
 
   - query: "IEC 60870-5-104 telecontrol companion standard"
     relevant_doc_ids:
@@ -58,9 +61,12 @@ queries:
       - an_hdlc_protocol_specification_and_its_verificatio_dfa5f493a4
 
   - query: "ГОСТ Р 34.11-2018 криптографическая хеш-функция"
+    # Re-annotated 2026-11-16: gost_r_34_11_2018_94b4447313 was the stale
+    # scan removed from the corpus; 34_11_2018_31dc61af9c is its
+    # replacement.
     relevant_doc_ids:
       - gost_34_11_2018_d9eef42850
-      - gost_r_34_11_2018_94b4447313
+      - 34_11_2018_31dc61af9c
       - rfc6986_fd5ea9e36d
 
   - query: "IEC 62351 security power systems"
