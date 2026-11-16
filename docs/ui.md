@@ -133,9 +133,9 @@ These editors have no authentication of their own — see
 | `POST` | `/ui/clear-incoming` | empty `sources/incoming/` |
 | `POST` | `/ui/restart` | restart the service (requires `DOC_RAG_UI_RESTART_ENABLED`) |
 | `GET`  | `/ui/status` | JSON status for live polling |
-| `GET`  | `/ui/documents` | indexed + pending documents, cross-referenced with the manifest |
+| `GET`  | `/ui/documents` | indexed + pending documents, cross-referenced with the manifest; `size` is `number \| null` — null means the source file is missing on disk |
 | `GET`  | `/ui/document-preview` | rendered markdown for a `doc_id` |
-| `GET`  | `/ui/doc-stats` | per-document block-type statistics |
+| `GET`  | `/ui/doc-stats` | per-document block-type statistics; `size_bytes`/`size_mb` are `number \| null` — null means the source file is missing on disk (UI renders a dash, never "0 B") |
 | `GET`  | `/ui/quality` | quality summary (`build/quality/summary.json`) |
 | `GET`  | `/api/v1/download` | download a source document by filename |
 | `GET`  | `/ui/config/raw` | raw `config.yaml` text for the Advanced editor |
