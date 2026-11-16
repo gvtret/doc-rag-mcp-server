@@ -5,7 +5,7 @@
     doc_id: string;
     filename: string;
     source_file: string;
-    size_bytes: number;
+    size_bytes: number | null;
     size_mb: number;
     chunk_count: number;
     quality_score: number;
@@ -63,7 +63,7 @@
       switch (sortBy) {
         case "score": va = a.quality_score; vb = b.quality_score; break;
         case "chunks": va = a.chunk_count; vb = b.chunk_count; break;
-        case "size": va = a.size_bytes; vb = b.size_bytes; break;
+        case "size": va = a.size_bytes ?? -1; vb = b.size_bytes ?? -1; break;
         default: va = a.filename; vb = b.filename;
       }
       if (typeof va === "string") return sortOrder === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -87,7 +87,9 @@
     return "err";
   }
 
-  function formatSize(bytes: number): string {
+  function formatSize(bytes: number | null): string {
+    // null = source file missing on disk; show a dash, not "0 B".
+    if (bytes === null || bytes === undefined) return "—";
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -95,7 +97,9 @@
 
   function totalChunks() { return docs.reduce((s, d) => s + d.chunk_count, 0); }
   function totalBlocks() { return docs.reduce((s, d) => s + d.total_blocks, 0); }
-  function totalSize() { return docs.reduce((s, d) => s + d.size_bytes, 0); }
+  function totalSize() {
+    return docs.reduce((s, d) => s + (d.size_bytes ?? 0), 0);
+  }
   function avgScore() { return docs.length ? (docs.reduce((s, d) => s + d.quality_score, 0) / docs.length) : 0; }
 
   function blockBarSegments(blocks: Record<string, number>): { color: string; pct: number; label: string; count: number }[] {

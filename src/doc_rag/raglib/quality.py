@@ -267,14 +267,17 @@ def _check_unreadable_chars(blocks: list[Block], threshold: float = 0.10) -> lis
 def _compute_score(warnings: list[Warning], total_blocks: int) -> float:
     if total_blocks == 0:
         return 1.0
+    # Score reflects the *share* of the document affected by problems, not
+    # an absolute count of warnings. Each warning contributes at most a
+    # fixed share of the document (assumed affected-block fraction), so a
+    # handful of empty tables in a 1600-block scan (GOST 870-5-101 case)
+    # no longer floors the score to a misleading 0.00 -- the same warnings
+    # in a 10-block document still dominate it. Severity ordering
+    # (error > warn > info) and the clamp at 0.0 are unchanged.
+    _MAX_SHARE = {"error": 0.10, "warn": 0.02, "info": 0.005}
     penalty = 0.0
     for w in warnings:
-        if w.severity == "error":
-            penalty += 0.15
-        elif w.severity == "warn":
-            penalty += 0.05
-        elif w.severity == "info":
-            penalty += 0.01
+        penalty += _MAX_SHARE.get(w.severity, 0.005)
     raw = 1.0 - penalty
     return max(0.0, min(1.0, raw))
 
