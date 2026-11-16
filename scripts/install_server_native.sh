@@ -158,8 +158,8 @@ fi
 
 echo "[install] bootstrap (venv через uv + базовые deps; Docling приходит как базовая зависимость)…"
 if [[ -z "${SKIP_EMBEDDINGS}" ]]; then
-  echo "[install] embeddings выбраны: bootstrap попытается скачать модель models/bge-m3,"
-  echo "[install] если её ещё нет (при провале -- вручную:"
+  echo "[install] embeddings выбраны: при provider!=ollama bootstrap попытается скачать"
+  echo "[install] модель models/bge-m3 (при провале -- вручную:"
   echo "[install]   sudo -u ${SERVICE_USER} -H ${INSTALL_ROOT}/.venv/bin/python scripts/fetch_model.py)"
 fi
 sudo -u "${SERVICE_USER}" -H bash -c "
@@ -174,6 +174,19 @@ export DOC_RAG_BOOTSTRAP_METRICS='N'
 export DOC_RAG_BOOTSTRAP_INGEST='N'
 bash scripts/bootstrap.sh
 "
+# provider=ollama: weights live on the Ollama server, not in models/. The
+# bootstrap script already warns when the server is unreachable or lacks
+# the model; print the exact remediation commands for the service user.
+if sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_ROOT}' && .venv/bin/python - <<'PY'
+import yaml
+cfg = yaml.safe_load(open('config/config.yaml')) or {}
+print(str((cfg.get('embeddings') or {}).get('provider') or '').strip().lower())
+PY" 2>/dev/null | grep -qx 'ollama'; then
+  echo "[install] embeddings.provider=ollama: убедитесь, что на хосте запущен Ollama и модель загружена:"
+  echo "[install]   systemctl status ollama   # или: ollama serve"
+  echo "[install]   ollama pull bge-m3        # имя из config.yaml: embeddings.model_name"
+  echo "[install] пока Ollama недоступен, doc-rag отвечает lexical-результатами (без падений)."
+fi
 echo "[install] проверка Docling в venv:"
 sudo -u "${SERVICE_USER}" -H env INSTALL_ROOT="${INSTALL_ROOT}" bash -c '
 set -e

@@ -4,9 +4,11 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        # Embed the offline embedding model into the image (requires
+        # Embeddings provider is Ollama (config/config.yaml): weights live on
+        # the Ollama *server*, so models/bge-m3 is NOT required. Set "1" only
+        # for the legacy local sentence-transformers mode (requires
         # models/bge-m3 fetched via scripts/fetch_model.py before build).
-        REQUIRE_MODEL: "1"
+        REQUIRE_MODEL: "0"
     container_name: doc-rag-mcp
     environment:
       - DOC_RAG_HTTP_HOST=0.0.0.0
@@ -21,4 +23,12 @@ services:
       - ./build:/app/build
       - ./config:/app/config:ro
       - ./sources:/app/sources
+    # config.yaml points at the host Ollama (api_base
+    # http://127.0.0.1:11434). Inside the container 127.0.0.1 is the
+    # container itself, so route that loopback to the HOST via
+    # host-gateway; requires Ollama listening on 0.0.0.0 (OLLAMA_HOST=0.0.0.0
+    # on the host's ollama service). For a remote Ollama server instead edit
+    # embeddings.api_base in config/config.yaml to http://<host>:11434.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped

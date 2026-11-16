@@ -60,11 +60,38 @@ fi
 
 # Embeddings (CPU-safe; torch picked from default index). For GPU/ROCm
 # wheels, install torch separately after this script.
+# NOTE: with the production default `embeddings.provider: ollama` this
+# stack is only needed for the legacy local sentence-transformers branch;
+# the ollama provider talks HTTP and works without torch. The choice
+# below therefore defaults to N when config.yaml selects ollama.
+CFG_PROVIDER=""
+if [[ -f "${ROOT}/config/config.yaml" ]]; then
+  CFG_PROVIDER="$("$ROOT/.venv/bin/python" - <<'PY' 2>/dev/null || echo ""
+try:
+    import yaml
+    cfg = yaml.safe_load(open("config/config.yaml")) or {}
+    print(str((cfg.get("embeddings") or {}).get("provider") or "").strip().lower())
+except Exception:
+    print("")
+PY
+)"
+fi
+OLLAMA_MODE=0
+if [[ "${CFG_PROVIDER}" == "ollama" ]]; then
+  OLLAMA_MODE=1
+fi
+
 if [[ "${NONINTERACTIVE}" == "1" ]]; then
-  ans_emb="${DOC_RAG_BOOTSTRAP_EMBEDDINGS:-Y}"
+  ans_emb="${DOC_RAG_BOOTSTRAP_EMBEDDINGS:-}"
+  if [[ -z "${ans_emb}" ]]; then ans_emb="$([[ ${OLLAMA_MODE} -eq 1 ]] && echo N || echo Y)"; fi
 else
-  read -r -p "[doc-rag] Install embeddings stack (torch + sentence-transformers, CPU)? [Y/n] " ans_emb || true
-  ans_emb="${ans_emb:-Y}"
+  if [[ ${OLLAMA_MODE} -eq 1 ]]; then
+    read -r -p "[doc-rag] Install local embeddings stack (torch + sentence-transformers, legacy branch; provider=ollama makes it optional)? [y/N] " ans_emb || true
+    ans_emb="${ans_emb:-N}"
+  else
+    read -r -p "[doc-rag] Install embeddings stack (torch + sentence-transformers, CPU)? [Y/n] " ans_emb || true
+    ans_emb="${ans_emb:-Y}"
+  fi
 fi
 if [[ "${ans_emb}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
   EXTRA_ARGS+=("--extra" "embeddings")
@@ -122,17 +149,60 @@ fi
 
 # --- Offline embedding model ---------------------------------------------------
 # The model is gitignored and may be absent (fresh clone, air-gapped install).
-# Only fetched when the embeddings stack was selected above (a --minimal or
-# embeddings=N install never downloads ~2 GB); DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N
-# overrides the choice explicitly. Failure is non-fatal so air-gapped installs
-# still bootstrap (semantics will fail later until the model is provided).
+# Only fetched when the local embeddings stack was selected above AND the
+# config does not use the ollama provider (whose weights live on the Ollama
+# server, not in models/); DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N overrides.
+# Failure is non-fatal so air-gapped installs still bootstrap (the legacy
+# branch will fail later until the model is provided).
 MODEL_OK=0
 if [[ -f "${ROOT}/models/bge-m3/config.json" && -f "${ROOT}/models/bge-m3/modules.json" ]]; then
   MODEL_OK=1
 fi
 FETCH_MODEL="${DOC_RAG_BOOTSTRAP_FETCH_MODEL:-}"
 if [[ -z "${FETCH_MODEL}" ]]; then
-  if [[ "${ans_emb}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then FETCH_MODEL="Y"; else FETCH_MODEL="N"; fi
+  if [[ ${OLLAMA_MODE} -eq 1 ]]; then
+    FETCH_MODEL="N"
+  elif [[ "${ans_emb}" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+    FETCH_MODEL="Y"
+  else
+    FETCH_MODEL="N"
+  fi
+fi
+if [[ ${OLLAMA_MODE} -eq 1 ]]; then
+  # provider=ollama: verify the Ollama server is reachable and has the model.
+  API_BASE="$("$ROOT/.venv/bin/python" - <<'PY' 2>/dev/null || echo "http://127.0.0.1:11434"
+try:
+    import yaml
+    cfg = yaml.safe_load(open("config/config.yaml")) or {}
+    print(str((cfg.get("embeddings") or {}).get("api_base") or "http://127.0.0.1:11434"))
+except Exception:
+    print("http://127.0.0.1:11434")
+PY
+)"
+  MODEL_NAME="$("$ROOT/.venv/bin/python" - <<'PY' 2>/dev/null || echo "bge-m3"
+try:
+    import yaml
+    cfg = yaml.safe_load(open("config/config.yaml")) or {}
+    print(str((cfg.get("embeddings") or {}).get("model_name") or "bge-m3"))
+except Exception:
+    print("bge-m3")
+PY
+)"
+  if curl -fsS -m 3 "${API_BASE%/}/api/tags" >/dev/null 2>&1; then
+    # /api/tags returns canonical names with tags ("bge-m3:latest"); the
+    # config may reference the bare name, which Ollama resolves to :latest.
+    MODEL_BASE="${MODEL_NAME%%:*}"
+    if curl -fsS -m 3 "${API_BASE%/}/api/tags" | grep -Eq "\"${MODEL_BASE}(:[^\"]*)?\""; then
+      echo "[doc-rag] Ollama OK: ${API_BASE} has model ${MODEL_NAME}"
+    else
+      echo "[doc-rag] WARNING: Ollama at ${API_BASE} is reachable but model '${MODEL_NAME}' is missing." >&2
+      echo "[doc-rag] WARNING: run: ollama pull ${MODEL_NAME}" >&2
+    fi
+  else
+    echo "[doc-rag] WARNING: Ollama is not reachable at ${API_BASE}." >&2
+    echo "[doc-rag] WARNING: install+start Ollama, then: ollama pull ${MODEL_NAME}" >&2
+    echo "[doc-rag] WARNING: until then doc-rag degrades to lexical search (no crash)." >&2
+  fi
 fi
 if [[ "${MODEL_OK}" -eq 0 && "${FETCH_MODEL}" == "Y" ]]; then
   echo "[doc-rag] offline model models/bge-m3 not found -- fetching via scripts/fetch_model.py..."

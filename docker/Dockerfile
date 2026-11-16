@@ -46,9 +46,16 @@ RUN groupadd --gid 1000 docrag \
 # Offline embedding model as its own early layer (before pyproject/code) so
 # code changes never invalidate the ~2.3 GB layer. --chown at COPY time means
 # the chown step at the bottom can skip models/ (see comment there).
+#
+# NOTE (provider: ollama): the production default embeddings provider is
+# Ollama (config/config.yaml), whose weights live on the Ollama *server*,
+# not in models/. This layer is only needed for the legacy local
+# sentence-transformers branch; with REQUIRE_MODEL=0 and Ollama reachable
+# the image is ~2.3 GB smaller and still serves semantic search.
 COPY --chown=docrag:docrag models/ /app/models/
 
 # Fail fast when the image must embed the model but models/bge-m3 is absent.
+# Only REQUIRE_MODEL=1 (legacy local-weights mode) enforces this.
 RUN test "$REQUIRE_MODEL" = "0" || test -f /app/models/bge-m3/config.json || (echo "[doc-rag] models/bge-m3 missing: run scripts/fetch_model.py" && exit 1)
 
 # HF_HOME parent must exist and be writable even when the container runs
@@ -56,13 +63,16 @@ RUN test "$REQUIRE_MODEL" = "0" || test -f /app/models/bge-m3/config.json || (ec
 RUN mkdir -p /app/build/hf-cache && chown docrag:docrag /app/build /app/build/hf-cache
 
 # Single source of truth for the uv extras set: REQUIRE_MODEL=1 additionally
-# installs the faiss + embeddings extras (otherwise load_embedder returns
-# None and a Docker deploy answers 503). Both uv sync RUNs below read this
-# file so the two blocks cannot drift apart.
+# installs the faiss + embeddings extras (otherwise the local sentence-
+# transformers branch has nothing to load). Both uv sync RUNs below read this
+# file so the two blocks cannot drift apart. faiss is needed for the vector
+# index in every mode; embeddings (torch + sentence-transformers) only
+# matters for the legacy local branch — the ollama provider talks HTTP and
+# works without it.
 RUN if [ "$REQUIRE_MODEL" = "1" ]; then \
       printf -- "--extra server --extra faiss --extra embeddings" > /tmp/uv_extras; \
     else \
-      printf -- "--extra server" > /tmp/uv_extras; \
+      printf -- "--extra server --extra faiss" > /tmp/uv_extras; \
     fi
 
 # Copy lock + manifest first so dependency layer caches across code changes.
@@ -84,9 +94,7 @@ COPY --from=ui-builder /ui/dist /app/ui/dist
 RUN uv sync --frozen $(cat /tmp/uv_extras)
 
 # When the image ships the offline model, its deps must really be installed.
-RUN if [ "$REQUIRE_MODEL" = "1" ]; then python -c "import sentence_transformers"; fi
-
-# Fix rapidocr 3.8.x missing arch_config.yaml (packaging bug).
+RUN if [ "$REQUIRE_MODEL" = "1" ]; then python -c "import sentence_transformers"; fi# Fix rapidocr 3.8.x missing arch_config.yaml (packaging bug).
 # See: https://github.com/gvtret/doc-rag-mcp-server/issues/13
 RUN if [ -f scripts/rapidocr/arch_config.yaml ]; then \
       DEST=$(find /app/.venv -path "*/rapidocr/inference_engine/pytorch/networks" -type d 2>/dev/null | head -1); \
