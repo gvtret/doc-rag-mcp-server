@@ -19,28 +19,34 @@ PDF / DOCX / DOC / MD / TXT  →  Markdown  →  Chunks  →  FAISS  →  MCP / 
 ## Requirements
 
 - Linux or WSL2 (Python ≥ 3.10)
-- ~2 GB RAM for embeddings; ~1 GB extra for Docling models on first parse
+- **Ollama server with `bge-m3` pulled** (the production embeddings provider;
+  weights live there, not on this host). Unreachable Ollama degrades to
+  lexical search — no crash, no hang
+- ~2 GB RAM only for the legacy local-weights branch (torch +
+  sentence-transformers); the ollama provider needs none of it
+- ~1 GB extra for Docling models on first parse
 - `antiword` is optional (only needed for legacy `.doc` files)
 - OCR for scanned PDFs is built into Docling (RapidOCR); no separate Tesseract install required
 - Node >= 20 (required to build the Svelte UI in `ui/`; there is no inline
   fallback - `bootstrap.sh`, `install_server_native.sh` and
   `docker/Dockerfile` fail without it)
-- ~2.5 GB disk for `models/bge-m3` (fetched by `bootstrap.sh` when the
-  embeddings extra is selected)
-- **Ollama provider (current default in `config/config.yaml`)**: a running
-  Ollama server with `bge-m3` pulled (`ollama pull bge-m3`, default
-  `api_base http://127.0.0.1:11434`). When Ollama is unreachable the
-  service starts with `ready: false` and `doc_search` degrades to lexical
-  results (no crash, no hang); the HF-model disk requirements above apply
-  only to the legacy local sentence-transformers branch.
+- ~2.5 GB disk for `models/bge-m3` — **legacy branch only** (fetched by
+  `bootstrap.sh` when the local `embeddings` extra is selected and
+  `provider: ollama` is not set)
 
 ## Quickstart
 
 ```bash
-# uv is the official installer since v2.1; the bootstrap script installs it if missing.
+# 1. Ollama with the embedding model (the production embeddings provider):
+#    https://ollama.com/download, then:
+ollama pull bge-m3                # name must match embeddings.model_name
+
+# 2. Python side: uv is the official installer since v2.1; the bootstrap
+#    script installs it if missing.
 git clone https://github.com/gvtret/doc-rag-mcp-server
 cd doc-rag
-bash scripts/bootstrap.sh        # installs uv, runs `uv sync --frozen`, creates .venv
+bash scripts/bootstrap.sh        # installs uv, `uv sync --frozen`, creates .venv,
+                                 # verifies Ollama reachability and the model
 cp YOUR_FILES.pdf sources/incoming/
 uv run doc-rag ingest
 bash scripts/run_mcp_http.sh     # MCP/UI on http://127.0.0.1:3333
@@ -48,16 +54,21 @@ bash scripts/run_mcp_http.sh     # MCP/UI on http://127.0.0.1:3333
 
 Then open `http://127.0.0.1:3333/ui` or point Cursor at `http://127.0.0.1:3333/mcp`.
 
+> Legacy local-weights mode (no Ollama, model in `models/bge-m3`): set
+> `embeddings.provider` unset in `config/config.yaml` and install the
+> `embeddings` extra — bootstrap asks for it and fetches the model.
+> See [docs/install.md](docs/install.md#embeddings).
+
 ## Documentation
 
 | Guide | What's inside |
 | --- | --- |
-| [docs/install.md](docs/install.md) | venv + torch (CPU/GPU), system packages, OCR, offline embedding model, config reference |
+| [docs/install.md](docs/install.md) | Ollama + venv setup, torch (CPU/GPU) for the legacy branch, system packages, config reference |
 | [docs/cli.md](docs/cli.md) | `doc-rag ingest / rebuild / delete / wipe / clean-orphans / clear-incoming` |
 | [docs/mcp.md](docs/mcp.md) | Cursor / Claude integration, Streamable HTTP + SSE, auth, rate limit |
 | [docs/ui.md](docs/ui.md) | Web UI: upload, dedup, ingest, delete, danger zone, degraded-mode banner |
 | [docs/deploy.md](docs/deploy.md) | Docker Compose, native systemd, deploy archive, remote MCP |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Torch/CUDA, MCP not visible, FAISS rebuild, PEP 668, OCR |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Ollama unreachable, Torch/CUDA, MCP not visible, FAISS rebuild, PEP 668, OCR |
 | [docs/roadmap.md](docs/roadmap.md) | Versioning policy, SemVer-protected public surface, release history |
 | [docs/bench-results.md](docs/bench-results.md) | `scripts/bench.py` output: parse/embed/rebuild timings |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | Living session handoff log (see the `handoff` workflow) |

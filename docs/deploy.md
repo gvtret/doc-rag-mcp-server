@@ -11,7 +11,7 @@ Three deployment styles, in increasing order of operational seriousness:
 ```bash
 cp .env.example .env
 mkdir -p build sources/incoming sources/archived && chown -R 1000:1000 build sources
-uv run python scripts/fetch_model.py   # ~2.2 GB, once; the build fails without it
+ollama pull bge-m3                # embeddings live on the host Ollama server
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
@@ -20,9 +20,19 @@ The container runs as an unprivileged user (uid 1000), so the bind-mounted
 `./build` and `./sources` must be writable by that uid on the host — hence the
 `chown` step above.
 
-`docker compose` builds with `REQUIRE_MODEL=1`, so the build stops with
-`models/bge-m3 missing` unless the model was fetched first - see
-[Model delivery channels](#model-delivery-channels).
+Embeddings provider is Ollama (`config/config.yaml`): the compose file builds
+with `REQUIRE_MODEL=0` (no `models/bge-m3` needed in the image) and routes the
+container's loopback to the host via `extra_hosts: host-gateway`. Ollama must
+listen on more than container-localhost — set `OLLAMA_HOST=0.0.0.0` in the
+host's ollama service environment. For a remote Ollama server, set
+`embeddings.api_base: http://<host>:11434` in `config/config.yaml`. When
+Ollama is unreachable the container still starts and serves lexical results;
+`/health/ready` reports `model_ready: false` with a reason, and the UI shows
+the degraded-mode banner.
+
+Legacy local-weights mode: set `REQUIRE_MODEL: "1"` — the build then stops
+with `models/bge-m3 missing` unless the model was fetched first (see
+[Model delivery channels](#model-delivery-channels)).
 
 Volumes (defined in `docker-compose.yml`):
 
@@ -50,7 +60,15 @@ sudo bash scripts/install_server_native.sh
 # positional: optional INSTALL_ROOT (default /opt/doc-rag-mcp)
 ```
 
-For GPU embeddings, run the base install first, then swap in a CUDA build of torch:
+Prerequisite for semantic search with the production default
+(`embeddings.provider: ollama`): a running Ollama server on the host with the
+model pulled — `systemctl enable --now ollama && ollama pull bge-m3`. The
+installer prints these reminders and bootstrap verifies reachability
+(non-fatal warnings). The service recovers on its own once Ollama comes back.
+The torch/embeddings stack below is only needed for the legacy local-weights
+branch.
+
+For GPU embeddings (legacy branch), run the base install first, then swap in a CUDA build of torch:
 
 ```bash
 sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && bash scripts/install_torch_gpu.sh'
@@ -157,18 +175,24 @@ Documents page shows the WARN banner until `doc-rag rebuild` finishes.
 
 ## Model delivery channels
 
-The embedding model must reach the target host before semantic search
-works. Three channels, matching the deployment styles above:
+Which channel applies depends on the embeddings provider:
 
-### Docker Compose (baked into the image)
+- **Ollama provider (production default)** — no model delivery at all:
+  weights live on the Ollama *server*, delivered by `ollama pull <model>`.
+  The fingerprint is read from the Ollama manifest store, so the BUG-006
+  rebuild gate still fires when the model is re-pulled with different
+  weights. The channels below are for the legacy local-weights branch only
+  (`embeddings.provider` unset, weights in `models/bge-m3`).
 
-`docker/Dockerfile` takes a `REQUIRE_MODEL` build-arg (set to `"1"` in
-`docker-compose.yml`). `REQUIRE_MODEL=1` copies the whole `models/`
-directory into the image (`COPY --chown=docrag:docrag`, in its own early
-layer), fails fast when `models/bge-m3/config.json` is missing, and installs
-the `faiss` + `embeddings` extras. `REQUIRE_MODEL=0` (the CI default)
-installs `server` only - a model-free image that cannot answer semantic
-queries. The image sets `HF_HOME=/app/build/hf-cache`; the Dockerfile syntax
+### Docker Compose (baked into the image — legacy mode)
+
+`docker/Dockerfile` takes a `REQUIRE_MODEL` build-arg. `REQUIRE_MODEL=1`
+copies the whole `models/` directory into the image
+(`COPY --chown=docrag:docrag`, in its own early layer), fails fast when
+`models/bge-m3/config.json` is missing, and installs the `faiss` +
+`embeddings` extras. `REQUIRE_MODEL=0` (the compose and CI default with the
+ollama provider) installs `server` + `faiss` and reaches the host Ollama
+over HTTP. The image sets `HF_HOME=/app/build/hf-cache`; the Dockerfile syntax
 is pinned to `dockerfile:1.19` because it relies on `COPY --exclude`:
 
 ```bash
@@ -176,7 +200,7 @@ uv run python scripts/fetch_model.py   # on a connected machine, in the repo roo
 docker compose up -d --build
 ```
 
-### Native systemd (rsync, protected)
+### Native systemd (rsync, protected — legacy mode)
 
 `scripts/install_server_native.sh` rsyncs the repo into `INSTALL_ROOT`
 with `--filter 'protect models/'` - an upgrade never deletes a model
@@ -192,7 +216,7 @@ installed copy reverts the server's weights and makes the index stale
 sudo -u docrag -H bash -lc 'cd /opt/doc-rag-mcp && .venv/bin/python scripts/fetch_model.py'
 ```
 
-### Deploy archive (shipped in the tarball)
+### Deploy archive (shipped in the tarball — legacy mode)
 
 `scripts/make_deploy_archive.sh` adds `models/bge-m3` to the staging tree when
 both marker files exist (`models/` is gitignored, so `git archive` never
@@ -216,9 +240,13 @@ The interesting state is:
 - `build/audit.log` (append-only history of destructive operations)
 - `sources/archived/` (originals, if you care about retaining them)
 
-`models/` is not part of the backup - the snapshot is re-fetchable with
-`uv run python scripts/fetch_model.py` (or shipped again via the deploy
-archive), so don't look for the ~2.2 GB in the tarball.
+With the Ollama provider (the default) nothing model-shaped lives on this
+host: weights are managed by the Ollama server (`ollama pull`), so neither
+`models/` nor any model delivery step applies.
+
+`models/` (legacy branch) is not part of the backup - the snapshot is
+re-fetchable with `uv run python scripts/fetch_model.py` (or shipped again
+via the deploy archive), so don't look for the ~2.2 GB in the tarball.
 
 Everything under `build/` can be regenerated from `sources/archived/`
 via `doc-rag rebuild` (or full `ingest` if the markdown is gone too),

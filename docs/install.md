@@ -46,12 +46,18 @@ bash scripts/bootstrap.sh
 
 `bootstrap.sh` installs uv if missing, then prompts (with sensible
 defaults) for which extras to include and runs `uv sync --frozen` to
-materialise the venv into `.venv/`.
+materialise the venv into `.venv/`. When `config/config.yaml` selects
+`embeddings.provider: ollama` (the production default), it also verifies
+the Ollama server is reachable and has the configured model, and skips
+the local-model fetch.
 
 Extras the bootstrap exposes:
 
-- `faiss` — `faiss-cpu` (semantic search index; default: Y)
-- `embeddings` — `torch` + `sentence-transformers` (CPU; default: Y)
+- `faiss` — `faiss-cpu` (semantic search index; default: Y, needed in
+  every mode)
+- `embeddings` — `torch` + `sentence-transformers` (CPU). Only required
+  for the legacy local-weights branch; with `provider: ollama` the
+  default answer is N (the ollama provider talks HTTP, no torch needed)
 - `dev` — `pytest`, `pytest-cov`, `httpx`, `ruff` (default: N)
 - `metrics` — `prometheus-client` (default: N)
 - `unstructured` — PDF quality cascade fallback (default: N). When enabled, if Docling scores below `parsing.quality_fallback_threshold` (0.5), automatically retries with Unstructured.
@@ -59,11 +65,17 @@ Extras the bootstrap exposes:
 `server` (FastAPI + Uvicorn + python-multipart) is always installed —
 nothing else makes sense without the HTTP layer.
 
-When the `embeddings` extra is selected and `models/bge-m3` is absent,
-`bootstrap.sh` runs `scripts/fetch_model.py` (~2.2 GB). Set
-`DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N` to override the choice; a failed download
-only warns, so air-gapped installs still complete (semantic search stays off
-until the model is provided).
+Ollama requirements (checked by bootstrap, non-fatal warnings):
+
+- the Ollama server is running (`systemctl status ollama` / `ollama serve`)
+  and reachable at `embeddings.api_base`
+- the configured model is pulled: `ollama pull bge-m3`
+
+When the `embeddings` extra is selected for the legacy branch and
+`models/bge-m3` is absent, `bootstrap.sh` runs `scripts/fetch_model.py`
+(~2.2 GB). Set `DOC_RAG_BOOTSTRAP_FETCH_MODEL=Y/N` to override the choice;
+a failed download only warns, so air-gapped installs still complete
+(semantic search stays off until the model is provided).
 
 Non-interactive mode (CI / scripted deploy):
 
@@ -114,21 +126,33 @@ a connected box; the path is the same on all Linux hosts.
 ## Docker Compose
 
 ```bash
-cp .env.example .env       # optional: tweak port, origins, API key
-uv run python scripts/fetch_model.py   # ~2.2 GB, once; the build fails without it
+# Ollama on the host with the model pulled (the embeddings provider):
+ollama pull bge-m3
+# Ollama must listen on more than container-localhost for the container to
+# reach it: set OLLAMA_HOST=0.0.0.0 in the ollama service environment.
 docker compose up -d --build
 curl -sS http://127.0.0.1:3333/health
 ```
 
-The image embeds the offline model: `docker-compose.yml` passes
-`REQUIRE_MODEL=1`, so `models/bge-m3` must exist before the build
-(`uv run python scripts/fetch_model.py`). A build with `REQUIRE_MODEL=0`
-(CI) installs the `server` extra only - no `faiss`, no `embeddings` - and
-serves lexical results with `/health/ready` 503 (`model_missing`).
+The production default (`embeddings.provider: ollama` in `config/config.yaml`)
+needs no local model in the image: `docker-compose.yml` builds with
+`REQUIRE_MODEL=0` and the container reaches the host Ollama via
+`host.docker.internal` (`extra_hosts: host-gateway` is already in the compose
+file — `api_base http://127.0.0.1:11434` inside the container resolves to the
+host's loopback through the gateway route). For a remote Ollama server, point
+`embeddings.api_base` at `http://<host>:11434` instead. When Ollama is
+unreachable the container still starts and serves lexical results
+(`/health/ready` reports `model_ready: false`).
 
-The image now builds via uv inside the container (see
+Legacy local-weights mode: set `REQUIRE_MODEL: "1"` in `docker-compose.yml`
+and fetch `models/bge-m3` first (`uv run python scripts/fetch_model.py`,
+~2.2 GB) — the build fails without it, and the `embeddings` extra is then
+installed into the image.
+
+The image builds via uv inside the container (see
 `docker/Dockerfile`); the lockfile guarantees the deployed venv matches
-whatever CI tested.
+whatever CI tested. `REQUIRE_MODEL=0` installs `server` + `faiss` —
+faiss is required by the vector index in every mode.
 
 Volumes mounted by default:
 
@@ -148,6 +172,19 @@ sudo bash scripts/install_server_native.sh
 # optional: <INSTALL_ROOT>  default: /opt/doc-rag-mcp
 ```
 
+Prerequisite for semantic search (provider: ollama): a running Ollama
+server on the host with the model pulled:
+
+```bash
+systemctl enable --now ollama   # or install from https://ollama.com/download
+ollama pull bge-m3              # name must match embeddings.model_name
+```
+
+The installer prints these reminders when `config/config.yaml` selects
+`provider: ollama`; bootstrap also verifies reachability and warns (non-fatal)
+when Ollama is down — the service then serves lexical results until Ollama
+comes back, no restart needed.
+
 The installer:
 
 - creates system user `docrag`
@@ -155,10 +192,12 @@ The installer:
   `build-essential`, `ca-certificates`, `git`, `rsync`, `antiword`
 - syncs the repo into `INSTALL_ROOT` (preserves existing `build/`, `sources/`
   and `models/` - manifest, FAISS index and a delivered model survive upgrades)
-- copies `models/bge-m3` from the source checkout when present
+- copies `models/bge-m3` from the source checkout when present (legacy
+  local-weights branch only)
 - bootstraps the venv via `bash scripts/bootstrap.sh` non-interactively (which
-  installs uv, runs `uv sync --frozen`, and fetches `models/bge-m3` when the
-  embeddings extra is selected and no local copy exists)
+  installs uv, runs `uv sync --frozen`, verifies Ollama when the config
+  selects that provider, and fetches `models/bge-m3` when the local
+  `embeddings` extra is selected and no local copy exists)
 - installs and starts `doc-rag-mcp.service`
 - writes `/etc/default/doc-rag` (edit port / origins / API key, then `systemctl restart doc-rag-mcp`)
 

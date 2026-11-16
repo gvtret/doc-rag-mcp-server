@@ -43,7 +43,28 @@ def _reset_model_loader_state():
     model_watcher.reset_for_tests()
     yield
     model_loader.reset_for_tests()
-    model_watcher.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _restore_doc_rag_log_propagation():
+    """Restore `doc_rag` logger propagation around every test.
+
+    Importing doc_rag.server.mcp_http calls configure_logging(), which sets
+    ``doc_rag.propagate = False`` (production: avoid double-emit to the root
+    handler). pytest's caplog fixture captures records at the ROOT logger,
+    so once propagation is off, every later caplog-based test silently sees
+    zero records and fails. Whether a test sees the broken state used to
+    depend on file ordering (any test importing mcp_http before a caplog
+    test poisoned it); the fixture makes it order-independent: propagation
+    is restored before AND after each test.
+    """
+    import logging
+
+    logger = logging.getLogger("doc_rag")
+    saved = logger.propagate
+    logger.propagate = True
+    yield
+    logger.propagate = saved
 
 
 # --------------------------------------------------------------------------
