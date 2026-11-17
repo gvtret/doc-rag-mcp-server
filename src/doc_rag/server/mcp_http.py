@@ -63,12 +63,6 @@ from doc_rag.raglib.pipeline import (
 from doc_rag.raglib.pipeline import (
     wipe_index as _pipeline_wipe_index,
 )
-from doc_rag.server.stats_helpers import (
-    build_sources_index,
-    count_chunks_per_doc,
-    make_size_resolver,
-    stat_size,
-)
 from doc_rag.raglib.utils import ensure_dir
 from doc_rag.server import metrics as _metrics
 from doc_rag.server.logging_setup import (
@@ -82,6 +76,12 @@ from doc_rag.server.retrieval import (
     indexed_catalog,
     load_manifest_json,
     project_root,
+)
+from doc_rag.server.stats_helpers import (
+    build_sources_index,
+    count_chunks_per_doc,
+    make_size_resolver,
+    stat_size,
 )
 
 # Configure structured logging on import. Idempotent; honours

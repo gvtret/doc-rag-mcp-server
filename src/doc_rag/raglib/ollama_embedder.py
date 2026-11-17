@@ -32,7 +32,6 @@ from __future__ import annotations
 import http.client
 import json
 import logging
-import random
 import time
 import urllib.parse
 from typing import Any
@@ -166,7 +165,9 @@ class OllamaEmbedder:
                 last_exc = e
                 self._drop_connection()  # broken pipe / closed keep-alive
                 if attempt + 1 < _EMBED_RETRIES:
-                    sleep_s = _RETRY_BASE_SLEEP * (2**attempt) + random.uniform(0, 0.25)
+                    # Deterministic jitter by attempt: spreads retries
+                    # without a cryptographically-flagged RNG (S311).
+                    sleep_s = _RETRY_BASE_SLEEP * (2**attempt) + 0.1 * (attempt + 1)
                     logger.warning(
                         "Ollama embed attempt %d/%d failed: %s (retrying in %.2fs)",
                         attempt + 1,

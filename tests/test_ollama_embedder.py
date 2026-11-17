@@ -14,14 +14,12 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
-from doc_rag.raglib.model_loader import _load_ollama_embedder, _OLLAMA_PROBE_STATE
+from doc_rag.raglib.model_loader import _OLLAMA_PROBE_STATE, _load_ollama_embedder
 from doc_rag.raglib.model_paths import _ollama_model_digest, fingerprint_for_cfg
 from doc_rag.raglib.ollama_embedder import build_ollama_embedder, ollama_reachable
-
 
 # ---------------------------------------------------------------- fixtures
 
