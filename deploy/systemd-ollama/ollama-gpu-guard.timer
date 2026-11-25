@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Ollama GPU guard once after each boot
+
+[Timer]
+OnBootSec=90s
+Unit=ollama-gpu-guard.service
+
+[Install]
+WantedBy=timers.target

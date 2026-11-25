@@ -1,0 +1,9 @@
+[Unit]
+Description=One-shot repair of an Ollama CPU-only GPU discovery fallback
+Documentation=file:/usr/local/sbin/ollama-gpu-guard.sh
+After=ollama.service
+Wants=ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ollama-gpu-guard.sh
