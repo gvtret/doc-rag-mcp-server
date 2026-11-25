@@ -329,11 +329,22 @@ def test_rapidocr_empty_text_warning_filtered():
 
     f = _DropEmptyTextDetectionWarning()
     empty = logging.LogRecord(
-        "RapidOCR", logging.WARNING, "main.py", 132,
-        "The text detection result is empty", None, None,
+        "RapidOCR",
+        logging.WARNING,
+        "main.py",
+        132,
+        "The text detection result is empty",
+        None,
+        None,
     )
     other = logging.LogRecord(
-        "RapidOCR", logging.WARNING, "main.py", 132, "some other warning", None, None,
+        "RapidOCR",
+        logging.WARNING,
+        "main.py",
+        132,
+        "some other warning",
+        None,
+        None,
     )
     assert f.filter(empty) is False
     assert f.filter(other) is True
@@ -341,8 +352,11 @@ def test_rapidocr_empty_text_warning_filtered():
     # idempotent attach, and it actually lands on the RapidOCR logger
     _silence_benign_rapidocr_warnings()
     _silence_benign_rapidocr_warnings()
-    attached = [x for x in logging.getLogger("RapidOCR").filters
-                if isinstance(x, _DropEmptyTextDetectionWarning)]
+    attached = [
+        x
+        for x in logging.getLogger("RapidOCR").filters
+        if isinstance(x, _DropEmptyTextDetectionWarning)
+    ]
     assert len(attached) == 1
 
 
@@ -384,4 +398,5 @@ def test_repair_pdf_with_mutool_runs_mutool_clean(tmp_path, monkeypatch):
     assert open(out, "rb").read().endswith(b"repaired")
     assert captured["cmd"][:3] == ["/usr/bin/mutool", "clean", "-gggg"]
     import os
+
     os.unlink(out)

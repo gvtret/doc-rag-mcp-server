@@ -59,9 +59,7 @@ def stat_size(path: Path) -> int | None:
         return None
 
 
-def make_size_resolver(
-    root: Path, paths: dict[str, Any], sources_index: dict[str, Path]
-):
+def make_size_resolver(root: Path, paths: dict[str, Any], sources_index: dict[str, Path]):
     """Return a resolver: manifest source_file -> byte size or None.
 
     Ladder: (1) exact manifest path, (2) basename in the roots of

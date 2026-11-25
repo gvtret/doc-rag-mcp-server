@@ -230,7 +230,8 @@ def test_unresolvable_model_is_reported(tmp_path, monkeypatch):
     monkeypatch.setenv("DOC_RAG_ROOT", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        model_watcher, "resolve_model_path",
+        model_watcher,
+        "resolve_model_path",
         lambda cfg, root=None: None,
     )
     cfg = {"embeddings": {"model_name": "BAAI/bge-m3"}}
