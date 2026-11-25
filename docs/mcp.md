@@ -9,12 +9,12 @@ endpoint. One process serves MCP, the Web UI, and `/health` from port 3333.
 | --- | --- |
 | `POST /mcp` | JSON-RPC request/response (`application/json`) |
 | `GET  /mcp` | SSE stream (`text/event-stream`) — `doc_rag/ready` notification + keepalives |
-| `GET  /health` | `{"status":"ok",...}` health check |
+| `GET  /health` | `{"status":"ok",...,"embeddings_degraded":false,"ollama_backend":"gpu"}` health check |
 | `GET  /ui` | Redirects to the Web UI at `/ui-next/` |
 | `GET  /ui/mcp/cursor.json` | drop-in MCP config for Cursor |
 | `GET  /ui/mcp/vscode.json` | drop-in MCP config for VS Code |
 | `GET  /health/live` | liveness probe — always 200 |
-| `GET  /health/ready` | readiness probe - 503 if no manifest, a job is in flight, or (semantic/hybrid) the model is missing (`model_missing`), the index is stale (`index_stale`) or missing (`index_missing`, faiss backend only) |
+| `GET  /health/ready` | readiness probe - 503 if no manifest, a job is in flight, or (semantic/hybrid) the model is missing (`model_missing`), the index is stale (`index_stale`) or missing (`index_missing`, faiss backend only). Informational fields: `embeddings_degraded` (breaker open/half-open) and `ollama_backend` (`gpu`/`partial`/`cpu`/`unloaded`/`unreachable`) |
 | `GET  /metrics` | Prometheus text exposition (requires `[metrics]` extra) |
 
 ## Tools exposed

@@ -1008,12 +1008,23 @@ def _doc_search_docs_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         top_k = 10
 
-    from doc_rag.server.retrieval import doc_search
+    from doc_rag.server.retrieval import doc_search, indexed_catalog
 
     results = doc_search(query=query, top_k=max(top_k * 3, 30), namespace="default", filters=None)
 
+    # After the search: a half-open probe in this request may have recovered
+    # the breaker, and then the results are semantic (no notice).
+    notice_items: list[dict[str, Any]] = []
+    try:
+        if indexed_catalog().get("embeddings_degraded"):
+            from doc_rag.server.search_tool import DEGRADED_NOTICE
+
+            notice_items = [{"type": "text", "text": DEGRADED_NOTICE}]
+    except Exception:
+        notice_items = []
+
     if not results:
-        return [{"type": "text", "text": "No results."}]
+        return [*notice_items, {"type": "text", "text": "No results."}]
 
     seen_docs: dict[str, dict[str, Any]] = {}
     for r in results:
@@ -1042,7 +1053,7 @@ def _doc_search_docs_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     docs = sorted(seen_docs.values(), key=lambda d: d.get("best_score") or 0, reverse=True)[:top_k]
 
     if not docs:
-        return [{"type": "text", "text": "No documents found."}]
+        return [*notice_items, {"type": "text", "text": "No documents found."}]
 
     base_url = os.environ.get("DOC_RAG_HTTP_HOST", "http://127.0.0.1:3333")
     host = os.environ.get("DOC_RAG_HTTP_HOST", "")
@@ -1071,7 +1082,7 @@ def _doc_search_docs_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         block += f"\n  Download: {download_url}"
         lines.append(block)
 
-    return [{"type": "text", "text": "\n\n".join(lines)}]
+    return [*notice_items, {"type": "text", "text": "\n\n".join(lines)}]
 
 
 def _handle_one(req: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
@@ -1424,6 +1435,27 @@ def _readiness_state() -> dict[str, Any]:
     except Exception:
         model_status = {}
     checks["model_ready"] = bool(model_status.get("ready"))
+    # Informational: embeddings are failing fast and searches degrade to
+    # lexical. Deliberately NOT in `checks` (that dict is readiness gates)
+    # and NOT a readiness failure: lexical results are still correct and fast.
+    embeddings_degraded = bool(model_status.get("degraded"))
+
+    # Where Ollama runs the embedding model (gpu / cpu / unloaded /
+    # unreachable). A CPU-only backend is the 2026-11-25 incident signature;
+    # it is invisible in /api/tags and only shows up as slow embeddings.
+    ollama_backend: str | None = None
+    try:
+        embeddings_cfg = cfg.get("embeddings") or {}
+        if str(embeddings_cfg.get("provider") or "").strip().lower() == "ollama":
+            from doc_rag.raglib.ollama_embedder import ollama_backend_state
+
+            ollama_backend = ollama_backend_state(
+                str(embeddings_cfg.get("api_base") or "http://127.0.0.1:11434"),
+                str(embeddings_cfg.get("model_name") or ""),
+                timeout=1.0,
+            )
+    except Exception:
+        ollama_backend = None
 
     # Semantic index files (faiss backend). Both files must exist — same
     # semantics as indexed_catalog's semantic_index_present.
@@ -1491,6 +1523,8 @@ def _readiness_state() -> dict[str, Any]:
         "checks": checks,
         "reasons": reasons,
         "index_stale": index_stale,
+        "embeddings_degraded": embeddings_degraded,
+        "ollama_backend": ollama_backend,
     }
 
 
@@ -1516,7 +1550,7 @@ async def health_ready() -> JSONResponse:
     In lexical mode the model/index checks stay informational: none of
     `model_missing`, `index_stale` or `index_missing` is reported.
     """
-    state = _readiness_state()
+    state = await asyncio.to_thread(_readiness_state)
     code = 200 if state["ready"] else 503
     return JSONResponse(
         {"status": "ready" if state["ready"] else "not_ready", **state}, status_code=code
@@ -1551,7 +1585,7 @@ async def health() -> JSONResponse:
     working but can be migrated to /health/live or /health/ready on their
     own schedule.
     """
-    state = _readiness_state()
+    state = await asyncio.to_thread(_readiness_state)
     return JSONResponse(
         {
             "status": "ok",
@@ -1559,6 +1593,8 @@ async def health() -> JSONResponse:
             "version": _VERSION,
             "ready": state["ready"],
             "reasons": state["reasons"],
+            "embeddings_degraded": state.get("embeddings_degraded", False),
+            "ollama_backend": state.get("ollama_backend"),
         }
     )
 

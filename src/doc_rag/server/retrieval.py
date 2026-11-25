@@ -11,6 +11,7 @@ import threading
 from typing import Any
 
 from doc_rag.raglib import model_loader as model_loader
+from doc_rag.raglib.ollama_embedder import EmbeddingUnavailable
 from doc_rag.server.lexical_index import LexicalIndex, get_lexical_index, reset_lexical_cache
 
 logger = logging.getLogger(__name__)
@@ -442,6 +443,10 @@ def indexed_catalog() -> dict[str, Any]:
         "lexical_search_ready": lexical_ready,
         "semantic_search_ready": semantic_ready,
         "model_ready": model_ready,
+        # Degraded embeddings (circuit breaker open / half-open): semantic
+        # results are being skipped and lexical results served. Informational,
+        # not a readiness gate.
+        "embeddings_degraded": bool(model_status.get("degraded")),
         "weights_sha256": index_fp,
         "index_stale": index_stale,
         "stale_reason": stale_reason,
@@ -783,6 +788,14 @@ def semantic_search(
         # Filter validation (unknown keys etc.) must fail loud like in
         # hybrid/lexical, not silently degrade to the legacy path.
         raise
+    except EmbeddingUnavailable:
+        # Fail fast: a wedged embedding backend must not be given a second
+        # chance on the legacy path below -- that would double the query
+        # timeout and blow the MCP tool budget (504).
+        logger.warning(
+            "semantic_search: embeddings unavailable -- lexical fallback (no legacy retry)"
+        )
+        return None
     except Exception:
         pass
 
@@ -902,13 +915,21 @@ def semantic_search(
     # must return None (-> doc_search serves lexical results) instead of
     # raising, so a dead Ollama cannot turn every search into an error.
     try:
-        vec = model.encode([query], normalize_embeddings=True)
+        # Query embeddings use the short per-query timeout when the embedder
+        # supports it; encode() would use the bulk-build timeout here. The
+        # capability marker avoids sentence-transformers' own encode_query
+        # (which injects a prompt and would change the query representation).
+        if getattr(model, "supports_query_deadline", False):
+            vec = model.encode_query([query], normalize_embeddings=True)
+        else:
+            vec = model.encode([query], normalize_embeddings=True)
         vec = np.asarray(vec, dtype=np.float32)
         if vec.shape[0] == 0 or vec.size == 0:
             return None
     except Exception as e:
-        logger.warning("semantic_search: embed failed (%s: %s) -- lexical fallback",
-                       type(e).__name__, e)
+        logger.warning(
+            "semantic_search: embed failed (%s: %s) -- lexical fallback", type(e).__name__, e
+        )
         return None
 
     # Legacy path has no payload store: oversample + post-filter so the

@@ -39,6 +39,16 @@ _STALE_NOTICE = (
     "чтобы переиндексировать корпус с текущими весами."
 )
 
+# Брейкер эмбеддингов открыт: сервер (Ollama) не отвечает в пределах
+# тайм-аута, поэтому семантический поиск временно пропускается. Важно
+# сказать это клиенту, а не молча отдать менее релевантную лексику.
+DEGRADED_NOTICE = (
+    "Семантический поиск временно недоступен: сервер эмбеддингов (Ollama) "
+    "не отвечает в пределах тайм-аута. Ниже - результаты лексического поиска: "
+    "они менее релевантны и могут пропустить семантически близкие формулировки. "
+    "Диагностика: GET /health, поля embeddings_degraded и ollama_backend."
+)
+
 
 def _build_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build structured citations array from search results."""
@@ -96,6 +106,11 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         filters = filters or {}
         filters["is_table"] = True
 
+    results = doc_search(query=query, top_k=top_k, namespace=namespace, filters=filters)
+
+    # Read the catalog AFTER the search: a half-open probe performed by this
+    # very request may have recovered the breaker, in which case semantic
+    # results were produced and no degraded notice must be shown.
     fallback_active = False
     notice: str | None = None
     try:
@@ -111,22 +126,25 @@ def doc_search_tool(arguments: dict[str, Any]) -> list[dict[str, Any]]:
                 (not cat.get("semantic_search_ready"))
                 or (not cat.get("model_ready"))
                 or bool(cat.get("index_stale"))
+                or bool(cat.get("embeddings_degraded"))
             )
             if degraded:
                 fallback_active = True
-                if cat.get("index_stale"):
-                    # The index exists but was built with different weights.
-                    notice = _STALE_NOTICE
-                elif not cat.get("model_ready"):
+                if not cat.get("model_ready"):
                     # Model unavailable: rebuilding the index would not help.
                     notice = _MODEL_NOTICE
+                elif cat.get("embeddings_degraded"):
+                    # Model and index are fine; the embedding backend is
+                    # timing out or recovering (circuit breaker).
+                    notice = DEGRADED_NOTICE
+                elif cat.get("index_stale"):
+                    # The index exists but was built with different weights.
+                    notice = _STALE_NOTICE
                 else:
                     # Model is fine; the index itself is missing/unbuilt.
                     notice = _FALLBACK_NOTICE
     except Exception:
         pass
-
-    results = doc_search(query=query, top_k=top_k, namespace=namespace, filters=filters)
 
     content: list[dict[str, Any]] = []
     if fallback_active and notice:

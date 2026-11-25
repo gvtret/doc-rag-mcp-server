@@ -147,7 +147,78 @@ def test_doc_search_tool_stale_notice_when_fingerprint_mismatch(tmp_corpus_root,
     assert content[0]["text"] == _STALE_NOTICE
 
 
-def _patch_model_status(monkeypatch, *, ready: bool, fingerprint: str | None = None):
+def test_doc_search_tool_degraded_notice_when_embeddings_unavailable(tmp_corpus_root, monkeypatch):
+    """An open embedding breaker must be announced, not silently swallowed."""
+    from doc_rag.server.search_tool import DEGRADED_NOTICE, doc_search_tool
+
+    _config_with_no_index(tmp_corpus_root)
+    _patch_model_status(monkeypatch, ready=True, fingerprint="fp", degraded=True)
+
+    index_dir = tmp_corpus_root / "build" / "index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / "faiss.index").write_bytes(b"stub")
+    (index_dir / "index_meta.json").write_text(
+        json.dumps({"weights_sha256": "fp"}), encoding="utf-8"
+    )
+    (tmp_corpus_root / "build" / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
+    )
+
+    chunks_path = tmp_corpus_root / "build" / "chunks_jsonl" / "chunks.jsonl"
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    chunks_path.write_text(
+        json.dumps(
+            {
+                "chunk_id": "doc-1:0000",
+                "doc_id": "doc-1",
+                "text": "the unique marker word zeppelin appears here",
+                "source_file": "doc-1.txt",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    content = doc_search_tool({"query": "zeppelin", "top_k": 3})
+
+    assert content, "expected at least one content item"
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == DEGRADED_NOTICE
+
+
+def test_doc_search_tool_degraded_notice_with_otherwise_healthy_index(tmp_corpus_root, monkeypatch):
+    """Only the breaker is open: index and model are fine.
+
+    Isolates the `embeddings_degraded` branch from the generic
+    "semantic_search_ready is False" branch.
+    """
+    import doc_rag.server.search_tool as search_tool_module
+
+    _config_with_no_index(tmp_corpus_root)
+    monkeypatch.setattr(
+        search_tool_module,
+        "indexed_catalog",
+        lambda: {
+            "semantic_search_ready": True,
+            "model_ready": True,
+            "index_stale": False,
+            "embeddings_degraded": True,
+        },
+    )
+    monkeypatch.setattr(search_tool_module, "doc_search", lambda *a, **k: [])
+
+    content = search_tool_module.doc_search_tool({"query": "anything"})
+
+    assert content[0]["text"] == search_tool_module.DEGRADED_NOTICE
+
+
+def _patch_model_status(
+    monkeypatch,
+    *,
+    ready: bool,
+    fingerprint: str | None = None,
+    degraded: bool = False,
+):
     """Pin model_loader.status() for notice-branch tests."""
     from doc_rag.raglib import model_loader as model_loader
 
@@ -160,8 +231,54 @@ def _patch_model_status(monkeypatch, *, ready: bool, fingerprint: str | None = N
             "fingerprint": fingerprint,
             "error": None if ready else "embedder construction failed",
             "source": "local" if ready else None,
+            "degraded": degraded,
         },
     )
+
+
+def test_semantic_search_fails_fast_without_legacy_retry(tmp_corpus_root, monkeypatch):
+    """A wedged embedding backend must end the query on the first attempt.
+
+    Regression guard for the 2026-11-25 incident: after an
+    EmbeddingUnavailable from the vector path, the legacy FAISS fallback
+    used to embed the query again, doubling the query timeout (2 x 20 s)
+    and blowing the 30 s MCP tool budget.
+    """
+    import doc_rag.raglib.vector_index as vector_index
+    from doc_rag.raglib import model_loader
+    from doc_rag.raglib.ollama_embedder import EmbeddingUnavailable
+    from doc_rag.server import retrieval
+
+    cfg = _config_with_no_index(tmp_corpus_root)
+    # Make the legacy branch reachable: without a faiss.index file it would
+    # bail out before loading the embedder and the guard would be vacuous.
+    (tmp_corpus_root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (tmp_corpus_root / "build" / "index" / "faiss.index").write_bytes(b"stub")
+
+    class _WedgedVectorIndex:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def is_available(self):
+            return True
+
+        def search(self, query, top_k):
+            raise EmbeddingUnavailable("Ollama embed timed out after 20s")
+
+        def search_with_filter(self, query, top_k, filters, chunk_meta=None):
+            raise EmbeddingUnavailable("Ollama embed timed out after 20s")
+
+    monkeypatch.setattr(vector_index, "VectorIndex", _WedgedVectorIndex)
+    monkeypatch.setattr(
+        model_loader,
+        "load_embedder",
+        lambda cfg: (_ for _ in ()).throw(
+            AssertionError("legacy path embedded the query a second time")
+        ),
+    )
+    retrieval.invalidate_index_cache()
+
+    assert retrieval.semantic_search(cfg, [], "query", 2) is None
 
 
 def test_doc_search_tool_empty_query_short_circuits(tmp_corpus_root):

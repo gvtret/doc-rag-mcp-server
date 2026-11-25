@@ -68,6 +68,12 @@ installer prints these reminders and bootstrap verifies reachability
 The torch/embeddings stack below is only needed for the legacy local-weights
 branch.
 
+On WSL2 the GPU may not be ready when Ollama starts; Ollama then stays
+CPU-only for its whole lifetime and embeddings take minutes. Install the
+guard units from `deploy/systemd-ollama/` (GPU-ready gate + one-shot
+post-boot repair, see its README) and check `/health` field
+`ollama_backend` is `gpu`.
+
 For GPU embeddings (legacy branch), run the base install first, then swap in a CUDA build of torch:
 
 ```bash

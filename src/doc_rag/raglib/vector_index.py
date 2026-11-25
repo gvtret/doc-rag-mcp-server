@@ -17,6 +17,7 @@ import numpy as np
 from doc_rag.raglib import model_loader, model_paths
 from doc_rag.raglib.chunking_meta import config_fingerprint
 from doc_rag.raglib.embedding_text import build_embedding_text
+from doc_rag.raglib.ollama_embedder import EmbeddingUnavailable
 from doc_rag.raglib.vectorstore import VectorStore
 from doc_rag.raglib.vectorstore.factory import create_vector_store
 
@@ -275,17 +276,27 @@ class VectorIndex:
     def _batch_size(self) -> int:
         return int(self._cfg.get("embeddings", {}).get("batch_size", 32))
 
-    def _encode(self, texts: list[str], max_retries: int = 3) -> np.ndarray:
+    def _encode(self, texts: list[str], max_retries: int = 3, query: bool = False) -> np.ndarray:
         """Encode texts to vectors with retry logic.
 
         Halves the encoding batch size on each retry. A failure is often
         OOM triggered by the current batch size being too large for
         available memory (CPU RAM or GPU VRAM) — retrying with the *same*
         batch size just reproduces the same failure three times in a row.
+
+        query=True uses the embedder's short query timeout and (per call
+        site) a single attempt: an interactive search must fail fast and
+        fall back to lexical instead of consuming the MCP tool budget.
         """
         embedder = self._ensure_embedder()
         if embedder is None:
             raise RuntimeError("sentence-transformers not installed")
+
+        # Explicit capability marker, not hasattr(): sentence-transformers
+        # has its own encode_query(prompt_name="query") which would change
+        # the query representation behind our back.
+        use_query_deadline = bool(query and getattr(embedder, "supports_query_deadline", False))
+        encode_query = getattr(embedder, "encode_query", None) if use_query_deadline else None
 
         batch_size = self._batch_size()
         total = len(texts)
@@ -302,19 +313,32 @@ class VectorIndex:
                 bs = batch_size
                 for start in range(0, total, bs):
                     sl = texts[start : start + bs]
-                    parts.append(
-                        embedder.encode(
-                            sl,
-                            batch_size=bs,
-                            show_progress_bar=False,
-                            normalize_embeddings=self._normalize(),
-                        ).astype(np.float32)
-                    )
+                    if encode_query is not None:
+                        parts.append(
+                            encode_query(
+                                sl,
+                                normalize_embeddings=self._normalize(),
+                            ).astype(np.float32)
+                        )
+                    else:
+                        parts.append(
+                            embedder.encode(
+                                sl,
+                                batch_size=bs,
+                                show_progress_bar=False,
+                                normalize_embeddings=self._normalize(),
+                            ).astype(np.float32)
+                        )
                     done += len(sl)
                     self._emit("embed", done, total)
                 vecs = np.vstack(parts) if parts else np.zeros((0, self.dim or 0), dtype=np.float32)
                 self._emit("embed", total, total)
                 return vecs
+            except EmbeddingUnavailable:
+                # Fail fast: retrying (or halving the batch) cannot help a
+                # wedged backend, and wrapping it would hide the reason from
+                # semantic_search's degrade-to-lexical handler.
+                raise
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:
@@ -483,7 +507,7 @@ class VectorIndex:
         store = self._ensure_store()
         if store.size == 0:
             return np.array([], dtype=np.float32), []
-        vec = self._encode([query])
+        vec = self._encode([query], max_retries=1, query=True)
         return store.search(vec, top_k)
 
     def search_with_filter(
@@ -515,14 +539,16 @@ class VectorIndex:
         if store.size == 0:
             return np.array([], dtype=np.float32), [], []
         if not filters:
-            vec = self._encode([query])
+            vec = self._encode([query], max_retries=1, query=True)
             dists, ids = store.search(vec, top_k)
             return dists, ids, [{"chunk_id": cid} for cid in ids]
 
         _validate_filter_keys(filters)
 
         if hasattr(store, "search_with_filter"):
-            return store.search_with_filter(self._encode([query]), top_k, filters)
+            return store.search_with_filter(
+                self._encode([query], max_retries=1, query=True), top_k, filters
+            )
 
         if not chunk_meta:
             # None AND {}: both mean "no metadata available" and must not
@@ -547,7 +573,7 @@ class VectorIndex:
 
         # Non-FAISS backend without native filter support: oversample and
         # post-filter so the filters are still enforced, not ignored.
-        vec = self._encode([query])
+        vec = self._encode([query], max_retries=1, query=True)
         oversample = min(max(top_k * 20, top_k), store.size)
         dists, ids = store.search(vec, oversample)
         allowed = set(allowed_ids)
@@ -570,7 +596,7 @@ class VectorIndex:
         exact min(top_k, len(allowed)) on the exact branch, at most top_k
         on the oversample branch (an ANN slice may miss allowed chunks).
         """
-        vec = self._encode([query])
+        vec = self._encode([query], max_retries=1, query=True)
         positions = store.positions_for(allowed_ids)
         if not positions:
             return np.array([], dtype=np.float32), [], []

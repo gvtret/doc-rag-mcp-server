@@ -26,11 +26,14 @@ Behaviour:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
 
 from doc_rag.raglib.model_paths import fingerprint_for_cfg, resolve_model_path
+
+logger = logging.getLogger(__name__)
 
 
 def _import_st():
@@ -72,20 +75,40 @@ def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
     lexical fallback (the documented degradation contract). The probe
     result is cached for _OLLAMA_PROBE_TTL seconds so the service
     recovers on its own once Ollama comes back, without a restart.
+
+    The returned instance is also recorded as the current embedder, so
+    status() can surface its circuit-breaker state (degraded embeddings)
+    to /health.
     """
+    global _current
     try:
         from doc_rag.raglib.ollama_embedder import build_ollama_embedder
     except Exception as exc:  # pragma: no cover - defensive
-        _status.update({"ready": False, "path": None, "fingerprint": None,
-                        "error": f"ollama_embedder import failed: {exc}", "source": None})
+        _status.update(
+            {
+                "ready": False,
+                "path": None,
+                "fingerprint": None,
+                "error": f"ollama_embedder import failed: {exc}",
+                "source": None,
+            }
+        )
         return None
     try:
         emb = build_ollama_embedder(cfg)
     except Exception as exc:
         # Keep the ollama-specific reason visible: the caller (load_embedder)
         # must not fall through to the local branch and overwrite status.error.
-        _status.update({"ready": False, "path": None, "fingerprint": None,
-                        "error": f"ollama embedder config error: {exc}", "source": None})
+        _status.update(
+            {
+                "ready": False,
+                "path": None,
+                "fingerprint": None,
+                "error": f"ollama embedder config error: {exc}",
+                "source": None,
+            }
+        )
+        _current = None
         return None
     if emb is None:
         return None
@@ -96,13 +119,27 @@ def _load_ollama_embedder(cfg: dict[str, Any]) -> Any | None:
     except Exception:  # pragma: no cover - defensive: fingerprint is advisory
         fingerprint = None
     if not _ollama_probe_ok(emb):
-        _status.update({"ready": False, "path": f"ollama:{emb.model}",
-                        "fingerprint": fingerprint,
-                        "error": f"ollama unreachable at {emb.api_base}",
-                        "source": "ollama"})
+        _status.update(
+            {
+                "ready": False,
+                "path": f"ollama:{emb.model}",
+                "fingerprint": fingerprint,
+                "error": f"ollama unreachable at {emb.api_base}",
+                "source": "ollama",
+            }
+        )
+        _current = None
         return None
-    _status.update({"ready": True, "path": f"ollama:{emb.model}",
-                    "fingerprint": fingerprint, "error": None, "source": "ollama"})
+    _status.update(
+        {
+            "ready": True,
+            "path": f"ollama:{emb.model}",
+            "fingerprint": fingerprint,
+            "error": None,
+            "source": "ollama",
+        }
+    )
+    _current = emb
     return emb
 
 
@@ -152,7 +189,9 @@ def load_embedder(cfg: dict[str, Any]) -> Any | None:
     Note: max_seq_length / normalize are not part of the key; changing
     them in config requires a process restart to take effect.
     """
-    ollama_configured = str((cfg.get("embeddings") or {}).get("provider") or "").strip().lower() == "ollama"
+    ollama_configured = (
+        str((cfg.get("embeddings") or {}).get("provider") or "").strip().lower() == "ollama"
+    )
     ollama = _load_ollama_embedder(cfg)
     if ollama is not None:
         return ollama
@@ -275,8 +314,33 @@ def current_embedder() -> Any | None:
 
 
 def status() -> dict[str, Any]:
-    """Last load attempt outcome: ready, path, fingerprint, error, source."""
-    return dict(_status)
+    """Last load attempt outcome: ready, path, fingerprint, error, source.
+
+    Adds `degraded` (circuit breaker open: embeddings are failing fast and
+    searches fall back to lexical) and the breaker snapshot when the current
+    embedder exposes health().
+    """
+    result = dict(_status)
+    embedder = _current
+    health = getattr(embedder, "health", None) if embedder is not None else None
+    if callable(health):
+        try:
+            snapshot = health()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("embedder health() failed: %s: %s", type(exc).__name__, exc)
+            snapshot = None
+        if isinstance(snapshot, dict):
+            result["breaker"] = snapshot
+            # half_open is not yet proven healthy: report it as degraded so
+            # /health never claims "ok" while embeddings still fail.
+            state = snapshot.get("state")
+            if state is None:
+                result["degraded"] = bool(snapshot.get("open"))
+            else:
+                result["degraded"] = state != "closed"
+            return result
+    result.setdefault("degraded", False)
+    return result
 
 
 def reset_for_tests() -> None:

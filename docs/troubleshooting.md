@@ -115,6 +115,34 @@ of serving a doomed request. If you still see a hang:
 3. The fix that prevents the original incident: `semantic_search` returns `None` if the
    index is missing, instead of building it inline (see `src/doc_rag/server/retrieval.py`).
 
+### Ollama silently runs the model on CPU (2026-11-25 incident)
+
+Symptom: every MCP `tools/call` returns 504 after ~30 s while
+`/health` is green; `journalctl -u doc-rag-mcp -b` (add `--user` for a
+user-session install) shows
+`Ollama embed ... timed out` and `semantic_search: embed failed`. Cause:
+Ollama started before the WSL2 GPU was ready, both CUDA discovery
+probes hit their 30 s watchdog, and the process permanently registered
+a CPU-only inference backend (`inference compute id=cpu library=cpu`).
+Embeddings then take 90 s - 5 min per batch, far beyond the 30 s MCP
+budget.
+
+Diagnose:
+
+```bash
+curl -s http://127.0.0.1:3333/health | python3 -m json.tool
+# ollama_backend: "cpu"  -> CPU-only fallback, "gpu" is healthy
+ollama ps          # PROCESSOR must be 100% GPU, not 100% CPU
+journalctl -u ollama -b | grep 'inference compute'
+```
+
+Repair now: `sudo systemctl restart ollama` (GPU is ready by then).
+Prevention shipped with the repo: `wait-for-gpu.sh` runs as
+`ExecStartPre` of `ollama.service` (waits up to 60 s for `/dev/dxg` +
+NVML), `ollama-gpu-guard.timer` restarts Ollama once per boot if it
+still came up CPU-only, and `OLLAMA_KEEP_ALIVE=30m` avoids repeated
+model reloads. Sources and install/rollback steps: `deploy/systemd-ollama/`.
+
 ## FAISS rebuild is taking hours
 
 Expected on CPU. With `bge-large-en-v1.5` and ~4500 chunks, a CPU-only rebuild on

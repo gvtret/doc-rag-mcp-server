@@ -65,6 +65,22 @@ embeddings:
   # saturated chunk is not silently tail-truncated by the model. bge-m3
   # supports 8192 natively; 576 keeps the extra encode cost ~12%.
   model_name: "bge-m3"
+  # Timeouts and degradation guard for the Ollama provider.
+  # request_timeout_seconds guards bulk index builds (a batch can be slow on
+  # a cold model); query_timeout_seconds guards interactive query embeddings
+  # and MUST stay well below the MCP tool budget (DOC_RAG_TOOL_TIMEOUT_SEC,
+  # default 30 s) so a stuck Ollama degrades to lexical results instead of
+  # returning 504.
+  request_timeout_seconds: 120
+  # 25 s measured cold model load on this host is ~23 s; keep the query
+  # timeout just above it but below the 30 s MCP budget, so a cold first
+  # query still succeeds while a wedged backend degrades to lexical in time.
+  query_timeout_seconds: 25
+  # After this many consecutive embed timeouts the breaker opens for
+  # breaker_cooldown_seconds: searches return lexical results immediately and
+  # /health reports embeddings_degraded=true.
+  breaker_threshold: 2
+  breaker_cooldown_seconds: 60
   # device is ignored by the ollama provider (server-side GPU choice);
   # it only matters for the local sentence-transformers fallback branch.
   device: "cpu"

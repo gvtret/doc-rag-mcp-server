@@ -105,6 +105,64 @@ def test_legacy_health_keeps_returning_200(tmp_corpus_root: Path):
     assert "reasons" in body
 
 
+def test_health_reports_embeddings_degraded_and_backend(
+    tmp_corpus_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pytest.importorskip("fastapi")
+    client, root = _client(tmp_corpus_root, monkeypatch)
+    (root / "build" / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "documents": []}), encoding="utf-8"
+    )
+    (root / "build" / "index").mkdir(parents=True, exist_ok=True)
+    (root / "build" / "index" / "faiss.index").write_bytes(b"stub")
+    (root / "build" / "index" / "index_meta.json").write_text(
+        json.dumps({"weights_sha256": "fp"}), encoding="utf-8"
+    )
+
+    from doc_rag.raglib import model_loader
+
+    monkeypatch.setattr(
+        model_loader,
+        "status",
+        lambda: {
+            "ready": True,
+            "path": "ollama:bge-m3",
+            "fingerprint": "fp",
+            "error": None,
+            "source": "ollama",
+            "degraded": True,
+            "breaker": {"open": True, "consecutive_failures": 2},
+        },
+    )
+    monkeypatch.setattr(
+        "doc_rag.raglib.ollama_embedder.ollama_backend_state", lambda *a, **k: "cpu"
+    )
+    monkeypatch.setattr(
+        "doc_rag.server.retrieval.load_config",
+        lambda: {
+            "embeddings": {
+                "provider": "ollama",
+                "model_name": "bge-m3",
+                "api_base": "http://127.0.0.1:11434",
+            }
+        },
+    )
+
+    body = client.get("/health/ready").json()
+    # Degraded embeddings must not fail readiness: lexical results are still
+    # served in well under the MCP budget, which is exactly the incident fix.
+    assert body["ready"] is True
+    assert body["embeddings_degraded"] is True
+    # `checks` is a dict of readiness gates; the informational flag lives
+    # only at the top level.
+    assert "embeddings_degraded" not in body["checks"]
+    assert body["ollama_backend"] == "cpu"
+
+    legacy = client.get("/health").json()
+    assert legacy["embeddings_degraded"] is True
+    assert legacy["ollama_backend"] == "cpu"
+
+
 def test_metrics_endpoint_text_when_lib_installed(tmp_corpus_root: Path):
     pytest.importorskip("prometheus_client")
     client, _ = _client(tmp_corpus_root)

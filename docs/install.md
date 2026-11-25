@@ -242,7 +242,17 @@ embeddings:
   api_base: "http://127.0.0.1:11434"
   model_name: "bge-m3"        # as known to Ollama (`ollama pull bge-m3`)
   max_seq_length: 576
+  request_timeout_seconds: 120      # bulk index builds
+  query_timeout_seconds: 25         # interactive queries; keep < MCP budget (30 s)
+  breaker_threshold: 2              # consecutive timeouts that open the breaker
+  breaker_cooldown_seconds: 60      # breaker open window -> lexical results
 ```
+
+A timeout is never retried. After `breaker_threshold` consecutive
+timeouts the breaker opens for `breaker_cooldown_seconds`: queries
+return lexical results immediately (with a degraded notice) and
+`/health` reports `embeddings_degraded: true`, instead of piling up
+retries until the MCP layer returns 504.
 
 Requires a running Ollama server with the model pulled. The loader
 probes `GET /api/tags` (TTL-cached 30 s): when the server is down the

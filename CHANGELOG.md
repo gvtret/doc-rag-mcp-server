@@ -18,6 +18,22 @@ downloaded from the HF Hub at runtime.
   is disabled for this provider.
 
 ### Fixed
+- **MCP 504 on degraded Ollama**: embeddings now fail fast instead of
+  retrying a wedged server. A timeout is not retried; consecutive
+  interactive timeouts open a circuit breaker
+  (`embeddings.breaker_threshold`, `breaker_cooldown_seconds`) and
+  searches degrade to lexical results with a degraded notice. Query
+  embeddings use `embeddings.query_timeout_seconds` (code default 20 s;
+  the shipped config raises it to 25 s for the measured ~23 s cold model
+  load) while bulk index builds keep `request_timeout_seconds` (default
+  120 s) and bypass the breaker, so query traffic can never abort a
+  rebuild. Worst case for a query is one timeout plus lexical search,
+  inside the 30 s `DOC_RAG_TOOL_TIMEOUT_SEC` budget; concurrent queries
+  each use their own connection, so they are not serialized into an
+  N x timeout queue. Root cause of the
+  incident: Ollama started before the WSL2 GPU was ready, its discovery
+  watchdog expired and the process stayed CPU-only for its whole
+  lifetime.
 - **UI stats honesty**: file sizes resolve through one shared helper for
   both `/ui/doc-stats` and `/ui/documents` (the Documents page used to
   show a dash for ~60 documents whose real size Stats rendered);
@@ -54,6 +70,11 @@ downloaded from the HF Hub at runtime.
 - **Background HF Hub check**: `embeddings.update_check_interval_hours`
   (default 72, `0` disables) compares local weight hashes against the Hub
   (LFS-only, no download) and surfaces `model_update_available`.
+- **Embedding degradation visibility**: `/health` and `/health/ready`
+  report `embeddings_degraded` (breaker open or half-open) and
+  `ollama_backend` (`gpu` / `partial` / `cpu` / `unloaded` /
+  `unreachable`), so a silent CPU-only Ollama fallback is directly
+  observable.
 
 ### Audit fixes (2026-11)
 - **Atomic writes**: chunks.jsonl, index files and metadata are written
