@@ -50,6 +50,7 @@ doc_rag_for_habr/
 
 # Local-only session handoff log (per-developer, not committed)
 docs/HANDOFF.md
+/HANDOFF.md
 
 # Worktrees (agent isolation)
 .worktrees/
